@@ -1,0 +1,14 @@
+# Build artifacts and local logs.
+build/
+build_remote_test/
+results/
+*.log
+
+# Git and IDE metadata.
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# macOS / OS X files.
+.DS_Store
