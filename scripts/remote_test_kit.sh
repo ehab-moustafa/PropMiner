@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Remote test kit for RTX 5090 PropMiner validation.
+#
+# What this does:
+#   - Checks the GPU / driver / CUDA stack.
+#   - Installs build deps if they are missing.
+#   - Builds PropMiner targeting sm_120 (Blackwell consumer).
+#   - Runs correctness self-test (no pool connection).
+#   - Runs a 60-second hashrate benchmark.
+#   - Profiles the GEMM kernel with ncu if available.
+#   - Sweeps a small, high-value set of Blackwell kernel knobs.
+#   - Writes all logs and numbers to results/ for easy upload.
+#
+# Usage on the RTX 5090 Ubuntu 24.04 box:
+#   chmod +x scripts/remote_test_kit.sh
+#   ./scripts/remote_test_kit.sh
+#
+# Then copy results/ back to your mac and paste the summary here.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD_DIR="${ROOT}/build_remote_test"
+RESULTS_DIR="${ROOT}/results"
+mkdir -p "${RESULTS_DIR}"
+
+BENCH_SECONDS=60
+SWEEP_SECONDS=15
+
+echo "===== PropMiner RTX 5090 Remote Test Kit =====" | tee "${RESULTS_DIR}/summary.txt"
+date | tee -a "${RESULTS_DIR}/summary.txt"
+
+# ── 1. Environment snapshot ────────────────────────────────────────────────
+echo "[env] GPU info:" | tee -a "${RESULTS_DIR}/summary.txt"
+nvidia-smi --query-gpu=name,compute_cap,driver_version,pcie.link.gen.max,pcie.link.width.max,memory.total,power.limit,power.default_limit --format=csv,noheader | tee "${RESULTS_DIR}/gpu_info.csv" | tee -a "${RESULTS_DIR}/summary.txt"
+
+nvcc --version > "${RESULTS_DIR}/nvcc_version.txt" 2>&1 || true
+cat "${RESULTS_DIR}/nvcc_version.txt" | tee -a "${RESULTS_DIR}/summary.txt"
+
+cmake --version > "${RESULTS_DIR}/cmake_version.txt" 2>&1 || true
+cargo --version > "${RESULTS_DIR}/cargo_version.txt" 2>&1 || true
+
+# ── 2. Install dependencies if missing ─────────────────────────────────────
+echo "[deps] Checking build dependencies..." | tee -a "${RESULTS_DIR}/summary.txt"
+MISSING=""
+for pkg in build-essential cmake git curl; do
+    if ! dpkg -l | grep -q "^ii  ${pkg} "; then
+        MISSING="${MISSING} ${pkg}"
+    fi
+done
+
+if ! command -v cargo >/dev/null 2>&1; then
+    MISSING="${MISSING} rustup"
+fi
+
+if [[ -n "${MISSING}" ]]; then
+    echo "[deps] Installing:${MISSING}" | tee -a "${RESULTS_DIR}/summary.txt"
+    sudo apt-get update
+    sudo apt-get install -y ${MISSING}
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "[deps] Installing Rust..." | tee -a "${RESULTS_DIR}/summary.txt"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "${HOME}/.cargo/env"
+fi
+
+# ncu is optional; warn if absent.
+if ! command -v ncu >/dev/null 2>&1; then
+    echo "[warn] ncu not found. Profiling step will be skipped." | tee -a "${RESULTS_DIR}/summary.txt"
+    echo "       Install with: sudo apt install nvidia-nsight-compute" | tee -a "${RESULTS_DIR}/summary.txt"
+fi
+
+# ── 3. Fetch CUTLASS if missing ────────────────────────────────────────────
+if [[ ! -f "${ROOT}/third_party/pearl-gemm/third_party/cutlass/include/cutlass/cutlass.h" ]]; then
+    echo "[cutlass] Fetching submodule..." | tee -a "${RESULTS_DIR}/summary.txt"
+    git -C "${ROOT}/third_party/pearl-gemm" submodule update --init --depth 1 third_party/cutlass || true
+fi
+
+# ── 4. Build PropMiner for sm_120 ──────────────────────────────────────────
+echo "[build] Configuring CMake for sm_120..." | tee -a "${RESULTS_DIR}/summary.txt"
+rm -rf "${BUILD_DIR}"
+mkdir -p "${BUILD_DIR}"
+
+cmake -S "${ROOT}" -B "${BUILD_DIR}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DPROP_MINER_CUDA_ARCH=blackwell \
+    -DCMAKE_CUDA_ARCHITECTURES=120 \
+    -DPEARL_GEMM_BLACKWELL_BM=128 \
+    -DPEARL_GEMM_BLACKWELL_BN=256 \
+    -DPEARL_GEMM_BLACKWELL_KBLOCK=128 \
+    -DPEARL_GEMM_BLACKWELL_STAGES=2 \
+    -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=3 \
+    -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
+    -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
+    > "${RESULTS_DIR}/cmake_configure.log" 2>&1
+
+echo "[build] Compiling propminer (this takes several minutes)..." | tee -a "${RESULTS_DIR}/summary.txt"
+if ! cmake --build "${BUILD_DIR}" --target propminer -j"$(nproc)" \
+    > "${RESULTS_DIR}/build.log" 2>&1; then
+    echo "[build] FAILED. See results/build.log" | tee -a "${RESULTS_DIR}/summary.txt"
+    exit 1
+fi
+echo "[build] SUCCESS" | tee -a "${RESULTS_DIR}/summary.txt"
+
+ls -lh "${BUILD_DIR}/propminer" "${BUILD_DIR}/libpearl_gemm_capi.so" "${BUILD_DIR}/libpearl_mining_capi.so" | tee "${RESULTS_DIR}/binaries.txt"
+
+# ── 5. Correctness self-test (no pool, no real mining) ─────────────────────
+echo "[test] Running self-test..." | tee -a "${RESULTS_DIR}/summary.txt"
+if "${BUILD_DIR}/propminer" --self-test --rtx5090 --gpus 0 > "${RESULTS_DIR}/self_test.log" 2>&1; then
+    echo "[test] PASS" | tee -a "${RESULTS_DIR}/summary.txt"
+else
+    echo "[test] FAIL — see results/self_test.log" | tee -a "${RESULTS_DIR}/summary.txt"
+    # Continue anyway to capture benchmark behavior.
+fi
+
+# ── 6. Hashrate benchmark ──────────────────────────────────────────────────
+echo "[bench] Running ${BENCH_SECONDS}s hashrate benchmark..." | tee -a "${RESULTS_DIR}/summary.txt"
+"${BUILD_DIR}/propminer" --bench "${BENCH_SECONDS}" --rtx5090 --gpus 0 \
+    > "${RESULTS_DIR}/benchmark.log" 2>&1 || true
+tail -40 "${RESULTS_DIR}/benchmark.log" | tee -a "${RESULTS_DIR}/summary.txt"
+
+# Extract hashrate line if present.
+grep -iE "hash|th/s|gh/s|mh/s|h/s" "${RESULTS_DIR}/benchmark.log" | tail -20 | tee "${RESULTS_DIR}/benchmark_hashrate.txt" || true
+
+# ── 7. ncu profiling (optional) ────────────────────────────────────────────
+if command -v ncu >/dev/null 2>&1; then
+    echo "[ncu] Profiling the consumer GEMM kernel..." | tee -a "${RESULTS_DIR}/summary.txt"
+    ncu -o "${RESULTS_DIR}/profile" \
+        --target-processes all \
+        --kernel-regex regex:transcript_gemm_kernel_consumer \
+        "${BUILD_DIR}/propminer" --bench 10 --rtx5090 --gpus 0 \
+        > "${RESULTS_DIR}/ncu.log" 2>&1 || true
+    echo "[ncu] Report saved to results/profile.ncu-rep" | tee -a "${RESULTS_DIR}/summary.txt"
+else
+    echo "[ncu] Skipped (ncu not installed)." | tee -a "${RESULTS_DIR}/summary.txt"
+fi
+
+# ── 8. Shortened knob sweep (high-value candidates only) ───────────────────
+echo "[sweep] Running shortened Blackwell knob sweep..." | tee -a "${RESULTS_DIR}/summary.txt"
+
+BMS=(128)
+BNS=(256)
+KBLOCKS=(64 128)
+STAGES_LIST=(2 3)
+SWIZZLES=(3 4)
+MIN_BLOCKS_LIST=(1 2)
+LOAD_POLICIES=(cp_async)
+
+BEST_LABEL=""
+BEST_RATE=0
+
+for KBLOCK in "${KBLOCKS[@]}"; do
+for STAGES in "${STAGES_LIST[@]}"; do
+for SWIZZLE in "${SWIZZLES[@]}"; do
+for MIN_BLOCKS in "${MIN_BLOCKS_LIST[@]}"; do
+for LOAD_POLICY in "${LOAD_POLICIES[@]}"; do
+    LABEL="bw-128x256-k${KBLOCK}-s${STAGES}-sw${SWIZZLE}-mb${MIN_BLOCKS}-${LOAD_POLICY}"
+    echo "[sweep] Building ${LABEL}..." | tee -a "${RESULTS_DIR}/summary.txt"
+
+    cmake -S "${ROOT}" -B "${BUILD_DIR}" \
+        -DPEARL_GEMM_ARCH=blackwell \
+        -DCMAKE_CUDA_ARCHITECTURES=120 \
+        -DPEARL_GEMM_BLACKWELL_BM=128 \
+        -DPEARL_GEMM_BLACKWELL_BN=256 \
+        -DPEARL_GEMM_BLACKWELL_KBLOCK="${KBLOCK}" \
+        -DPEARL_GEMM_BLACKWELL_STAGES="${STAGES}" \
+        -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS="${SWIZZLE}" \
+        -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS="${MIN_BLOCKS}" \
+        -DPEARL_GEMM_BLACKWELL_LOAD_POLICY="${LOAD_POLICY}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        > "${RESULTS_DIR}/cmake-${LABEL}.log" 2>&1
+
+    if ! cmake --build "${BUILD_DIR}" --target propminer -j"$(nproc)" \
+        > "${RESULTS_DIR}/build-${LABEL}.log" 2>&1; then
+        echo "[sweep] ${LABEL}: build failed" | tee -a "${RESULTS_DIR}/summary.txt"
+        continue
+    fi
+
+    RATE=$("${BUILD_DIR}/propminer" --bench "${SWEEP_SECONDS}" --rtx5090 --gpus 0 2>/dev/null \
+        | grep -iE "hash|th/s|gh/s|mh/s|h/s" | tail -1 | grep -oE '[0-9.]+' | head -1 || true)
+
+    if [[ -z "${RATE}" || "${RATE}" == "0" ]]; then
+        echo "[sweep] ${LABEL}: no rate" | tee -a "${RESULTS_DIR}/summary.txt"
+        continue
+    fi
+
+    RATE_INT=$(printf '%.0f' "${RATE}")
+    echo "[sweep] ${LABEL}: ${RATE} H/s" | tee -a "${RESULTS_DIR}/summary.txt"
+    if (( RATE_INT > BEST_RATE )); then
+        BEST_RATE=${RATE_INT}
+        BEST_LABEL="${LABEL}"
+        cp "${BUILD_DIR}/libpearl_gemm_capi.so" "${RESULTS_DIR}/libpearl_gemm_capi_${LABEL}.so"
+    fi
+done
+done
+done
+done
+done
+
+echo "[sweep] Best variant: ${BEST_LABEL} (${BEST_RATE} H/s)" | tee -a "${RESULTS_DIR}/summary.txt"
+
+# ── 9. Final summary ───────────────────────────────────────────────────────
+echo ""
+echo "===== Test kit complete =====" | tee -a "${RESULTS_DIR}/summary.txt"
+echo "Results are in: ${RESULTS_DIR}/" | tee -a "${RESULTS_DIR}/summary.txt"
+echo "Upload these back to Cursor for analysis:" | tee -a "${RESULTS_DIR}/summary.txt"
+echo "  - results/summary.txt" | tee -a "${RESULTS_DIR}/summary.txt"
+echo "  - results/benchmark.log" | tee -a "${RESULTS_DIR}/summary.txt"
+echo "  - results/benchmark_hashrate.txt" | tee -a "${RESULTS_DIR}/summary.txt"
+echo "  - results/profile.ncu-rep (if ncu was available)" | tee -a "${RESULTS_DIR}/summary.txt"
