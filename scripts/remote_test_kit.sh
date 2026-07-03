@@ -73,8 +73,22 @@ if ! command -v nvcc >/dev/null 2>&1; then
     echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /" > /etc/apt/sources.list.d/cuda.list
     apt-get update
     apt-get install -y cuda-toolkit-12-8
+fi
+
+# Ensure nvcc is on PATH for cmake and make.
+if [[ -d /usr/local/cuda-12.8/bin ]]; then
     export PATH=/usr/local/cuda-12.8/bin:${PATH}
 fi
+if [[ -d /usr/local/cuda/bin ]]; then
+    export PATH=/usr/local/cuda/bin:${PATH}
+fi
+
+# Verify.
+if ! command -v nvcc >/dev/null 2>&1; then
+    echo "[deps] ERROR: nvcc still not found after CUDA install" | tee -a "${RESULTS_DIR}/summary.txt"
+    exit 1
+fi
+echo "[deps] nvcc: $(command -v nvcc)" | tee -a "${RESULTS_DIR}/summary.txt"
 
 # ncu is optional; warn if absent.
 if ! command -v ncu >/dev/null 2>&1; then
