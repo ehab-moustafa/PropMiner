@@ -61,8 +61,16 @@ fi
 
 if ! command -v cargo >/dev/null 2>&1; then
     echo "[deps] Installing Rust..." | tee -a "${RESULTS_DIR}/summary.txt"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
     source "${HOME}/.cargo/env"
+fi
+# Make cargo available to subprocesses.
+if [[ -f "${HOME}/.cargo/env" ]]; then
+    source "${HOME}/.cargo/env"
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "[deps] ERROR: cargo not found after Rust install" | tee -a "${RESULTS_DIR}/summary.txt"
+    exit 1
 fi
 
 # Minimal CUDA toolkit install: only nvcc and headers, not the full metapackage.
@@ -119,7 +127,7 @@ cmake -S "${ROOT}" -B "${BUILD_DIR}" \
     -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=3 \
     -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
     -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
-    > "${RESULTS_DIR}/cmake_configure.log" 2>&1
+    2>&1 | tee "${RESULTS_DIR}/cmake_configure.log"
 
 echo "[build] Compiling propminer (this takes several minutes)..." | tee -a "${RESULTS_DIR}/summary.txt"
 if ! cmake --build "${BUILD_DIR}" --target propminer -j"$(nproc)" \
