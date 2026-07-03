@@ -43,7 +43,7 @@ cargo --version > "${RESULTS_DIR}/cargo_version.txt" 2>&1 || true
 # ── 2. Install dependencies if missing ─────────────────────────────────────
 echo "[deps] Checking build dependencies..." | tee -a "${RESULTS_DIR}/summary.txt"
 MISSING=""
-for pkg in build-essential cmake git curl; do
+for pkg in build-essential cmake git curl libssl-dev pkg-config; do
     if ! dpkg -l | grep -q "^ii  ${pkg} "; then
         MISSING="${MISSING} ${pkg}"
     fi
