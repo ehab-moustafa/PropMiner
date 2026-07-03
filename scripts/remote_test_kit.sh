@@ -128,8 +128,9 @@ cmake -S "${ROOT}" -B "${BUILD_DIR}" \
 
 echo "[build] Compiling propminer (this takes several minutes)..." | tee -a "${RESULTS_DIR}/summary.txt"
 if ! cmake --build "${BUILD_DIR}" --target propminer -j"$(nproc)" \
-    > "${RESULTS_DIR}/build.log" 2>&1; then
+    2>&1 | tee "${RESULTS_DIR}/build.log"; then
     echo "[build] FAILED. See results/build.log" | tee -a "${RESULTS_DIR}/summary.txt"
+    tail -100 "${RESULTS_DIR}/build.log" | tee -a "${RESULTS_DIR}/summary.txt" || true
     exit 1
 fi
 echo "[build] SUCCESS" | tee -a "${RESULTS_DIR}/summary.txt"
