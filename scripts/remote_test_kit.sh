@@ -84,8 +84,9 @@ fi
 
 # ── 3. Fetch CUTLASS if missing ────────────────────────────────────────────
 if [[ ! -f "${ROOT}/third_party/pearl-gemm/third_party/cutlass/include/cutlass/cutlass.h" ]]; then
-    echo "[cutlass] Fetching submodule..." | tee -a "${RESULTS_DIR}/summary.txt"
-    git -C "${ROOT}/third_party/pearl-gemm" submodule update --init --depth 1 third_party/cutlass || true
+    echo "[cutlass] Cloning CUTLASS..." | tee -a "${RESULTS_DIR}/summary.txt"
+    git clone --depth 1 https://github.com/NVIDIA/cutlass.git \
+        "${ROOT}/third_party/pearl-gemm/third_party/cutlass" || true
 fi
 
 # ── 4. Build PropMiner for sm_120 ──────────────────────────────────────────
