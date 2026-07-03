@@ -49,20 +49,16 @@ for pkg in build-essential cmake git curl libssl-dev pkg-config; do
     fi
 done
 
-if ! command -v cargo >/dev/null 2>&1; then
-    MISSING="${MISSING} rustup"
-fi
-
 if [[ -n "${MISSING}" ]]; then
     echo "[deps] Installing:${MISSING}" | tee -a "${RESULTS_DIR}/summary.txt"
     apt-get update
     apt-get install -y ${MISSING}
 fi
 
+# Install Rust via rustup.rs (not the apt rustup wrapper) for a clean toolchain.
 if ! command -v cargo >/dev/null 2>&1; then
     echo "[deps] Installing Rust..." | tee -a "${RESULTS_DIR}/summary.txt"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-    source "${HOME}/.cargo/env"
 fi
 # Make cargo available to subprocesses.
 if [[ -f "${HOME}/.cargo/env" ]]; then
@@ -72,6 +68,7 @@ if ! command -v cargo >/dev/null 2>&1; then
     echo "[deps] ERROR: cargo not found after Rust install" | tee -a "${RESULTS_DIR}/summary.txt"
     exit 1
 fi
+rustup default stable >/dev/null 2>&1 || true
 
 # Minimal CUDA toolkit install: only nvcc and headers, not the full metapackage.
 if ! command -v nvcc >/dev/null 2>&1; then
