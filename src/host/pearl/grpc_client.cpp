@@ -518,3 +518,5 @@ bool PearlGrpcClient::try_receive_event(proto::PoolEvent& out) {
     }
     return false;
 }
+
+} // namespace pearl
