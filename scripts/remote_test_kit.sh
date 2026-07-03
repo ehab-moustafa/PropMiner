@@ -43,7 +43,7 @@ cargo --version > "${RESULTS_DIR}/cargo_version.txt" 2>&1 || true
 # ── 2. Install dependencies if missing ─────────────────────────────────────
 echo "[deps] Checking build dependencies..." | tee -a "${RESULTS_DIR}/summary.txt"
 MISSING=""
-for pkg in build-essential cmake git curl libssl-dev pkg-config; do
+for pkg in build-essential cmake git curl libssl-dev pkg-config python3; do
     if ! dpkg -l | grep -q "^ii  ${pkg} "; then
         MISSING="${MISSING} ${pkg}"
     fi
@@ -53,6 +53,10 @@ if [[ -n "${MISSING}" ]]; then
     echo "[deps] Installing:${MISSING}" | tee -a "${RESULTS_DIR}/summary.txt"
     apt-get update
     apt-get install -y ${MISSING}
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "[deps] ERROR: python3 not found after install" | tee -a "${RESULTS_DIR}/summary.txt"
+    exit 1
 fi
 
 # Install Rust via rustup.rs (not the apt rustup wrapper) for a clean toolchain.
@@ -106,6 +110,23 @@ if [[ ! -f "${ROOT}/third_party/pearl-gemm/third_party/cutlass/include/cutlass/c
     echo "[cutlass] Cloning CUTLASS..." | tee -a "${RESULTS_DIR}/summary.txt"
     git clone --depth 1 https://github.com/NVIDIA/cutlass.git \
         "${ROOT}/third_party/pearl-gemm/third_party/cutlass" || true
+fi
+
+# ── 3b. Fetch pearl-blake3 crate if missing ────────────────────────────────
+if [[ ! -f "${ROOT}/third_party/pearl-blake3/Cargo.toml" ]]; then
+    echo "[pearl-blake3] Missing local path dependency; trying repo fallback..." | tee -a "${RESULTS_DIR}/summary.txt"
+    FALLBACK_DIR="$(mktemp -d)"
+    if git clone --depth 1 https://github.com/ehab-moustafa/PropMiner.git "${FALLBACK_DIR}/PropMiner" 2>/dev/null; then
+        if [[ -f "${FALLBACK_DIR}/PropMiner/third_party/pearl-blake3/Cargo.toml" ]]; then
+            cp -R "${FALLBACK_DIR}/PropMiner/third_party/pearl-blake3" "${ROOT}/third_party/pearl-blake3"
+            echo "[pearl-blake3] Restored from repo fallback." | tee -a "${RESULTS_DIR}/summary.txt"
+        fi
+    fi
+    rm -rf "${FALLBACK_DIR}"
+fi
+if [[ ! -f "${ROOT}/third_party/pearl-blake3/Cargo.toml" ]]; then
+    echo "[deps] ERROR: third_party/pearl-blake3 is missing. Make sure it is committed/pushed in the PropMiner repo." | tee -a "${RESULTS_DIR}/summary.txt"
+    exit 1
 fi
 
 # ── 4. Build PropMiner for sm_120 ──────────────────────────────────────────
