@@ -12,8 +12,15 @@
 
 #if __has_include(<cuda.h>)
 #include <cuda.h>
-#elif __has_include(<cuda_runtime.h>)
+#endif
+#if __has_include(<cuda_runtime.h>)
 #include <cuda_runtime.h>
+#endif
+
+#if __has_include(<cuda.h>) && __has_include(<cuda_runtime.h>)
+// Full CUDA toolkit: both driver and runtime headers available.
+#elif __has_include(<cuda_runtime.h>)
+// Runtime-only toolkit.
 using CUdeviceptr = uintptr_t;
 using CUstream = cudaStream_t;
 using CUdevice = int;
