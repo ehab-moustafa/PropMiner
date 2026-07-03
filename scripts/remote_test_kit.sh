@@ -65,10 +65,15 @@ if ! command -v cargo >/dev/null 2>&1; then
     source "${HOME}/.cargo/env"
 fi
 
-# CUDA toolkit is required for nvcc.
+# Minimal CUDA toolkit install: only nvcc and headers, not the full metapackage.
 if ! command -v nvcc >/dev/null 2>&1; then
-    echo "[deps] Installing CUDA toolkit..." | tee -a "${RESULTS_DIR}/summary.txt"
-    apt-get install -y nvidia-cuda-toolkit || true
+    echo "[deps] Installing minimal CUDA toolkit..." | tee -a "${RESULTS_DIR}/summary.txt"
+    apt-get install -y wget gnupg
+    wget -qO - https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /" > /etc/apt/sources.list.d/cuda.list
+    apt-get update
+    apt-get install -y cuda-toolkit-12-8
+    export PATH=/usr/local/cuda-12.8/bin:${PATH}
 fi
 
 # ncu is optional; warn if absent.
