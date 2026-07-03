@@ -55,8 +55,8 @@ fi
 
 if [[ -n "${MISSING}" ]]; then
     echo "[deps] Installing:${MISSING}" | tee -a "${RESULTS_DIR}/summary.txt"
-    sudo apt-get update
-    sudo apt-get install -y ${MISSING}
+    apt-get update
+    apt-get install -y ${MISSING}
 fi
 
 if ! command -v cargo >/dev/null 2>&1; then
@@ -65,10 +65,16 @@ if ! command -v cargo >/dev/null 2>&1; then
     source "${HOME}/.cargo/env"
 fi
 
+# CUDA toolkit is required for nvcc.
+if ! command -v nvcc >/dev/null 2>&1; then
+    echo "[deps] Installing CUDA toolkit..." | tee -a "${RESULTS_DIR}/summary.txt"
+    apt-get install -y nvidia-cuda-toolkit || true
+fi
+
 # ncu is optional; warn if absent.
 if ! command -v ncu >/dev/null 2>&1; then
     echo "[warn] ncu not found. Profiling step will be skipped." | tee -a "${RESULTS_DIR}/summary.txt"
-    echo "       Install with: sudo apt install nvidia-nsight-compute" | tee -a "${RESULTS_DIR}/summary.txt"
+    echo "       Install with: apt-get install -y nvidia-nsight-compute" | tee -a "${RESULTS_DIR}/summary.txt"
 fi
 
 # ── 3. Fetch CUTLASS if missing ────────────────────────────────────────────
