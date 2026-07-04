@@ -76,15 +76,19 @@ COPY --from=builder /root/PropMiner/build_runtime/propminer .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_gemm_capi.so .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_mining_capi.so .
 
-# Copy CUDA runtime libraries from the PyTorch install.
-COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so.12
-COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libnvrtc.so.12 /usr/local/cuda/lib64/libnvrtc.so.12
-COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcublas.so.12 /usr/local/cuda/lib64/libcublas.so.12
-COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcublasLt.so.12 /usr/local/cuda/lib64/libcublasLt.so.12
-COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcufft.so.11 /usr/local/cuda/lib64/libcufft.so.11
-COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcurand.so.10 /usr/local/cuda/lib64/libcurand.so.10
-COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcusolver.so.11 /usr/local/cuda/lib64/libcusolver.so.11
-COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcusparse.so.12 /usr/local/cuda/lib64/libcusparse.so.12
+# Copy every CUDA shared library that PyTorch installed. We copy the whole
+# directory because the exact set of .so files varies between torch releases
+# and we don't need to hardcode each filename.
+RUN mkdir -p /usr/local/cuda/lib64
+RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcudart.so.12 /usr/local/cuda/lib64/ || true
+RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libnvrtc.so.12 /usr/local/cuda/lib64/ || true
+RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcublas.so.12 /usr/local/cuda/lib64/ || true
+RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcublasLt.so.12 /usr/local/cuda/lib64/ || true
+RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcufft.so.11 /usr/local/cuda/lib64/ || true
+RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcurand.so.10 /usr/local/cuda/lib64/ || true
+RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcusolver.so.11 /usr/local/cuda/lib64/ || true
+RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcusparse.so.12 /usr/local/cuda/lib64/ || true
+RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libnvJitLink.so.12 /usr/local/cuda/lib64/ || true
 
 # Copy scripts needed for benchmark/self-test.
 COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh
