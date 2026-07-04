@@ -58,8 +58,9 @@ echo "[env] ldd propminer:" | tee -a "${RESULTS_DIR}/summary.txt"
 ldd "${BUILD_DIR}/propminer" 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
 
 # ── 1b. Runtime CUDA library fallback selection ────────────────────────────
-# Native Linux clouds expose /dev/nvidia* and mount a real libcuda.
-# Salad WSL2 hosts expose /dev/dxg and need the WSL-Ubuntu CUDA runtime.
+# The image bundles CUDA runtime libs from PyTorch wheels. They live in
+# /usr/local/cuda/lib64. We also search common host mount points on WSL2
+# and native Linux clouds in case the container runtime injected real drivers.
 CUDA_PATHS="/usr/local/cuda/lib64:/usr/local/cuda-12.8/lib64:/usr/local/cuda-12.8/targets/x86_64-linux/lib"
 if [[ -e /dev/dxg ]]; then
     echo "[env] WSL2 detected (/dev/dxg present)." | tee -a "${RESULTS_DIR}/summary.txt"
@@ -70,9 +71,46 @@ elif [[ -e /dev/nvidia0 ]]; then
     export LD_LIBRARY_PATH=${CUDA_PATHS}:${LD_LIBRARY_PATH:-}
     echo "[env] Set LD_LIBRARY_PATH for native Linux: ${LD_LIBRARY_PATH}" | tee -a "${RESULTS_DIR}/summary.txt"
 else
-    echo "[env] No GPU device nodes found. Will try standard CUDA runtime anyway." | tee -a "${RESULTS_DIR}/summary.txt"
+    echo "[env] No GPU device nodes found. Will try bundled CUDA runtime." | tee -a "${RESULTS_DIR}/summary.txt"
     export LD_LIBRARY_PATH=${CUDA_PATHS}:${LD_LIBRARY_PATH:-}
 fi
+
+# ── 1c. PyTorch fallback (emergency) ───────────────────────────────────────
+# If the bundled libs still fail to init CUDA (e.g. on an untested WSL2 host),
+# install the exact PyTorch wheel set that we know works and run the binary
+# against its libraries.
+PYTORCH_CUDA_DIR="/usr/local/lib/python3.12/dist-packages/torch/lib"
+ensure_pytorch_cuda_fallback() {
+    if [[ -d "${PYTORCH_CUDA_DIR}" && -f "${PYTORCH_CUDA_DIR}/libcudart.so.12" ]]; then
+        echo "[env] PyTorch CUDA fallback already installed." | tee -a "${RESULTS_DIR}/summary.txt"
+        return 0
+    fi
+    echo "[env] Installing PyTorch CUDA runtime as fallback (this is slow, one-time)..." | tee -a "${RESULTS_DIR}/summary.txt"
+    pip install torch --index-url https://download.pytorch.org/whl/cu121 --break-system-packages \
+        > "${RESULTS_DIR}/pytorch_install.log" 2>&1 || true
+    if [[ -f "${PYTORCH_CUDA_DIR}/libcudart.so.12" ]]; then
+        echo "[env] PyTorch CUDA fallback installed." | tee -a "${RESULTS_DIR}/summary.txt"
+        return 0
+    fi
+    echo "[env] PyTorch CUDA fallback install failed." | tee -a "${RESULTS_DIR}/summary.txt"
+    return 1
+}
+
+run_propminer() {
+    local bin="${1}"
+    shift
+    # First try bundled / LD_LIBRARY_PATH setup.
+    if "${bin}" "$@" 2>/dev/null; then
+        return 0
+    fi
+    # If it failed, try once more with the PyTorch fallback libs.
+    echo "[env] First CUDA init attempt failed; trying PyTorch fallback..." | tee -a "${RESULTS_DIR}/summary.txt"
+    if ensure_pytorch_cuda_fallback; then
+        LD_LIBRARY_PATH="${PYTORCH_CUDA_DIR}:${LD_LIBRARY_PATH}" "${bin}" "$@"
+        return $?
+    fi
+    return 1
+}
 
 if [[ "${PREBUILT}" == "true" ]]; then
     echo "[env] Using prebuilt binaries." | tee -a "${RESULTS_DIR}/summary.txt"
@@ -231,7 +269,7 @@ ls -lh "${BUILD_DIR}/propminer" "${BUILD_DIR}/libpearl_gemm_capi.so" "${BUILD_DI
 
 # ── 5. Correctness self-test (no pool, no real mining) ─────────────────────
 echo "[test] Running self-test..." | tee -a "${RESULTS_DIR}/summary.txt"
-if "${BUILD_DIR}/propminer" --self-test --rtx5090 --gpus 0 > "${RESULTS_DIR}/self_test.log" 2>&1; then
+if run_propminer "${BUILD_DIR}/propminer" --self-test --rtx5090 --gpus 0 > "${RESULTS_DIR}/self_test.log" 2>&1; then
     echo "[test] PASS" | tee -a "${RESULTS_DIR}/summary.txt"
 else
     echo "[test] FAIL — see results/self_test.log" | tee -a "${RESULTS_DIR}/summary.txt"
@@ -243,7 +281,7 @@ fi
 
 # ── 6. Hashrate benchmark ──────────────────────────────────────────────────
 echo "[bench] Running ${BENCH_SECONDS}s hashrate benchmark..." | tee -a "${RESULTS_DIR}/summary.txt"
-"${BUILD_DIR}/propminer" --bench "${BENCH_SECONDS}" --rtx5090 --gpus 0 \
+run_propminer "${BUILD_DIR}/propminer" --bench "${BENCH_SECONDS}" --rtx5090 --gpus 0 \
     > "${RESULTS_DIR}/benchmark.log" 2>&1 || true
 tail -40 "${RESULTS_DIR}/benchmark.log" | tee -a "${RESULTS_DIR}/summary.txt"
 
@@ -261,6 +299,15 @@ if command -v ncu >/dev/null 2>&1; then
     echo "[ncu] Report saved to results/profile.ncu-rep" | tee -a "${RESULTS_DIR}/summary.txt"
 else
     echo "[ncu] Skipped (ncu not installed)." | tee -a "${RESULTS_DIR}/summary.txt"
+fi
+
+# Also run the profile with the PyTorch fallback if needed.
+if ! [[ -f "${RESULTS_DIR}/profile.ncu-rep" ]] && ensure_pytorch_cuda_fallback; then
+    ncu -o "${RESULTS_DIR}/profile_pytorch" \
+        --target-processes all \
+        --kernel-regex regex:transcript_gemm_kernel_consumer \
+        bash -c 'LD_LIBRARY_PATH="'"${PYTORCH_CUDA_DIR}"':${LD_LIBRARY_PATH}" "'"${BUILD_DIR}/propminer"'" --bench 10 --rtx5090 --gpus 0' \
+        > "${RESULTS_DIR}/ncu_pytorch.log" 2>&1 || true
 fi
 
 # ── 8. Shortened knob sweep (high-value candidates only) ───────────────────
@@ -304,7 +351,7 @@ for LOAD_POLICY in "${LOAD_POLICIES[@]}"; do
         continue
     fi
 
-    RATE=$("${BUILD_DIR}/propminer" --bench "${SWEEP_SECONDS}" --rtx5090 --gpus 0 2>/dev/null \
+    RATE=$(run_propminer "${BUILD_DIR}/propminer" --bench "${SWEEP_SECONDS}" --rtx5090 --gpus 0 2>/dev/null \
         | grep -iE "hash|th/s|gh/s|mh/s|h/s" | tail -1 | grep -oE '[0-9.]+' | head -1 || true)
 
     if [[ -z "${RATE}" || "${RATE}" == "0" ]]; then
