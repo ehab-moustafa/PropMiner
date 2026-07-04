@@ -44,9 +44,11 @@ echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-<unset>}" | tee -a "${RES
 echo "NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-<unset>}" | tee -a "${RESULTS_DIR}/summary.txt"
 echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}" | tee -a "${RESULTS_DIR}/summary.txt"
 ls -l /dev/nvidia* 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || echo "[env] No /dev/nvidia* devices" | tee -a "${RESULTS_DIR}/summary.txt"
+ls -l /dev/dxg 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || echo "[env] No /dev/dxg" | tee -a "${RESULTS_DIR}/summary.txt"
 ldconfig -p | grep -E 'libcuda|libcudart' | tee -a "${RESULTS_DIR}/summary.txt" || true
 cat /proc/driver/nvidia/version 2>/dev/null | head -3 | tee -a "${RESULTS_DIR}/summary.txt" || true
 find /usr -name 'libcuda.so*' 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
+find /usr/local/cuda -name 'libcudart.so*' 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
 if command -v readlink >/dev/null 2>&1; then
     for p in $(ldconfig -p 2>/dev/null | awk '/libcuda\.so\.1/{print $NF}'); do
         echo "[env] libcuda.so.1 resolves to: $(readlink -f "$p")" | tee -a "${RESULTS_DIR}/summary.txt"
@@ -54,6 +56,22 @@ if command -v readlink >/dev/null 2>&1; then
 fi
 echo "[env] ldd propminer:" | tee -a "${RESULTS_DIR}/summary.txt"
 ldd "${BUILD_DIR}/propminer" 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
+
+# ── 1b. Runtime CUDA library fallback selection ────────────────────────────
+# Native Linux clouds expose /dev/nvidia* and mount a real libcuda.
+# Salad WSL2 hosts expose /dev/dxg and need the WSL-Ubuntu CUDA toolkit.
+if [[ -e /dev/dxg ]]; then
+    echo "[env] WSL2 detected (/dev/dxg present)." | tee -a "${RESULTS_DIR}/summary.txt"
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}
+    echo "[env] Set LD_LIBRARY_PATH for WSL2: ${LD_LIBRARY_PATH}" | tee -a "${RESULTS_DIR}/summary.txt"
+elif [[ -e /dev/nvidia0 ]]; then
+    echo "[env] Native Linux NVIDIA detected (/dev/nvidia0 present)." | tee -a "${RESULTS_DIR}/summary.txt"
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+    echo "[env] Set LD_LIBRARY_PATH for native Linux: ${LD_LIBRARY_PATH}" | tee -a "${RESULTS_DIR}/summary.txt"
+else
+    echo "[env] No GPU device nodes found. Will try standard CUDA runtime anyway." | tee -a "${RESULTS_DIR}/summary.txt"
+    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+fi
 
 if [[ "${PREBUILT}" == "true" ]]; then
     echo "[env] Using prebuilt binaries." | tee -a "${RESULTS_DIR}/summary.txt"

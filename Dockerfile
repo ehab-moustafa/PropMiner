@@ -2,9 +2,9 @@
 #
 # Multi-stage build:
 #   1. Builder stage uses nvidia/cuda:12.8.0-devel to compile propminer.
-#   2. Runtime stage uses nvidia/cuda:12.8.0-base and copies only the binaries.
-# This keeps the deployed image small (~1.5 GB instead of ~6 GB) so 200 Salad
-# nodes start quickly and do not need to download compilers/CUTLASS/Rust.
+#   2. Runtime stage uses plain Ubuntu with multiple CUDA fallback strategies
+#      so it works on native Linux cloud GPUs (vast.ai), Salad WSL2 hosts,
+#      and Salad native-Linux hosts without manual image selection.
 #
 # Build:
 #   docker build -t propminer-rtx5090 .
@@ -51,20 +51,20 @@ RUN cmake -S . -B build_runtime \
     && cmake --build build_runtime --target propminer -j"$(nproc)"
 
 # ── Runtime stage ───────────────────────────────────────────────────────────
-# Use a plain Ubuntu image, NOT nvidia/cuda:*. The official CUDA runtime images
-# ship a stub libcuda.so.1 that returns 0 devices when the host NVIDIA runtime
-# does not replace it. A plain Ubuntu image lets Salad inject the real host
-# libcuda and /dev/nvidia* devices, which is how SRB miner works on Salad.
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# Only the libraries needed to run the miner. libssl3 for the Rust mining C API.
+# Install base libraries plus tools we may need for runtime fallbacks.
+# We keep curl/wget/gnupg so we can install WSL2 CUDA at runtime if needed.
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
+    curl \
+    wget \
+    gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /root/PropMiner
@@ -74,13 +74,19 @@ COPY --from=builder /root/PropMiner/build_runtime/propminer .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_gemm_capi.so .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_mining_capi.so .
 
-# Copy only the CUDA runtime libraries needed by our binary. Do NOT copy
-# libcuda.so.* — the host driver provides that when the GPU is mounted.
-COPY --from=builder /usr/local/cuda/lib64/libcudart.so.12 .
+# Strategy 1: standard Linux CUDA runtime libraries.
+COPY --from=builder /usr/local/cuda/lib64/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so.12
+
+# Strategy 2: WSL2 Ubuntu CUDA toolkit (does not overwrite the host driver).
+# Pre-install it so WSL2 Salad nodes work without runtime downloads.
+RUN wget -q https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-keyring_1.1-1_all.deb \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
+    && apt-get install -y cuda-toolkit-12-8 \
+    && rm -f cuda-keyring_1.1-1_all.deb \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy scripts needed for benchmark/self-test.
 COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh
-
-ENV LD_LIBRARY_PATH=/root/PropMiner:${LD_LIBRARY_PATH}
 
 ENTRYPOINT ["./scripts/remote_test_kit.sh"]
