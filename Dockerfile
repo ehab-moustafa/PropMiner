@@ -51,11 +51,13 @@ RUN cmake -S . -B build_runtime \
     && cmake --build build_runtime --target propminer -j"$(nproc)"
 
 # ── Runtime stage ───────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.8.0-base-ubuntu24.04
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/usr/local/cuda/bin:${PATH}
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 # Only the libraries needed to run the miner.
 RUN apt-get update && apt-get install -y \

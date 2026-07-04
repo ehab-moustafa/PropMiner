@@ -37,7 +37,13 @@ date | tee -a "${RESULTS_DIR}/summary.txt"
 
 # ── 1. Environment snapshot ────────────────────────────────────────────────
 echo "[env] GPU info:" | tee -a "${RESULTS_DIR}/summary.txt"
-nvidia-smi --query-gpu=name,compute_cap,driver_version,pcie.link.gen.max,pcie.link.width.max,memory.total,power.limit,power.default_limit --format=csv,noheader | tee "${RESULTS_DIR}/gpu_info.csv" | tee -a "${RESULTS_DIR}/summary.txt"
+nvidia-smi --query-gpu=name,compute_cap,driver_version,pcie.link.gen.max,pcie.link.width.max,memory.total,power.limit,power.default_limit --format=csv,noheader | tee "${RESULTS_DIR}/gpu_info.csv" | tee -a "${RESULTS_DIR}/summary.txt" || true
+
+echo "[env] CUDA runtime diagnostics:" | tee -a "${RESULTS_DIR}/summary.txt"
+echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-<unset>}" | tee -a "${RESULTS_DIR}/summary.txt"
+echo "NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-<unset>}" | tee -a "${RESULTS_DIR}/summary.txt"
+ls -l /dev/nvidia* 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
+ldconfig -p | grep -E 'libcuda|libcudart' | tee -a "${RESULTS_DIR}/summary.txt" || true
 
 if [[ "${PREBUILT}" == "true" ]]; then
     echo "[env] Using prebuilt binaries." | tee -a "${RESULTS_DIR}/summary.txt"
