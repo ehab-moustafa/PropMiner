@@ -132,7 +132,7 @@ GpuWorker::GpuWorker(int device_index, int gpu_index,
     // cuCtxCreate but accept cudaSetDevice.
     CUDA_CHECK(cudaSetDevice(device_index_));
     device_ = device_index_;
-    ctx_ = nullptr;  // implicit primary context
+    // implicit primary context; no explicit CUcontext
     check_cuda(cuStreamCreate(&merkle_copy_stream_, CU_STREAM_NON_BLOCKING), "merkle stream");
     check_cuda(cuStreamCreate(&ping_.stream, CU_STREAM_NON_BLOCKING), "ping stream");
     check_cuda(cuStreamCreate(&pong_.stream, CU_STREAM_NON_BLOCKING), "pong stream");
@@ -173,7 +173,6 @@ GpuWorker::~GpuWorker() {
     if (seed_copy_stream_) { cuStreamDestroy(seed_copy_stream_); seed_copy_stream_ = nullptr; }
     if (merkle_copy_stream_) cuStreamDestroy(merkle_copy_stream_);
     // Primary context is implicit with Runtime API; do not destroy it.
-    ctx_ = nullptr;
 }
 
 void GpuWorker::check_cuda(CUresult r, const char* msg) {

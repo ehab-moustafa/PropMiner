@@ -56,7 +56,7 @@ int cuda_driver_init_gpu(CudaGpu* gpu, int device_index,
         return -1;
     }
     gpu->device = device_index;
-    gpu->ctx = nullptr;  // implicit primary context
+    // implicit primary context; no explicit CUcontext
 
     // Get device attributes via Runtime API (WSL2-safe)
     cudaDeviceProp prop;
@@ -210,7 +210,6 @@ void cuda_driver_destroy_gpu(CudaGpu* gpu) {
     }
 
     // With Runtime API the primary context is implicit; do not destroy it.
-    gpu->ctx = nullptr;
 }
 
 int cuda_driver_launch_kernel(CudaGpu* gpu,
