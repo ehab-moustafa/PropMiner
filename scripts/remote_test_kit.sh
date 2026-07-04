@@ -127,27 +127,31 @@ else
 fi
 
 # ── 3. Fetch CUTLASS if missing ────────────────────────────────────────────
-if [[ ! -f "${ROOT}/third_party/pearl-gemm/third_party/cutlass/include/cutlass/cutlass.h" ]]; then
-    echo "[cutlass] Cloning CUTLASS..." | tee -a "${RESULTS_DIR}/summary.txt"
-    git clone --depth 1 https://github.com/NVIDIA/cutlass.git \
-        "${ROOT}/third_party/pearl-gemm/third_party/cutlass" || true
-fi
-
-# ── 3b. Fetch pearl-blake3 crate if missing ────────────────────────────────
-if [[ ! -f "${ROOT}/third_party/pearl-blake3/Cargo.toml" ]]; then
-    echo "[pearl-blake3] Missing local path dependency; trying repo fallback..." | tee -a "${RESULTS_DIR}/summary.txt"
-    FALLBACK_DIR="$(mktemp -d)"
-    if git clone --depth 1 https://github.com/ehab-moustafa/PropMiner.git "${FALLBACK_DIR}/PropMiner" 2>/dev/null; then
-        if [[ -f "${FALLBACK_DIR}/PropMiner/third_party/pearl-blake3/Cargo.toml" ]]; then
-            cp -R "${FALLBACK_DIR}/PropMiner/third_party/pearl-blake3" "${ROOT}/third_party/pearl-blake3"
-            echo "[pearl-blake3] Restored from repo fallback." | tee -a "${RESULTS_DIR}/summary.txt"
-        fi
+if [[ "${PREBUILT}" == "true" ]]; then
+    echo "[deps] Prebuilt binaries present. Skipping CUTLASS/pearl-blake3 fetch." | tee -a "${RESULTS_DIR}/summary.txt"
+else
+    if [[ ! -f "${ROOT}/third_party/pearl-gemm/third_party/cutlass/include/cutlass/cutlass.h" ]]; then
+        echo "[cutlass] Cloning CUTLASS..." | tee -a "${RESULTS_DIR}/summary.txt"
+        git clone --depth 1 https://github.com/NVIDIA/cutlass.git \
+            "${ROOT}/third_party/pearl-gemm/third_party/cutlass" || true
     fi
-    rm -rf "${FALLBACK_DIR}"
-fi
-if [[ ! -f "${ROOT}/third_party/pearl-blake3/Cargo.toml" ]]; then
-    echo "[deps] ERROR: third_party/pearl-blake3 is missing. Make sure it is committed/pushed in the PropMiner repo." | tee -a "${RESULTS_DIR}/summary.txt"
-    exit 1
+
+    # ── 3b. Fetch pearl-blake3 crate if missing ────────────────────────────────
+    if [[ ! -f "${ROOT}/third_party/pearl-blake3/Cargo.toml" ]]; then
+        echo "[pearl-blake3] Missing local path dependency; trying repo fallback..." | tee -a "${RESULTS_DIR}/summary.txt"
+        FALLBACK_DIR="$(mktemp -d)"
+        if git clone --depth 1 https://github.com/ehab-moustafa/PropMiner.git "${FALLBACK_DIR}/PropMiner" 2>/dev/null; then
+            if [[ -f "${FALLBACK_DIR}/PropMiner/third_party/pearl-blake3/Cargo.toml" ]]; then
+                cp -R "${FALLBACK_DIR}/PropMiner/third_party/pearl-blake3" "${ROOT}/third_party/pearl-blake3"
+                echo "[pearl-blake3] Restored from repo fallback." | tee -a "${RESULTS_DIR}/summary.txt"
+            fi
+        fi
+        rm -rf "${FALLBACK_DIR}"
+    fi
+    if [[ ! -f "${ROOT}/third_party/pearl-blake3/Cargo.toml" ]]; then
+        echo "[deps] ERROR: third_party/pearl-blake3 is missing. Make sure it is committed/pushed in the PropMiner repo." | tee -a "${RESULTS_DIR}/summary.txt"
+        exit 1
+    fi
 fi
 
 # ── 4. Build PropMiner for sm_120 (skip if prebuilt binaries exist) ────────
