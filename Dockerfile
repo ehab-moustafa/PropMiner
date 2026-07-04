@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y \
     curl \
     python3 \
     python3-pip \
+    unzip \
     libssl-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
