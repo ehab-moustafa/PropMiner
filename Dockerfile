@@ -2,9 +2,9 @@
 #
 # Multi-stage build:
 #   1. Builder stage uses nvidia/cuda:12.8.0-devel to compile propminer.
-#   2. Runtime stage uses plain Ubuntu with CUDA runtime libraries from
-#      PyTorch's CUDA wheels (nvidia-cuda-runtime-cu12 etc.). These wheels
-#      are built to work on both native Linux and WSL2 Salad hosts.
+#   2. Runtime stage uses plain Ubuntu and pre-installs PyTorch's CUDA
+#      wheel set. We verified on a live Salad WSL2 host that these are the
+#      CUDA libraries that can initialize the GPU through /dev/dxg.
 #
 # Build:
 #   docker build -t propminer-rtx5090 .
@@ -24,7 +24,6 @@ RUN apt-get update && apt-get install -y \
     curl \
     python3 \
     python3-pip \
-    unzip \
     libssl-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
@@ -51,25 +50,6 @@ RUN cmake -S . -B build_runtime \
     -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
     && cmake --build build_runtime --target propminer -j"$(nproc)"
 
-# Download PyTorch CUDA runtime wheels. These libs work on WSL2 where the
-# official NVIDIA toolkit libs fail, because they bundle a loader that uses
-# the host Windows driver through /dev/dxg.
-RUN pip download --no-deps --dest /tmp/cudawheels \
-    nvidia-cuda-runtime-cu12==12.1.105 \
-    nvidia-cuda-nvrtc-cu12==12.1.105 \
-    nvidia-cublas-cu12==12.1.3.1 \
-    nvidia-cuda-cupti-cu12==12.1.105 \
-    nvidia-cufft-cu12==11.0.2.54 \
-    nvidia-curand-cu12==10.3.2.106 \
-    nvidia-cusolver-cu12==11.4.5.107 \
-    nvidia-cusparse-cu12==12.1.0.106 \
-    nvidia-nvjitlink-cu12==12.1.105
-
-RUN mkdir -p /tmp/cudalibs && \
-    for whl in /tmp/cudawheels/*.whl; do \
-        unzip -q -o "$whl" -d /tmp/cudalibs; \
-    done
-
 # ── Runtime stage ───────────────────────────────────────────────────────────
 FROM ubuntu:24.04
 
@@ -83,8 +63,11 @@ RUN apt-get update && apt-get install -y \
     curl \
     python3 \
     python3-pip \
-    unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# Install PyTorch CUDA wheels. These are the exact libraries we verified
+# make torch.cuda.is_available() == True on Salad WSL2.
+RUN pip install torch --index-url https://download.pytorch.org/whl/cu121 --break-system-packages
 
 WORKDIR /root/PropMiner
 
@@ -93,16 +76,15 @@ COPY --from=builder /root/PropMiner/build_runtime/propminer .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_gemm_capi.so .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_mining_capi.so .
 
-# Copy CUDA runtime libraries from the PyTorch wheels.
-COPY --from=builder /tmp/cudalibs/nvidia/cuda_runtime/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so.12
-COPY --from=builder /tmp/cudalibs/nvidia/cuda_nvrtc/lib/libnvrtc.so.12 /usr/local/cuda/lib64/libnvrtc.so.12
-COPY --from=builder /tmp/cudalibs/nvidia/cublas/lib/libcublas.so.12 /usr/local/cuda/lib64/libcublas.so.12
-COPY --from=builder /tmp/cudalibs/nvidia/cublas/lib/libcublasLt.so.12 /usr/local/cuda/lib64/libcublasLt.so.12
-COPY --from=builder /tmp/cudalibs/nvidia/cufft/lib/libcufft.so.11 /usr/local/cuda/lib64/libcufft.so.11
-COPY --from=builder /tmp/cudalibs/nvidia/curand/lib/libcurand.so.10 /usr/local/cuda/lib64/libcurand.so.10
-COPY --from=builder /tmp/cudalibs/nvidia/cusolver/lib/libcusolver.so.11 /usr/local/cuda/lib64/libcusolver.so.11
-COPY --from=builder /tmp/cudalibs/nvidia/cusparse/lib/libcusparse.so.12 /usr/local/cuda/lib64/libcusparse.so.12
-COPY --from=builder /tmp/cudalibs/nvidia/nvjitlink/lib/libnvjitlink.so.12 /usr/local/cuda/lib64/libnvjitlink.so.12
+# Copy CUDA runtime libraries from the PyTorch install.
+COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so.12
+COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libnvrtc.so.12 /usr/local/cuda/lib64/libnvrtc.so.12
+COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcublas.so.12 /usr/local/cuda/lib64/libcublas.so.12
+COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcublasLt.so.12 /usr/local/cuda/lib64/libcublasLt.so.12
+COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcufft.so.11 /usr/local/cuda/lib64/libcufft.so.11
+COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcurand.so.10 /usr/local/cuda/lib64/libcurand.so.10
+COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcusolver.so.11 /usr/local/cuda/lib64/libcusolver.so.11
+COPY --from=builder /usr/local/lib/python3.12/dist-packages/torch/lib/libcusparse.so.12 /usr/local/cuda/lib64/libcusparse.so.12
 
 # Copy scripts needed for benchmark/self-test.
 COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh
