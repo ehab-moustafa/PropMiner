@@ -27,6 +27,11 @@ mkdir -p "${RESULTS_DIR}"
 BENCH_SECONDS=60
 SWEEP_SECONDS=15
 
+PREBUILT=false
+if [[ -x "${ROOT}/propminer" && -f "${ROOT}/libpearl_gemm_capi.so" && -f "${ROOT}/libpearl_mining_capi.so" ]]; then
+    PREBUILT=true
+fi
+
 echo "===== PropMiner RTX 5090 Remote Test Kit =====" | tee "${RESULTS_DIR}/summary.txt"
 date | tee -a "${RESULTS_DIR}/summary.txt"
 
@@ -34,83 +39,91 @@ date | tee -a "${RESULTS_DIR}/summary.txt"
 echo "[env] GPU info:" | tee -a "${RESULTS_DIR}/summary.txt"
 nvidia-smi --query-gpu=name,compute_cap,driver_version,pcie.link.gen.max,pcie.link.width.max,memory.total,power.limit,power.default_limit --format=csv,noheader | tee "${RESULTS_DIR}/gpu_info.csv" | tee -a "${RESULTS_DIR}/summary.txt"
 
-nvcc --version > "${RESULTS_DIR}/nvcc_version.txt" 2>&1 || true
-cat "${RESULTS_DIR}/nvcc_version.txt" | tee -a "${RESULTS_DIR}/summary.txt"
+if [[ "${PREBUILT}" == "true" ]]; then
+    echo "[env] Using prebuilt binaries." | tee -a "${RESULTS_DIR}/summary.txt"
+else
+    nvcc --version > "${RESULTS_DIR}/nvcc_version.txt" 2>&1 || true
+    cat "${RESULTS_DIR}/nvcc_version.txt" | tee -a "${RESULTS_DIR}/summary.txt"
 
-cmake --version > "${RESULTS_DIR}/cmake_version.txt" 2>&1 || true
-cargo --version > "${RESULTS_DIR}/cargo_version.txt" 2>&1 || true
+    cmake --version > "${RESULTS_DIR}/cmake_version.txt" 2>&1 || true
+    cargo --version > "${RESULTS_DIR}/cargo_version.txt" 2>&1 || true
+fi
 
 # ── 2. Install dependencies if missing ─────────────────────────────────────
-echo "[deps] Checking build dependencies..." | tee -a "${RESULTS_DIR}/summary.txt"
-MISSING=""
-for pkg in build-essential cmake git curl libssl-dev pkg-config python3; do
-    if ! dpkg -l | grep -q "^ii  ${pkg} "; then
-        MISSING="${MISSING} ${pkg}"
+if [[ "${PREBUILT}" == "true" ]]; then
+    echo "[deps] Prebuilt binaries present. Skipping dependency installs." | tee -a "${RESULTS_DIR}/summary.txt"
+else
+    echo "[deps] Checking build dependencies..." | tee -a "${RESULTS_DIR}/summary.txt"
+    MISSING=""
+    for pkg in build-essential cmake git curl libssl-dev pkg-config python3; do
+        if ! dpkg -l | grep -q "^ii  ${pkg} "; then
+            MISSING="${MISSING} ${pkg}"
+        fi
+    done
+
+    if [[ -n "${MISSING}" ]]; then
+        echo "[deps] Installing:${MISSING}" | tee -a "${RESULTS_DIR}/summary.txt"
+        apt-get update
+        apt-get install -y ${MISSING}
     fi
-done
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "[deps] ERROR: python3 not found after install" | tee -a "${RESULTS_DIR}/summary.txt"
+        exit 1
+    fi
 
-if [[ -n "${MISSING}" ]]; then
-    echo "[deps] Installing:${MISSING}" | tee -a "${RESULTS_DIR}/summary.txt"
-    apt-get update
-    apt-get install -y ${MISSING}
-fi
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "[deps] ERROR: python3 not found after install" | tee -a "${RESULTS_DIR}/summary.txt"
-    exit 1
-fi
+    # Install Rust via rustup.rs (not the apt rustup wrapper) for a clean toolchain.
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "[deps] Installing Rust..." | tee -a "${RESULTS_DIR}/summary.txt"
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+    fi
+    # Make cargo available to subprocesses.
+    if [[ -f "${HOME}/.cargo/env" ]]; then
+        source "${HOME}/.cargo/env"
+    fi
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "[deps] ERROR: cargo not found after Rust install" | tee -a "${RESULTS_DIR}/summary.txt"
+        exit 1
+    fi
+    rustup default stable >/dev/null 2>&1 || true
 
-# Install Rust via rustup.rs (not the apt rustup wrapper) for a clean toolchain.
-if ! command -v cargo >/dev/null 2>&1; then
-    echo "[deps] Installing Rust..." | tee -a "${RESULTS_DIR}/summary.txt"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-fi
-# Make cargo available to subprocesses.
-if [[ -f "${HOME}/.cargo/env" ]]; then
-    source "${HOME}/.cargo/env"
-fi
-if ! command -v cargo >/dev/null 2>&1; then
-    echo "[deps] ERROR: cargo not found after Rust install" | tee -a "${RESULTS_DIR}/summary.txt"
-    exit 1
-fi
-rustup default stable >/dev/null 2>&1 || true
+    # Minimal CUDA toolkit install: only nvcc and headers, not the full metapackage.
+    if ! command -v nvcc >/dev/null 2>&1; then
+        echo "[deps] Installing minimal CUDA toolkit..." | tee -a "${RESULTS_DIR}/summary.txt"
+        apt-get install -y wget gnupg
+        wget -qO - https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /" > /etc/apt/sources.list.d/cuda.list
+        apt-get update
+        apt-get install -y cuda-toolkit-12-8
+    fi
 
-# Minimal CUDA toolkit install: only nvcc and headers, not the full metapackage.
-if ! command -v nvcc >/dev/null 2>&1; then
-    echo "[deps] Installing minimal CUDA toolkit..." | tee -a "${RESULTS_DIR}/summary.txt"
-    apt-get install -y wget gnupg
-    wget -qO - https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/3bf863cc.pub | gpg --dearmor -o /usr/share/keyrings/cuda-archive-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/ /" > /etc/apt/sources.list.d/cuda.list
-    apt-get update
-    apt-get install -y cuda-toolkit-12-8
-fi
+    # Ensure nvcc is on PATH for cmake and make.
+    if [[ -d /usr/local/cuda-12.8/bin ]]; then
+        export PATH=/usr/local/cuda-12.8/bin:${PATH}
+    fi
+    if [[ -d /usr/local/cuda/bin ]]; then
+        export PATH=/usr/local/cuda/bin:${PATH}
+    fi
 
-# Ensure nvcc is on PATH for cmake and make.
-if [[ -d /usr/local/cuda-12.8/bin ]]; then
-    export PATH=/usr/local/cuda-12.8/bin:${PATH}
-fi
-if [[ -d /usr/local/cuda/bin ]]; then
-    export PATH=/usr/local/cuda/bin:${PATH}
-fi
+    # Verify.
+    if ! command -v nvcc >/dev/null 2>&1; then
+        echo "[deps] ERROR: nvcc still not found after CUDA install" | tee -a "${RESULTS_DIR}/summary.txt"
+        exit 1
+    fi
+    echo "[deps] nvcc: $(command -v nvcc)" | tee -a "${RESULTS_DIR}/summary.txt"
 
-# Verify.
-if ! command -v nvcc >/dev/null 2>&1; then
-    echo "[deps] ERROR: nvcc still not found after CUDA install" | tee -a "${RESULTS_DIR}/summary.txt"
-    exit 1
-fi
-echo "[deps] nvcc: $(command -v nvcc)" | tee -a "${RESULTS_DIR}/summary.txt"
+    # ncu is optional; warn if absent.
+    if ! command -v ncu >/dev/null 2>&1; then
+        echo "[warn] ncu not found. Profiling step will be skipped." | tee -a "${RESULTS_DIR}/summary.txt"
+        echo "       Install with: apt-get install -y nvidia-nsight-compute" | tee -a "${RESULTS_DIR}/summary.txt"
+    fi
 
-# ncu is optional; warn if absent.
-if ! command -v ncu >/dev/null 2>&1; then
-    echo "[warn] ncu not found. Profiling step will be skipped." | tee -a "${RESULTS_DIR}/summary.txt"
-    echo "       Install with: apt-get install -y nvidia-nsight-compute" | tee -a "${RESULTS_DIR}/summary.txt"
-fi
-
-# ── 3. Pull latest code from GitHub (Salad may cache the image) ────────────
-if [[ -d "${ROOT}/.git" ]]; then
-    echo "[git] Pulling latest code..." | tee -a "${RESULTS_DIR}/summary.txt"
-    cd "${ROOT}"
-    git fetch origin master
-    git reset --hard origin/master
+    # ── 3. Pull latest code from GitHub (Salad may cache the image) ────────────
+    if [[ -d "${ROOT}/.git" ]]; then
+        echo "[git] Pulling latest code..." | tee -a "${RESULTS_DIR}/summary.txt"
+        cd "${ROOT}"
+        git fetch origin master
+        git reset --hard origin/master
+    fi
 fi
 
 # ── 3. Fetch CUTLASS if missing ────────────────────────────────────────────
