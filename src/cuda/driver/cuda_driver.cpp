@@ -1,6 +1,7 @@
 #include "cuda_driver.h"
 #include "propminer_config.h"
 #include "../include/work_queue.h"
+#include <cuda_runtime_api.h>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -33,7 +34,12 @@ int cuda_driver_init() {
 
 int cuda_driver_device_count() {
     int count = 0;
-    cuDeviceGetCount(&count);
+    cudaError_t err = cudaGetDeviceCount(&count);
+    if (err != cudaSuccess) {
+        const char* msg = cudaGetErrorString(err);
+        fprintf(stderr, "[cuda] cudaGetDeviceCount failed: %s (%d)\n", msg, static_cast<int>(err));
+        return 0;
+    }
     return count;
 }
 

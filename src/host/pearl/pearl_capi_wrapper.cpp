@@ -1,5 +1,6 @@
 #include "pearl_capi_wrapper.h"
 
+#include <cuda_runtime_api.h>
 #include <stdexcept>
 #include <string>
 
@@ -40,11 +41,9 @@ bool GemmCapi::supports_sm(int major, int minor) const {
 
 int GemmCapi::device_count() {
     int n = 0;
-    CUresult r = cuDeviceGetCount(&n);
-    if (r != CUDA_SUCCESS) {
-        const char* err_str = "unknown";
-        cuGetErrorString(r, &err_str);
-        fprintf(stderr, "[cuda] cuDeviceGetCount failed: %d (%s)\n", static_cast<int>(r), err_str);
+    cudaError_t r = cudaGetDeviceCount(&n);
+    if (r != cudaSuccess) {
+        fprintf(stderr, "[cuda] cudaGetDeviceCount failed: %d (%s)\n", static_cast<int>(r), cudaGetErrorString(r));
         n = 0;
     }
     return n;

@@ -57,22 +57,48 @@ fi
 echo "[env] ldd propminer:" | tee -a "${RESULTS_DIR}/summary.txt"
 ldd "${BUILD_DIR}/propminer" 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
 
-# ── 1b. Runtime CUDA library fallback selection ────────────────────────────
-# The image bundles CUDA runtime libs from PyTorch wheels. They live in
-# /usr/local/cuda/lib64. We also search common host mount points on WSL2
-# and native Linux clouds in case the container runtime injected real drivers.
-CUDA_PATHS="/usr/local/cuda/lib64:/usr/local/cuda-12.8/lib64:/usr/local/cuda-12.8/targets/x86_64-linux/lib"
+# ── 1b. Runtime CUDA library setup for Salad WSL2 hosts ────────────────────
+# Salad WSL2 containers need the host driver store files loaded in a specific
+# order. The runtime API needs /usr/lib/x86_64-linux-gnu/libdxcore.so plus the
+# WSL driver store .so files; libcuda_loader.so must be preloaded before
+# libcuda.so.1.1 so the loader can bridge the user-mode driver to /dev/dxg.
+BUNDLED_CUDA="/usr/local/cuda-12.8/targets/x86_64-linux/lib:/usr/local/cuda/lib64"
+WSL_DRIVER_DIRS=(/usr/lib/wsl/drivers/*)
+WSL_DRIVER_PATH="/usr/lib/wsl/drivers"
 if [[ -e /dev/dxg ]]; then
     echo "[env] WSL2 detected (/dev/dxg present)." | tee -a "${RESULTS_DIR}/summary.txt"
-    export LD_LIBRARY_PATH=${CUDA_PATHS}:/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}
+
+    # Build a list of concrete driver store libraries that exist on this host.
+    DXCORE="/usr/lib/x86_64-linux-gnu/libdxcore.so"
+    WSL_LIBS=()
+    for so in \
+        "${DXCORE}" \
+        /usr/lib/wsl/drivers/*/libnvdxgdmal.so.1 \
+        /usr/lib/wsl/drivers/*/libcuda_loader.so \
+        /usr/lib/wsl/drivers/*/libnvidia-ml_loader.so \
+        /usr/lib/wsl/drivers/*/libcuda.so.1.1; do
+        for f in ${so}; do
+            [[ -f "$f" ]] && WSL_LIBS+=("$f")
+        done
+    done
+
+    # LD_PRELOAD: dxcore first, then the WSL driver store shim libraries.
+    # This is required for the CUDA runtime API to enumerate devices through
+    # /dev/dxg on Salad containers.
+    if [[ ${#WSL_LIBS[@]} -gt 0 ]]; then
+        export LD_PRELOAD=$(IFS=:; echo "${WSL_LIBS[*]}")
+        echo "[env] Set LD_PRELOAD: ${LD_PRELOAD}" | tee -a "${RESULTS_DIR}/summary.txt"
+    fi
+
+    export LD_LIBRARY_PATH=${BUNDLED_CUDA}:${WSL_DRIVER_PATH}:${LD_LIBRARY_PATH:-}
     echo "[env] Set LD_LIBRARY_PATH for WSL2: ${LD_LIBRARY_PATH}" | tee -a "${RESULTS_DIR}/summary.txt"
 elif [[ -e /dev/nvidia0 ]]; then
     echo "[env] Native Linux NVIDIA detected (/dev/nvidia0 present)." | tee -a "${RESULTS_DIR}/summary.txt"
-    export LD_LIBRARY_PATH=${CUDA_PATHS}:${LD_LIBRARY_PATH:-}
+    export LD_LIBRARY_PATH=${BUNDLED_CUDA}:${LD_LIBRARY_PATH:-}
     echo "[env] Set LD_LIBRARY_PATH for native Linux: ${LD_LIBRARY_PATH}" | tee -a "${RESULTS_DIR}/summary.txt"
 else
     echo "[env] No GPU device nodes found. Will try bundled CUDA runtime." | tee -a "${RESULTS_DIR}/summary.txt"
-    export LD_LIBRARY_PATH=${CUDA_PATHS}:${LD_LIBRARY_PATH:-}
+    export LD_LIBRARY_PATH=${BUNDLED_CUDA}:${LD_LIBRARY_PATH:-}
 fi
 
 # ── 1c. PyTorch fallback (emergency) ───────────────────────────────────────
@@ -99,7 +125,7 @@ ensure_pytorch_cuda_fallback() {
 run_propminer() {
     local bin="${1}"
     shift
-    # First try bundled / LD_LIBRARY_PATH setup.
+    # First try bundled CUDA 12.8 runtime + WSL2 driver store setup.
     if "${bin}" "$@" 2>/dev/null; then
         return 0
     fi

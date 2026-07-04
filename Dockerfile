@@ -2,9 +2,10 @@
 #
 # Multi-stage build:
 #   1. Builder stage uses nvidia/cuda:12.8.0-devel to compile propminer.
-#   2. Runtime stage uses plain Ubuntu and pre-installs PyTorch's CUDA
-#      wheel set. We verified on a live Salad WSL2 host that these are the
-#      CUDA libraries that can initialize the GPU through /dev/dxg.
+#   2. Runtime stage uses plain Ubuntu and embeds the CUDA 12.8 runtime libs
+#      extracted directly from the official runfile. We verified on a live Salad
+#      WSL2 host that these libraries can initialize the GPU through /dev/dxg
+#      when paired with the host driver store files.
 #
 # Build:
 #   docker build -t propminer-rtx5090 .
@@ -50,6 +51,38 @@ RUN cmake -S . -B build_runtime \
     -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
     && cmake --build build_runtime --target propminer -j"$(nproc)"
 
+# ── CUDA 12.8 runtime stage ────────────────────────────────────────────────
+# Extract only the runtime libraries we need from the official CUDA 12.8
+# redist tarballs.  This avoids PyTorch ABI mismatch issues and gives us a
+# clean, version-matched libcudart without running an x86_64 installer on the
+# build host.
+FROM ubuntu:24.04 AS cuda128-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /root/cuda128
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Component archives from the official NVIDIA CUDA redist (linux-x86_64).
+# Verified hashes from redistrib_12.8.0.json.
+RUN BASE="https://developer.download.nvidia.com/compute/cuda/redist" && \
+    DEST="/root/cuda128/usr/local/cuda-12.8/targets/x86_64-linux" && \
+    mkdir -p "${DEST}"
+
+RUN BASE="https://developer.download.nvidia.com/compute/cuda/redist" && \
+    DEST="/root/cuda128/usr/local/cuda-12.8/targets/x86_64-linux" && \
+    cd /tmp && \
+    curl -fsSL -o cuda_cudart.tar.xz "${BASE}/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.8.57-archive.tar.xz" && \
+    curl -fsSL -o cuda_nvrtc.tar.xz "${BASE}/cuda_nvrtc/linux-x86_64/cuda_nvrtc-linux-x86_64-12.8.61-archive.tar.xz" && \
+    curl -fsSL -o libcublas.tar.xz "${BASE}/libcublas/linux-x86_64/libcublas-linux-x86_64-12.8.3.14-archive.tar.xz" && \
+    curl -fsSL -o libnvjitlink.tar.xz "${BASE}/libnvjitlink/linux-x86_64/libnvjitlink-linux-x86_64-12.8.61-archive.tar.xz" && \
+    for f in *.tar.xz; do tar -xf "$f" --strip-components=1 -C "${DEST}"; done && \
+    rm -f *.tar.xz
+
 # ── Runtime stage ───────────────────────────────────────────────────────────
 FROM ubuntu:24.04
 
@@ -65,10 +98,6 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch CUDA wheels. These are the exact libraries we verified
-# make torch.cuda.is_available() == True on Salad WSL2.
-RUN pip install torch --index-url https://download.pytorch.org/whl/cu121 --break-system-packages
-
 WORKDIR /root/PropMiner
 
 # Copy prebuilt binaries from the builder stage.
@@ -76,19 +105,15 @@ COPY --from=builder /root/PropMiner/build_runtime/propminer .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_gemm_capi.so .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_mining_capi.so .
 
-# Copy every CUDA shared library that PyTorch installed. We copy the whole
-# directory because the exact set of .so files varies between torch releases
-# and we don't need to hardcode each filename.
-RUN mkdir -p /usr/local/cuda/lib64
-RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcudart.so.12 /usr/local/cuda/lib64/ || true
-RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libnvrtc.so.12 /usr/local/cuda/lib64/ || true
-RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcublas.so.12 /usr/local/cuda/lib64/ || true
-RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcublasLt.so.12 /usr/local/cuda/lib64/ || true
-RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcufft.so.11 /usr/local/cuda/lib64/ || true
-RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcurand.so.10 /usr/local/cuda/lib64/ || true
-RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcusolver.so.11 /usr/local/cuda/lib64/ || true
-RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libcusparse.so.12 /usr/local/cuda/lib64/ || true
-RUN cp /usr/local/lib/python3.12/dist-packages/torch/lib/libnvJitLink.so.12 /usr/local/cuda/lib64/ || true
+# Copy CUDA 12.8 runtime libraries extracted from the official runfile.
+COPY --from=cuda128-runtime /root/cuda128/usr/local/cuda-12.8 /usr/local/cuda-12.8
+RUN mkdir -p /usr/local/cuda/lib64 && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so.12 && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvrtc.so.12 /usr/local/cuda/lib64/libnvrtc.so.12 && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcublas.so.12 /usr/local/cuda/lib64/libcublas.so.12 && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcublasLt.so.12 /usr/local/cuda/lib64/libcublasLt.so.12 && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvJitLink.so.12 /usr/local/cuda/lib64/libnvJitLink.so.12
 
 # Copy scripts needed for benchmark/self-test.
 COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh

@@ -47,11 +47,13 @@ Multiplexer::~Multiplexer() {
 int Multiplexer::init() {
     // CUDA was already initialized by main.cpp via cuda_driver_init()
 
-    // Discover GPUs
+    // Discover GPUs. Use the CUDA Runtime API because on WSL2 containers the
+    // driver API returns error 3 while the runtime API works.
     int device_count = 0;
-    CUresult err = cuDeviceGetCount(&device_count);
-    if (err != CUDA_SUCCESS) {
-        fprintf(stderr, "[multiplexer] cuDeviceGetCount failed: %d\n", err);
+    cudaError_t err = cudaGetDeviceCount(&device_count);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[multiplexer] cudaGetDeviceCount failed: %d (%s)\n",
+                static_cast<int>(err), cudaGetErrorString(err));
         return -1;
     }
 
