@@ -41,7 +41,12 @@ bool GemmCapi::supports_sm(int major, int minor) const {
 int GemmCapi::device_count() {
     int n = 0;
     CUresult r = cuDeviceGetCount(&n);
-    if (r != CUDA_SUCCESS) n = 0;
+    if (r != CUDA_SUCCESS) {
+        const char* err_str = "unknown";
+        cuGetErrorString(r, &err_str);
+        fprintf(stderr, "[cuda] cuDeviceGetCount failed: %d (%s)\n", static_cast<int>(r), err_str);
+        n = 0;
+    }
     return n;
 }
 
