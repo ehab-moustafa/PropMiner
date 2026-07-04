@@ -244,16 +244,16 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (bench_seconds == 0 && cfg.wallet_address.empty()) {
-        fprintf(stderr, "[main] Error: --wallet is required for mining\n\n");
-        print_usage(argv[0]);
-        return 1;
-    }
-
     cfg.speed_test_seconds = bench_seconds;
 
     if (self_test) {
         return run_self_test();
+    }
+
+    if (bench_seconds == 0 && cfg.wallet_address.empty()) {
+        fprintf(stderr, "[main] Error: --wallet is required for mining\n\n");
+        print_usage(argv[0]);
+        return 1;
     }
 
     int n = pearl::GemmCapi::device_count();
