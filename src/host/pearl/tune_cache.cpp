@@ -8,6 +8,8 @@
 #include <sstream>
 #include <string>
 
+#include <cuda_runtime.h>
+
 namespace pearl {
 
 namespace {
