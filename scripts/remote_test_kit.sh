@@ -216,7 +216,10 @@ if "${BUILD_DIR}/propminer" --self-test --rtx5090 --gpus 0 > "${RESULTS_DIR}/sel
     echo "[test] PASS" | tee -a "${RESULTS_DIR}/summary.txt"
 else
     echo "[test] FAIL — see results/self_test.log" | tee -a "${RESULTS_DIR}/summary.txt"
-    # Continue anyway to capture benchmark behavior.
+    echo "[test] self_test.log:" | tee -a "${RESULTS_DIR}/summary.txt"
+    cat "${RESULTS_DIR}/self_test.log" | tee -a "${RESULTS_DIR}/summary.txt" || true
+    echo "[debug] Container will stay alive for 60 minutes so you can inspect." | tee -a "${RESULTS_DIR}/summary.txt"
+    sleep 3600
 fi
 
 # ── 6. Hashrate benchmark ──────────────────────────────────────────────────
