@@ -131,6 +131,10 @@ GpuWorker::GpuWorker(int device_index, int gpu_index,
     // Use Runtime API to bind to the device. WSL2 containers reject
     // cuCtxCreate but accept cudaSetDevice.
     CUDA_CHECK(cudaSetDevice(device_index_));
+    // Force the implicit primary context to be created and made current for
+    // this thread. Without this, subsequent driver API calls (cuMemAlloc etc.)
+    // fail with CUDA_ERROR_INVALID_CONTEXT on WSL2.
+    CUDA_CHECK(cudaFree(0));
     device_ = device_index_;
     // implicit primary context; no explicit CUcontext
     check_cuda(cuStreamCreate(&merkle_copy_stream_, CU_STREAM_NON_BLOCKING), "merkle stream");

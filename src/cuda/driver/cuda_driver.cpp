@@ -55,6 +55,14 @@ int cuda_driver_init_gpu(CudaGpu* gpu, int device_index,
                 device_index, cudaGetErrorString(rt_err), static_cast<int>(rt_err));
         return -1;
     }
+    // Force the implicit primary context to be created and made current so
+    // subsequent driver API calls (cuMemAlloc, cuStreamCreate, etc.) succeed.
+    rt_err = cudaFree(0);
+    if (rt_err != cudaSuccess) {
+        fprintf(stderr, "[cuda] cudaFree(0) failed: %s (%d)\n",
+                cudaGetErrorString(rt_err), static_cast<int>(rt_err));
+        return -1;
+    }
     gpu->device = device_index;
     // implicit primary context; no explicit CUcontext
 

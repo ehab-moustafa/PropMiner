@@ -103,6 +103,17 @@ SigmaContext::SigmaContext(const Job& job, const MiningConfig& cfg)
 void SigmaContext::install(CUstream stream, void* workspace, int device_id) {
     std::lock_guard<std::mutex> lk(install_mtx_);
     if (installed_) return;
+
+    // Ensure the implicit primary context for the target device is current on
+    // this thread before making driver API allocations. On WSL2, cudaSetDevice
+    // alone does not always make the context current.
+    if (device_id >= 0) {
+        cudaError_t e = cudaSetDevice(device_id);
+        if (e == cudaSuccess) {
+            (void)cudaFree(0);
+        }
+    }
+
     resident_.allocate(cfg_, stream);
 
     // Upload job key.
