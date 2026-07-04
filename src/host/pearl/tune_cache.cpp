@@ -60,10 +60,7 @@ TuneCache::Key TuneCache::make_key(int device_index) const {
     cudaGetDeviceProperties(&prop, device_index);
     k.major = prop.major;
     k.minor = prop.minor;
-
-    cudaUUID_t uuid{};
-    cudaDeviceGetUuid(&uuid, device_index);
-    std::memcpy(k.uuid.data(), uuid.bytes, 16);
+    std::memcpy(k.uuid.data(), prop.uuid.bytes, 16);
 
     k.driver_version = driver_version();
     k.arch_profile = get_env("PEARL_GEMM_ARCH");
