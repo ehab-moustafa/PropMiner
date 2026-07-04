@@ -321,10 +321,10 @@ struct PearlGrpcClient::Impl {
         HpackEncoder enc;
         auto headers = enc.encode_request_headers(
             "POST",
-            impl_->opts.use_tls ? "https" : "http",
-            impl_->opts.host + ":" + std::to_string(impl_->opts.port),
+            opts.use_tls ? "https" : "http",
+            opts.host + ":" + std::to_string(opts.port),
             path,
-            impl_->opts.user_agent,
+            opts.user_agent,
             "application/grpc");
         return send_frame(FRAME_HEADERS,
                           static_cast<uint8_t>(FLAG_END_HEADERS | (end_stream ? FLAG_END_STREAM : 0)),
