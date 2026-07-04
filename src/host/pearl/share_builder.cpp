@@ -93,18 +93,18 @@ namespace {
         return result;
     }
 
-    std::vector<int8_t> apply_sparse_permutation(const std::vector<PermutationPair>& perm,
-                                                 const std::vector<int8_t>& vec) {
-        std::vector<int8_t> out(perm.size());
-        apply_sparse_permutation_into(perm, vec.data(), out.data(), out.size());
-        return out;
-    }
-
     void apply_sparse_permutation_into(const std::vector<PermutationPair>& perm,
                                        const int8_t* in, int8_t* out, size_t len) {
         for (size_t i = 0; i < len; ++i) {
             out[i] = static_cast<int8_t>(in[perm[i].first] - in[perm[i].second]);
         }
+    }
+
+    std::vector<int8_t> apply_sparse_permutation(const std::vector<PermutationPair>& perm,
+                                                 const std::vector<int8_t>& vec) {
+        std::vector<int8_t> out(perm.size());
+        apply_sparse_permutation_into(perm, vec.data(), out.data(), out.size());
+        return out;
     }
 
     std::array<uint8_t, 32> jackpot_hash(const uint32_t words[JACKPOT_SIZE],
