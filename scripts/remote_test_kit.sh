@@ -137,32 +137,43 @@ if [[ ! -f "${ROOT}/third_party/pearl-blake3/Cargo.toml" ]]; then
     exit 1
 fi
 
-# ── 4. Build PropMiner for sm_120 ──────────────────────────────────────────
-echo "[build] Configuring CMake for sm_120..." | tee -a "${RESULTS_DIR}/summary.txt"
-rm -rf "${BUILD_DIR}"
-mkdir -p "${BUILD_DIR}"
+# ── 4. Build PropMiner for sm_120 (skip if prebuilt binaries exist) ────────
+if [[ -x "${ROOT}/propminer" && -f "${ROOT}/libpearl_gemm_capi.so" && -f "${ROOT}/libpearl_mining_capi.so" ]]; then
+    echo "[build] Prebuilt binaries found. Skipping CMake build." | tee -a "${RESULTS_DIR}/summary.txt"
+    mkdir -p "${BUILD_DIR}"
+    cp -v "${ROOT}/propminer" "${ROOT}/libpearl_gemm_capi.so" "${ROOT}/libpearl_mining_capi.so" "${BUILD_DIR}/" \
+        | tee -a "${RESULTS_DIR}/summary.txt"
+else
+    echo "[build] Configuring CMake for sm_120..." | tee -a "${RESULTS_DIR}/summary.txt"
+    rm -rf "${BUILD_DIR}"
+    mkdir -p "${BUILD_DIR}"
 
-cmake -S "${ROOT}" -B "${BUILD_DIR}" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DPROP_MINER_CUDA_ARCH=blackwell \
-    -DCMAKE_CUDA_ARCHITECTURES=120 \
-    -DPEARL_GEMM_BLACKWELL_BM=128 \
-    -DPEARL_GEMM_BLACKWELL_BN=256 \
-    -DPEARL_GEMM_BLACKWELL_KBLOCK=128 \
-    -DPEARL_GEMM_BLACKWELL_STAGES=2 \
-    -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=3 \
-    -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
-    -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
-    2>&1 | tee "${RESULTS_DIR}/cmake_configure.log"
-
-echo "[build] Compiling propminer (this takes several minutes)..." | tee -a "${RESULTS_DIR}/summary.txt"
-if ! cmake --build "${BUILD_DIR}" --target propminer -j"$(nproc)" \
-    2>&1 | tee "${RESULTS_DIR}/build.log"; then
-    echo "[build] FAILED. See results/build.log" | tee -a "${RESULTS_DIR}/summary.txt"
-    tail -100 "${RESULTS_DIR}/build.log" | tee -a "${RESULTS_DIR}/summary.txt" || true
-    exit 1
+    cmake -S "${ROOT}" -B "${BUILD_DIR}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DPROP_MINER_CUDA_ARCH=blackwell \
+        -DCMAKE_CUDA_ARCHITECTURES=120 \
+        -DPEARL_GEMM_BLACKWELL_BM=128 \
+        -DPEARL_GEMM_BLACKWELL_BN=256 \
+        -DPEARL_GEMM_BLACKWELL_KBLOCK=128 \
+        -DPEARL_GEMM_BLACKWELL_STAGES=2 \
+        -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=3 \
+        -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
+        -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
+        2>&1 | tee "${RESULTS_DIR}/cmake_configure.log"
 fi
-echo "[build] SUCCESS" | tee -a "${RESULTS_DIR}/summary.txt"
+
+if [[ -x "${BUILD_DIR}/propminer" ]]; then
+    echo "[build] Using prebuilt binaries." | tee -a "${RESULTS_DIR}/summary.txt"
+else
+    echo "[build] Compiling propminer (this takes several minutes)..." | tee -a "${RESULTS_DIR}/summary.txt"
+    if ! cmake --build "${BUILD_DIR}" --target propminer -j"$(nproc)" \
+        2>&1 | tee "${RESULTS_DIR}/build.log"; then
+        echo "[build] FAILED. See results/build.log" | tee -a "${RESULTS_DIR}/summary.txt"
+        tail -100 "${RESULTS_DIR}/build.log" | tee -a "${RESULTS_DIR}/summary.txt" || true
+        exit 1
+    fi
+    echo "[build] SUCCESS" | tee -a "${RESULTS_DIR}/summary.txt"
+fi
 
 ls -lh "${BUILD_DIR}/propminer" "${BUILD_DIR}/libpearl_gemm_capi.so" "${BUILD_DIR}/libpearl_mining_capi.so" | tee "${RESULTS_DIR}/binaries.txt"
 

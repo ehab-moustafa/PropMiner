@@ -1,30 +1,28 @@
-# PropMiner RTX 5090 build & benchmark image.
-# Based on NVIDIA CUDA 12.8 devel image so nvcc, cuDNN headers, and build tools
-# are already present. This avoids downloading CUDA inside flaky containers.
+# PropMiner RTX 5090 runtime image.
+#
+# Multi-stage build:
+#   1. Builder stage uses nvidia/cuda:12.8.0-devel to compile propminer.
+#   2. Runtime stage uses nvidia/cuda:12.8.0-base and copies only the binaries.
+# This keeps the deployed image small (~1.5 GB instead of ~6 GB) so 200 Salad
+# nodes start quickly and do not need to download compilers/CUTLASS/Rust.
 #
 # Build:
 #   docker build -t propminer-rtx5090 .
-# Run interactively:
-#   docker run --gpus all -it propminer-rtx5090
-# Run the full test kit:
+# Run:
 #   docker run --gpus all propminer-rtx5090
 
-FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+# ── Builder stage ───────────────────────────────────────────────────────────
+FROM nvidia/cuda:12.8.0-devel-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/usr/local/cuda/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
 
-# Install runtime + build dependencies in one layer.
 RUN apt-get update && apt-get install -y \
     build-essential \
     cmake \
     git \
     curl \
-    wget \
-    gnupg \
     python3 \
-    python3-pip \
     libssl-dev \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
@@ -34,12 +32,45 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --de
 ENV PATH=/root/.cargo/bin:${PATH}
 RUN rustup default stable
 
-# Working directory for the cloned repo.
 WORKDIR /root/PropMiner
-
-# Copy the repository into the image. On cloud runners you can instead mount the
-# repo at runtime and use this image as the base.
 COPY . /root/PropMiner
 
-# Default entrypoint runs the remote test kit. Override with bash for debugging.
+# Pre-build PropMiner so runtime nodes only download binaries.
+# We use the same CMake flags remote_test_kit.sh would use.
+RUN cmake -S . -B build_runtime \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DPROP_MINER_CUDA_ARCH=blackwell \
+    -DCMAKE_CUDA_ARCHITECTURES=120 \
+    -DPEARL_GEMM_BLACKWELL_BM=128 \
+    -DPEARL_GEMM_BLACKWELL_BN=256 \
+    -DPEARL_GEMM_BLACKWELL_KBLOCK=128 \
+    -DPEARL_GEMM_BLACKWELL_STAGES=2 \
+    -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=3 \
+    -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
+    -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
+    && cmake --build build_runtime --target propminer -j"$(nproc)"
+
+# ── Runtime stage ───────────────────────────────────────────────────────────
+FROM nvidia/cuda:12.8.0-base-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PATH=/usr/local/cuda/bin:${PATH}
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
+
+# Only the libraries needed to run the miner.
+RUN apt-get update && apt-get install -y \
+    libssl3 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /root/PropMiner
+
+# Copy prebuilt binaries from the builder stage.
+COPY --from=builder /root/PropMiner/build_runtime/propminer .
+COPY --from=builder /root/PropMiner/build_runtime/libpearl_gemm_capi.so .
+COPY --from=builder /root/PropMiner/build_runtime/libpearl_mining_capi.so .
+
+# Copy scripts needed for benchmark/self-test.
+COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh
+
 ENTRYPOINT ["./scripts/remote_test_kit.sh"]
