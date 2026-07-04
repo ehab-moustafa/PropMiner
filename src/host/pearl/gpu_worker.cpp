@@ -394,7 +394,10 @@ bool GpuWorker::wait_for_batch(HalfBuffers& half, int timeout_ms) {
         }
         return false;
     }
-    CUDA_CHECK(e);
+    if (e != cudaSuccess) {
+        check_cuda(CUDA_ERROR_UNKNOWN, cudaGetErrorString(e));
+        return false;
+    }
     return false;
 }
 

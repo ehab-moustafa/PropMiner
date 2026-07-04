@@ -20,15 +20,6 @@ namespace {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
     }
-
-    std::string uuid_from_miner_id(const std::array<uint8_t, 16>& id) {
-        char buf[37];
-        snprintf(buf, sizeof(buf),
-                 "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-                 id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7],
-                 id[8], id[9], id[10], id[11], id[12], id[13], id[14], id[15]);
-        return std::string(buf);
-    }
 }
 
 WorkerOrchestrator::WorkerOrchestrator(const Config& cfg) : cfg_(cfg) {}
