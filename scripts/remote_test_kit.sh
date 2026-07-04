@@ -105,6 +105,14 @@ if ! command -v ncu >/dev/null 2>&1; then
     echo "       Install with: apt-get install -y nvidia-nsight-compute" | tee -a "${RESULTS_DIR}/summary.txt"
 fi
 
+# ── 3. Pull latest code from GitHub (Salad may cache the image) ────────────
+if [[ -d "${ROOT}/.git" ]]; then
+    echo "[git] Pulling latest code..." | tee -a "${RESULTS_DIR}/summary.txt"
+    cd "${ROOT}"
+    git fetch origin master
+    git reset --hard origin/master
+fi
+
 # ── 3. Fetch CUTLASS if missing ────────────────────────────────────────────
 if [[ ! -f "${ROOT}/third_party/pearl-gemm/third_party/cutlass/include/cutlass/cutlass.h" ]]; then
     echo "[cutlass] Cloning CUTLASS..." | tee -a "${RESULTS_DIR}/summary.txt"
