@@ -51,15 +51,17 @@ RUN cmake -S . -B build_runtime \
     && cmake --build build_runtime --target propminer -j"$(nproc)"
 
 # ── Runtime stage ───────────────────────────────────────────────────────────
-FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+# Use a plain Ubuntu image, NOT nvidia/cuda:*. The official CUDA runtime images
+# ship a stub libcuda.so.1 that returns 0 devices when the host NVIDIA runtime
+# does not replace it. A plain Ubuntu image lets Salad inject the real host
+# libcuda and /dev/nvidia* devices, which is how SRB miner works on Salad.
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PATH=/usr/local/cuda/bin:${PATH}
-ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH}
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# Only the libraries needed to run the miner.
+# Only the libraries needed to run the miner. libssl3 for the Rust mining C API.
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
@@ -72,7 +74,13 @@ COPY --from=builder /root/PropMiner/build_runtime/propminer .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_gemm_capi.so .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_mining_capi.so .
 
+# Copy only the CUDA runtime libraries needed by our binary. Do NOT copy
+# libcuda.so.* — the host driver provides that when the GPU is mounted.
+COPY --from=builder /usr/local/cuda/lib64/libcudart.so.12 .
+
 # Copy scripts needed for benchmark/self-test.
 COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh
+
+ENV LD_LIBRARY_PATH=/root/PropMiner:${LD_LIBRARY_PATH}
 
 ENTRYPOINT ["./scripts/remote_test_kit.sh"]
