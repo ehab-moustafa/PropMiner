@@ -42,8 +42,10 @@ nvidia-smi --query-gpu=name,compute_cap,driver_version,pcie.link.gen.max,pcie.li
 echo "[env] CUDA runtime diagnostics:" | tee -a "${RESULTS_DIR}/summary.txt"
 echo "NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-<unset>}" | tee -a "${RESULTS_DIR}/summary.txt"
 echo "NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-<unset>}" | tee -a "${RESULTS_DIR}/summary.txt"
-ls -l /dev/nvidia* 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
+ls -l /dev/nvidia* 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || echo "[env] No /dev/nvidia* devices" | tee -a "${RESULTS_DIR}/summary.txt"
 ldconfig -p | grep -E 'libcuda|libcudart' | tee -a "${RESULTS_DIR}/summary.txt" || true
+cat /proc/driver/nvidia/version 2>/dev/null | head -3 | tee -a "${RESULTS_DIR}/summary.txt" || true
+find /usr -name 'libcuda.so*' 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
 
 if [[ "${PREBUILT}" == "true" ]]; then
     echo "[env] Using prebuilt binaries." | tee -a "${RESULTS_DIR}/summary.txt"
