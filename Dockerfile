@@ -63,8 +63,7 @@ RUN pip download --no-deps --dest /tmp/cudawheels \
     nvidia-curand-cu12==10.3.2.106 \
     nvidia-cusolver-cu12==11.4.5.107 \
     nvidia-cusparse-cu12==12.1.0.106 \
-    nvidia-nvjitlink-cu12==12.9.86 \
-    nvidia-nvtx-cu12==12.1.105
+    nvidia-nvjitlink-cu12==12.1.105
 
 RUN mkdir -p /tmp/cudalibs && \
     for whl in /tmp/cudawheels/*.whl; do \
@@ -104,7 +103,6 @@ COPY --from=builder /tmp/cudalibs/nvidia/curand/lib/libcurand.so.10 /usr/local/c
 COPY --from=builder /tmp/cudalibs/nvidia/cusolver/lib/libcusolver.so.11 /usr/local/cuda/lib64/libcusolver.so.11
 COPY --from=builder /tmp/cudalibs/nvidia/cusparse/lib/libcusparse.so.12 /usr/local/cuda/lib64/libcusparse.so.12
 COPY --from=builder /tmp/cudalibs/nvidia/nvjitlink/lib/libnvjitlink.so.12 /usr/local/cuda/lib64/libnvjitlink.so.12
-COPY --from=builder /tmp/cudalibs/nvidia/nvtx/lib/libnvtx.so.1 /usr/local/cuda/lib64/libnvtx.so.1
 
 # Copy scripts needed for benchmark/self-test.
 COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh
