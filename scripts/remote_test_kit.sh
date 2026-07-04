@@ -59,18 +59,19 @@ ldd "${BUILD_DIR}/propminer" 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" |
 
 # ── 1b. Runtime CUDA library fallback selection ────────────────────────────
 # Native Linux clouds expose /dev/nvidia* and mount a real libcuda.
-# Salad WSL2 hosts expose /dev/dxg and need the WSL-Ubuntu CUDA toolkit.
+# Salad WSL2 hosts expose /dev/dxg and need the WSL-Ubuntu CUDA runtime.
+CUDA_PATHS="/usr/local/cuda/lib64:/usr/local/cuda-12.8/lib64:/usr/local/cuda-12.8/targets/x86_64-linux/lib"
 if [[ -e /dev/dxg ]]; then
     echo "[env] WSL2 detected (/dev/dxg present)." | tee -a "${RESULTS_DIR}/summary.txt"
-    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}
+    export LD_LIBRARY_PATH=${CUDA_PATHS}:/usr/lib/wsl/lib:${LD_LIBRARY_PATH:-}
     echo "[env] Set LD_LIBRARY_PATH for WSL2: ${LD_LIBRARY_PATH}" | tee -a "${RESULTS_DIR}/summary.txt"
 elif [[ -e /dev/nvidia0 ]]; then
     echo "[env] Native Linux NVIDIA detected (/dev/nvidia0 present)." | tee -a "${RESULTS_DIR}/summary.txt"
-    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+    export LD_LIBRARY_PATH=${CUDA_PATHS}:${LD_LIBRARY_PATH:-}
     echo "[env] Set LD_LIBRARY_PATH for native Linux: ${LD_LIBRARY_PATH}" | tee -a "${RESULTS_DIR}/summary.txt"
 else
     echo "[env] No GPU device nodes found. Will try standard CUDA runtime anyway." | tee -a "${RESULTS_DIR}/summary.txt"
-    export LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}
+    export LD_LIBRARY_PATH=${CUDA_PATHS}:${LD_LIBRARY_PATH:-}
 fi
 
 if [[ "${PREBUILT}" == "true" ]]; then

@@ -74,15 +74,15 @@ COPY --from=builder /root/PropMiner/build_runtime/propminer .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_gemm_capi.so .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_mining_capi.so .
 
-# Strategy 1: standard Linux CUDA runtime libraries.
+# Strategy 1: standard Linux CUDA runtime library.
 COPY --from=builder /usr/local/cuda/lib64/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so.12
 
-# Strategy 2: WSL2 Ubuntu CUDA toolkit (does not overwrite the host driver).
-# Pre-install it so WSL2 Salad nodes work without runtime downloads.
+# Strategy 2: WSL2 Ubuntu CUDA runtime (minimal, only what the binary needs).
+# The full cuda-toolkit-12-8 is multi-GB; cuda-cudart-12-8 is ~800 KB.
 RUN wget -q https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-keyring_1.1-1_all.deb \
     && dpkg -i cuda-keyring_1.1-1_all.deb \
     && apt-get update \
-    && apt-get install -y cuda-toolkit-12-8 \
+    && apt-get install -y cuda-cudart-12-8 \
     && rm -f cuda-keyring_1.1-1_all.deb \
     && rm -rf /var/lib/apt/lists/*
 
