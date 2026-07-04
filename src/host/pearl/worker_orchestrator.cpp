@@ -40,27 +40,18 @@ std::vector<proto::GpuCard> WorkerOrchestrator::enumerate_gpu_cards() {
 
     for (int idx : indices) {
         if (idx < 0 || idx >= n) continue;
-        CUdevice dev;
-        if (cuDeviceGet(&dev, idx) != CUDA_SUCCESS) continue;
-        char name[256] = {};
-        cuDeviceGetName(name, sizeof(name), dev);
-        CUuuid uuid{};
-        std::string uuid_str;
-        if (cuDeviceGetUuid(&uuid, dev) == CUDA_SUCCESS) {
-            char hex[33] = {0};
-            for (int b = 0; b < 16; ++b) {
-                std::snprintf(hex + b * 2, 3, "%02x",
-                              static_cast<unsigned char>(uuid.bytes[b]));
-            }
-            uuid_str = hex;
-        } else {
-            char fallback[32];
-            std::snprintf(fallback, sizeof(fallback), "gpu-%04d", idx);
-            uuid_str = fallback;
+        cudaDeviceProp prop{};
+        if (cudaGetDeviceProperties(&prop, idx) != cudaSuccess) continue;
+
+        char hex[33] = {0};
+        for (int b = 0; b < 16; ++b) {
+            std::snprintf(hex + b * 2, 3, "%02x",
+                          static_cast<unsigned char>(prop.uuid.bytes[b]));
         }
+
         proto::GpuCard card;
-        card.uuid = uuid_str;
-        card.model = name;
+        card.uuid = hex;
+        card.model = prop.name;
         card.index = static_cast<uint32_t>(idx);
         card.hashrate = 0.0;
         cards.push_back(card);

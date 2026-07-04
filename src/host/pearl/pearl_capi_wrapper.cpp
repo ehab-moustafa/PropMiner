@@ -51,20 +51,22 @@ int GemmCapi::device_count() {
 
 int GemmCapi::current_sm_major() {
     int dev = 0;
-    CUresult r = cuCtxGetDevice(&dev);
-    if (r != CUDA_SUCCESS) return 0;
-    int major = 0;
-    cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, dev);
-    return major;
+    cudaError_t r = cudaGetDevice(&dev);
+    if (r != cudaSuccess) return 0;
+    cudaDeviceProp prop{};
+    r = cudaGetDeviceProperties(&prop, dev);
+    if (r != cudaSuccess) return 0;
+    return prop.major;
 }
 
 int GemmCapi::current_sm_minor() {
     int dev = 0;
-    CUresult r = cuCtxGetDevice(&dev);
-    if (r != CUDA_SUCCESS) return 0;
-    int minor = 0;
-    cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, dev);
-    return minor;
+    cudaError_t r = cudaGetDevice(&dev);
+    if (r != cudaSuccess) return 0;
+    cudaDeviceProp prop{};
+    r = cudaGetDeviceProperties(&prop, dev);
+    if (r != cudaSuccess) return 0;
+    return prop.minor;
 }
 
 Workspace GemmCapi::alloc_workspace(int32_t m, int32_t n, int32_t k, int32_t r,

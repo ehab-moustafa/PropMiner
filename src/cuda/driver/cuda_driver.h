@@ -10,8 +10,7 @@ namespace propminer {
 
 /* Opaque handle to per-GPU CUDA state */
 struct CudaGpu {
-    CUdevice    device;
-    CUcontext   ctx;
+    int         device;
     CUstream    stream;
     CUmodule    module;
     CUfunction  kernel;

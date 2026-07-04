@@ -76,35 +76,31 @@ int Multiplexer::init() {
     fprintf(stderr, "  %-3s  %-24s  %-10s  %s\n", "ID", "Name", "VRAM(GB)", "SM");
     fprintf(stderr, "  %s\n", "------------------------------------------");
     for (int i = 0; i < device_count; i++) {
-        CUdevice dev;
-        cuDeviceGet(&dev, i);
-
-        char name[256];
-        cuDeviceGetName(name, sizeof(name), dev);
-
-        size_t mem = 0;
-        cuDeviceTotalMem(&mem, dev);
-
-        int sm = 0, sm_minor = 0;
-        cuDeviceGetAttribute(&sm, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, dev);
-        cuDeviceGetAttribute(&sm_minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, dev);
+        cudaDeviceProp prop{};
+        cudaError_t prop_err = cudaGetDeviceProperties(&prop, i);
+        if (prop_err != cudaSuccess) {
+            fprintf(stderr, "  %c%d   %-24s  %6.1f     sm_%s\n",
+                    ' ', i, "unknown", 0.0, "??");
+            continue;
+        }
 
         char active = config_.gpu_indices.empty() ? '*'
                        : (std::find(config_.gpu_indices.begin(),
                                     config_.gpu_indices.end(), i) != config_.gpu_indices.end()) ? '*' : ' ';
 
         fprintf(stderr, "  %c%d   %-24s  %6.1f     sm_%d%d\n",
-                active, i, name, mem / (1024.0 * 1024.0 * 1024.0), sm, sm_minor);
+                active, i, prop.name,
+                prop.totalGlobalMem / (1024.0 * 1024.0 * 1024.0),
+                prop.major, prop.minor);
     }
     fprintf(stderr, "\n");
 
     // Initialize per-GPU stats
     for (int i = 0; i < gpu_count_; i++) {
         int idx = config_.gpu_indices[i];
-        CUdevice dev;
-        cuDeviceGet(&dev, idx);
-        char name[256];
-        cuDeviceGetName(name, sizeof(name), dev);
+        cudaDeviceProp prop{};
+        cudaError_t prop_err = cudaGetDeviceProperties(&prop, idx);
+        std::string name = (prop_err == cudaSuccess) ? prop.name : "unknown";
 
         stats_[i] = std::make_shared<GpuStats>();
         stats_[i]->index = idx;

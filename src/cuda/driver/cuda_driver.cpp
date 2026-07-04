@@ -22,11 +22,12 @@ namespace propminer {
     } while (0)
 
 int cuda_driver_init() {
-    CUresult err = cuInit(0);
-    if (err != CUDA_SUCCESS) {
-        const char* msg = nullptr;
-        cuGetErrorString(err, &msg);
-        fprintf(stderr, "[cuda] cuInit failed: %s (%d)\n", msg, err);
+    // Runtime API initializes implicitly. Force a lightweight runtime init
+    // so that a primary context exists before any driver API calls.
+    cudaError_t err = cudaFree(0);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[cuda] runtime init failed: %s (%d)\n",
+                cudaGetErrorString(err), static_cast<int>(err));
         return -1;
     }
     return 0;
@@ -46,18 +47,32 @@ int cuda_driver_device_count() {
 int cuda_driver_init_gpu(CudaGpu* gpu, int device_index,
                           size_t work_queue_size,
                           size_t result_buf_size) {
-    CU_CHECK(cuDeviceGet(&gpu->device, device_index));
-    CU_CHECK(cuCtxCreate(&gpu->ctx, CU_CTX_SCHED_AUTO, gpu->device));
+    // Use Runtime API to set the device. This creates the implicit primary
+    // context on WSL2 hosts where cuCtxCreate fails.
+    cudaError_t rt_err = cudaSetDevice(device_index);
+    if (rt_err != cudaSuccess) {
+        fprintf(stderr, "[cuda] cudaSetDevice(%d) failed: %s (%d)\n",
+                device_index, cudaGetErrorString(rt_err), static_cast<int>(rt_err));
+        return -1;
+    }
+    gpu->device = device_index;
+    gpu->ctx = nullptr;  // implicit primary context
 
-    // Get device attributes
-    cuDeviceGetAttribute(&gpu->compute_major,
-                         CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
-                         gpu->device);
-    cuDeviceGetAttribute(&gpu->compute_minor,
-                         CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
-                         gpu->device);
-    cuDeviceTotalMem(&gpu->total_mem, gpu->device);
-    cuDeviceGetName(gpu->name, sizeof(gpu->name), gpu->device);
+    // Get device attributes via Runtime API (WSL2-safe)
+    cudaDeviceProp prop;
+    cudaError_t prop_err = cudaGetDeviceProperties(&prop, gpu->device);
+    if (prop_err == cudaSuccess) {
+        gpu->compute_major = prop.major;
+        gpu->compute_minor = prop.minor;
+        gpu->total_mem = prop.totalGlobalMem;
+        strncpy(gpu->name, prop.name, sizeof(gpu->name) - 1);
+        gpu->name[sizeof(gpu->name) - 1] = '\0';
+    } else {
+        gpu->compute_major = 0;
+        gpu->compute_minor = 0;
+        gpu->total_mem = 0;
+        gpu->name[0] = '\0';
+    }
 
     fprintf(stderr, "[cuda] GPU %d: %s (sm_%d%d, %zu MB)\n",
             device_index, gpu->name,
@@ -194,10 +209,8 @@ void cuda_driver_destroy_gpu(CudaGpu* gpu) {
         gpu->pinned_stats = nullptr;
     }
 
-    if (gpu->ctx) {
-        cuCtxDestroy(gpu->ctx);
-        gpu->ctx = nullptr;
-    }
+    // With Runtime API the primary context is implicit; do not destroy it.
+    gpu->ctx = nullptr;
 }
 
 int cuda_driver_launch_kernel(CudaGpu* gpu,

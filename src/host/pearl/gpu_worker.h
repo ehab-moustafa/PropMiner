@@ -113,8 +113,7 @@ private:
     MiningConfig cfg_;
     IShareSink* sink_;
 
-    CUdevice device_ = 0;
-    CUcontext ctx_ = nullptr;
+    int device_ = 0;
     CUstream merkle_copy_stream_ = nullptr;
 
     // Dedicated copy stream for the PCIe Gen5 conveyor belt.  Seeds are

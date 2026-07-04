@@ -128,9 +128,11 @@ GpuWorker::GpuWorker(int device_index, int gpu_index,
                      const MiningConfig& cfg, IShareSink* sink)
     : device_index_(device_index), gpu_index_(gpu_index),
       cfg_(cfg), sink_(sink) {
-    check_cuda(cuInit(0), "cuInit");
-    check_cuda(cuDeviceGet(&device_, device_index_), "cuDeviceGet");
-    check_cuda(cuCtxCreate(&ctx_, CU_CTX_SCHED_AUTO, device_), "cuCtxCreate");
+    // Use Runtime API to bind to the device. WSL2 containers reject
+    // cuCtxCreate but accept cudaSetDevice.
+    CUDA_CHECK(cudaSetDevice(device_index_));
+    device_ = device_index_;
+    ctx_ = nullptr;  // implicit primary context
     check_cuda(cuStreamCreate(&merkle_copy_stream_, CU_STREAM_NON_BLOCKING), "merkle stream");
     check_cuda(cuStreamCreate(&ping_.stream, CU_STREAM_NON_BLOCKING), "ping stream");
     check_cuda(cuStreamCreate(&pong_.stream, CU_STREAM_NON_BLOCKING), "pong stream");
@@ -170,7 +172,8 @@ GpuWorker::~GpuWorker() {
     if (seed_copy_done_event_) { cudaEventDestroy(seed_copy_done_event_); seed_copy_done_event_ = nullptr; }
     if (seed_copy_stream_) { cuStreamDestroy(seed_copy_stream_); seed_copy_stream_ = nullptr; }
     if (merkle_copy_stream_) cuStreamDestroy(merkle_copy_stream_);
-    if (ctx_) cuCtxDestroy(ctx_);
+    // Primary context is implicit with Runtime API; do not destroy it.
+    ctx_ = nullptr;
 }
 
 void GpuWorker::check_cuda(CUresult r, const char* msg) {
