@@ -121,20 +121,28 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id) {
                "key h2d");
 
     // Expand BSeed on device and tensor-hash it, producing BHash + leaf CVs.
-    gemm_.bseed_expand_and_tensor_hash_leaf_cvs(
-        job_.b_seed.data(),
-        reinterpret_cast<void*>(resident_.b()),
-        static_cast<uint32_t>(resident_.b_bytes()),
-        reinterpret_cast<uint8_t*>(resident_.b_hash()),
-        job_.job_key.data(),
-        cfg_.tensor_hash_num_blocks(resident_.b_bytes()),
-        cfg_.tensor_hash_threads,
-        cfg_.tensor_hash_stages,
-        cfg_.tensor_hash_leaves,
-        reinterpret_cast<uint8_t*>(resident_.roots()),
-        reinterpret_cast<uint8_t*>(resident_.leaf_cvs()),
-        device_id,
-        stream);
+    try {
+        gemm_.bseed_expand_and_tensor_hash_leaf_cvs(
+            job_.b_seed.data(),
+            reinterpret_cast<void*>(resident_.b()),
+            static_cast<uint32_t>(resident_.b_bytes()),
+            reinterpret_cast<uint8_t*>(resident_.b_hash()),
+            job_.job_key.data(),
+            cfg_.tensor_hash_num_blocks(resident_.b_bytes()),
+            cfg_.tensor_hash_threads,
+            cfg_.tensor_hash_stages,
+            cfg_.tensor_hash_leaves,
+            reinterpret_cast<uint8_t*>(resident_.roots()),
+            reinterpret_cast<uint8_t*>(resident_.leaf_cvs()),
+            device_id,
+            stream);
+    } catch (const std::exception& e) {
+        cudaError_t last = cudaGetLastError();
+        fprintf(stderr, "[sigma] bseed_expand failed: %s\n", e.what());
+        fprintf(stderr, "[sigma] last CUDA error: %s (%d)\n",
+                cudaGetErrorString(last), static_cast<int>(last));
+        throw;
+    }
 
     // Asynchronously copy leaf CVs to host on a side stream; the Merkle tree
     // build then happens while noise_B runs on the main stream.
