@@ -263,8 +263,14 @@ if [[ "${SKIP_BENCH}" == "1" ]]; then
     echo "[bench] Skipped (PROPMINER_SKIP_BENCH=1)." | tee -a "${RESULTS_DIR}/summary.txt"
 else
 echo "[bench] Running ${BENCH_SECONDS}s hashrate benchmark..." | tee -a "${RESULTS_DIR}/summary.txt"
+set +o pipefail
 run_propminer "${BUILD_DIR}/propminer" --bench "${BENCH_SECONDS}" --rtx5090 --gpus 0 \
-    > "${RESULTS_DIR}/benchmark.log" 2>&1 || true
+    | tee "${RESULTS_DIR}/benchmark.log"
+bench_rc=${PIPESTATUS[0]}
+set -o pipefail
+if [[ "${bench_rc}" -ne 0 ]]; then
+    echo "[bench] propminer exited ${bench_rc} (see benchmark.log)" | tee -a "${RESULTS_DIR}/summary.txt"
+fi
 tail -40 "${RESULTS_DIR}/benchmark.log" | tee -a "${RESULTS_DIR}/summary.txt"
 
 # Extract hashrate line if present.
@@ -372,3 +378,9 @@ echo "  - results/summary.txt" | tee -a "${RESULTS_DIR}/summary.txt"
 echo "  - results/benchmark.log" | tee -a "${RESULTS_DIR}/summary.txt"
 echo "  - results/benchmark_hashrate.txt" | tee -a "${RESULTS_DIR}/summary.txt"
 echo "  - results/profile.ncu-rep (if ncu was available)" | tee -a "${RESULTS_DIR}/summary.txt"
+
+KEEP_ALIVE="${PROPMINER_KEEP_ALIVE_SECONDS:-3600}"
+if [[ "${KEEP_ALIVE}" -gt 0 ]]; then
+    echo "[done] Keeping container alive for ${KEEP_ALIVE}s so you can read logs (SSH / Salad UI)." | tee -a "${RESULTS_DIR}/summary.txt"
+    sleep "${KEEP_ALIVE}"
+fi

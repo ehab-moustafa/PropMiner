@@ -78,14 +78,22 @@ run_propminer() {
     if "${bin}" "$@" 2>>"${PROPMINER_LOG_DIR}/propminer_stderr.log"; then
         return 0
     fi
-    echo "[env] First attempt failed. stderr tail:" | propminer_log
+    local rc=$?
+    echo "[env] propminer exited ${rc}. stderr tail:" | propminer_log
     tail -20 "${PROPMINER_LOG_DIR}/propminer_stderr.log" 2>/dev/null | propminer_log || true
-    echo "[env] Trying PyTorch CUDA fallback..." | propminer_log
+
+    # PyTorch fallback is only for CUDA driver/runtime init failures — not pool SSL, etc.
+    if ! tail -50 "${PROPMINER_LOG_DIR}/propminer_stderr.log" 2>/dev/null \
+        | grep -qiE 'cuda error|no cuda devices|cuda driver|libcudart|unable to init cuda|failed to initialize'; then
+        return "${rc}"
+    fi
+
+    echo "[env] CUDA init failure detected; trying PyTorch fallback..." | propminer_log
     if ensure_pytorch_cuda_fallback; then
         LD_LIBRARY_PATH="${PYTORCH_CUDA_DIR}:${LD_LIBRARY_PATH}" "${bin}" "$@"
         return $?
     fi
-    return 1
+    return "${rc}"
 }
 
 prepare_prebuilt_binaries() {
