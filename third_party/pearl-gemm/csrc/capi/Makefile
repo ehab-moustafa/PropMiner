@@ -242,10 +242,11 @@ ifeq ($(PEARL_GEMM_ARCH),blackwell)
   endif
 endif
 
-NVCC_FLAGS := \
+# Base flags common to every COMPILE. $(ARCH) is intentionally left out here so
+# per-object overrides can swap the gencode list without modifying the rest.
+NVCC_FLAGS_BASE := \
   -O3 -std=c++20 -Xcompiler -fPIC -Xcompiler -fvisibility=hidden \
   -Xcompiler -ffile-prefix-map=$(realpath $(SRC)/../..)=pearl \
-  $(ARCH) \
   -U__CUDA_NO_HALF_OPERATORS__ \
   -U__CUDA_NO_HALF_CONVERSIONS__ \
   -U__CUDA_NO_BFLOAT16_OPERATORS__ \
@@ -255,9 +256,24 @@ NVCC_FLAGS := \
   --expt-relaxed-constexpr \
   --expt-extended-lambda \
   --use_fast_math \
-  --threads $(NVCC_THREADS) \
   -include $(PRELUDE) \
   $(INCLUDES) $(DEFINES)
+
+# Default architecture list for the link step and for TUs with no override.
+LINK_ARCH := $(ARCH)
+NVCC_FILE_ARCH := $(ARCH)
+
+# On Blackwell the portable int8 GEMM uses the hard-coded SM80 IMMA atom
+# (SM80_16x8x32_S32S8S8S32_TN). Embedding that atom into an sm_120a cubin can
+# trigger CUTLASS arch-conditional MMA assertions on RTX 5090 / WSL2.
+# Compile the affected helper TUs only for the SM80 ISA; the CUDA loader will
+# run the sm_80 cubin via forward compatibility on SM120, where Ampere-style
+# mma.sync is supported (consumer Blackwell has no TMEM/UMMA path).
+ifeq ($(PEARL_GEMM_ARCH),blackwell)
+PORTABLE_SM80_ONLY_ARCH := \
+  -gencode=arch=compute_80,code=sm_80 \
+  -gencode=arch=compute_89,code=sm_89
+endif
 
 # Sources — everything pearl_capi_* needs.
 # Excludes: csrc/gemm/pearl_gemm_api.cpp (pybind shell, depends on libtorch)
@@ -366,19 +382,23 @@ all: $(TARGET)
 
 $(TARGET): $(STATIC_SWITCH_HEADERS) $(OBJS) | $(BUILD)
 	$(NVCC) -shared -Xcompiler -fPIC -Xlinker --no-undefined \
-	  $(ARCH) -o $@ $(OBJS) $(LDLIBS)
+	  $(LINK_ARCH) -o $@ $(OBJS) $(LDLIBS)
 	@echo "==> $@"
 	@ls -lh $@
 	@echo "==> ldd:"
 	@ldd $@ | sed 's/^/    /' || true
 
+$(BUILD)/portable/portable_int8_gemm.cu.o: $(SRC)/portable/portable_int8_gemm.cu | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(NVCC_FLAGS_BASE) $(if $(PORTABLE_SM80_ONLY_ARCH),$(PORTABLE_SM80_ONLY_ARCH),$(NVCC_FILE_ARCH)) --threads $(NVCC_THREADS) -c $< -o $@
+
 $(BUILD)/%.cu.o: $(SRC)/%.cu | $(BUILD)
 	@mkdir -p $(dir $@)
-	$(NVCC) $(NVCC_FLAGS) -c $< -o $@
+	$(NVCC) $(NVCC_FLAGS_BASE) $(NVCC_FILE_ARCH) --threads $(NVCC_THREADS) -c $< -o $@
 
 $(BUILD)/%.cpp.o: $(SRC)/%.cpp | $(BUILD)
 	@mkdir -p $(dir $@)
-	$(NVCC) $(NVCC_FLAGS) -x cu -c $< -o $@
+	$(NVCC) $(NVCC_FLAGS_BASE) $(NVCC_FILE_ARCH) --threads $(NVCC_THREADS) -x cu -c $< -o $@
 
 $(STATIC_SWITCH_HEADERS): generate-static-switches
 
