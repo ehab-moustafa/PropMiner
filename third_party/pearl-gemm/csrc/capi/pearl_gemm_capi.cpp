@@ -12,6 +12,7 @@
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
@@ -417,6 +418,34 @@ void destroy_iter_graph(PearlCapiWorkspace* ws) {
   }
   ws->graph_ready = false;
   ws->graph_batch_count = 0;
+}
+
+bool pearl_gemm_debug_enabled() {
+  static int cached = -1;
+  if (cached < 0) {
+    const char* e = std::getenv("PEARL_GEMM_DEBUG");
+    cached = (e && e[0] && e[0] != '0') ? 1 : 0;
+  }
+  return cached == 1;
+}
+
+int warmup_kernels_before_graph_capture() {
+#if defined(PEARL_GEMM_PORTABLE) && \
+    (defined(PEARL_GEMM_BLACKWELL) || defined(PEARL_GEMM_AMPERE) || \
+     defined(PEARL_GEMM_ADA))
+  cudaError_t werr = pearl::consumer::warmup_transcript_kernel_consumer_attrs();
+  if (werr != cudaSuccess) {
+    fprintf(stderr,
+            "[pearl-gemm] warmup_transcript_kernel_consumer_attrs failed: %s\n",
+            cudaGetErrorString(werr));
+    return -51;
+  }
+  if (pearl_gemm_debug_enabled()) {
+    fprintf(stderr,
+            "[pearl-gemm] warmup OK (transcript consumer kernel attrs)\n");
+  }
+#endif
+  return 0;
 }
 
 }  // namespace
@@ -1187,6 +1216,10 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch(
   return 0;
 }
 
+PEARL_CAPI_EXPORT int pearl_capi_warmup_cuda_kernels() {
+  return warmup_kernels_before_graph_capture();
+}
+
 PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
     void*        workspace_ptr,
     void* const* host_signal_header_pinned_batch,
@@ -1243,6 +1276,14 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
     return -43;
   }
 
+  {
+    int wrc = warmup_kernels_before_graph_capture();
+    if (wrc != 0) {
+      destroy_iter_graph(ws);
+      return wrc;
+    }
+  }
+
   bool capturing = false;
   auto abort_capture = [&]() {
     if (capturing) {
@@ -1260,6 +1301,9 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
     return -44;
   }
   capturing = true;
+  if (pearl_gemm_debug_enabled()) {
+    fprintf(stderr, "[pearl-gemm] graph_prepare: begin capture count=%d\n", count);
+  }
 
   err = cudaMemcpyAsync(ws->graph_seed_lo_dev, ws->graph_seed_lo_host,
                         sizeof(uint64_t), cudaMemcpyHostToDevice, stream);
@@ -1324,6 +1368,9 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
     ng.host_signal_header_pinned = host_signal_header_pinned_batch[i];
     rc = pearl_capi_noisy_gemm(&ng, stream_void);
     if (rc != 0) {
+      fprintf(stderr,
+              "[pearl-gemm] graph_prepare noisy_gemm iter=%d failed rc=%d cuda=%s\n",
+              i, rc, cudaGetErrorString(cudaGetLastError()));
       abort_capture();
       return rc;
     }
@@ -1436,6 +1483,14 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
     return -43;
   }
 
+  {
+    int wrc = warmup_kernels_before_graph_capture();
+    if (wrc != 0) {
+      destroy_iter_graph(ws);
+      return wrc;
+    }
+  }
+
   bool capturing = false;
   auto abort_capture = [&]() {
     if (capturing) {
@@ -1455,6 +1510,9 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
     return -44;
   }
   capturing = true;
+  if (pearl_gemm_debug_enabled()) {
+    fprintf(stderr, "[pearl-gemm] graph_prepare_ex: begin capture count=%d\n", count);
+  }
 
   // NO cudaMemcpyAsync seed copy here.  The caller uploads seeds off the
   // critical path using a separate copy stream.
@@ -1515,6 +1573,9 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
     ng.host_signal_header_pinned = host_signal_header_pinned_batch[i];
     rc = pearl_capi_noisy_gemm(&ng, stream_void);
     if (rc != 0) {
+      fprintf(stderr,
+              "[pearl-gemm] graph_prepare_ex noisy_gemm iter=%d failed rc=%d cuda=%s\n",
+              i, rc, cudaGetErrorString(cudaGetLastError()));
       abort_capture();
       return rc;
     }

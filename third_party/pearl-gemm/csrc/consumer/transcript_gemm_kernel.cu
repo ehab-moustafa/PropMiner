@@ -721,5 +721,11 @@ cudaError_t launch_transcript_gemm_headless(
   return cudaGetLastError();
 }
 
+// Host-side warmup: cudaFuncSetAttribute is illegal inside graph capture.
+// Call once before cudaStreamBeginCapture (graph prepare / σ-install).
+cudaError_t warmup_transcript_kernel_consumer_attrs() {
+  return ensure_transcript_kernel_attrs(sizeof(SharedStorage));
+}
+
 }  // namespace consumer
 }  // namespace pearl

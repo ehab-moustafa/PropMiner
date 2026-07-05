@@ -330,6 +330,11 @@ int pearl_capi_iter_batch(void*         workspace,
 // batch shape and fixed host header slots into the workspace. Launch replays
 // the graph for a new consecutive seed range. If `count` differs from the
 // prepared batch count, callers should use pearl_capi_iter_batch instead.
+
+// Pre-set kernel attributes (dynamic smem, carveout) before graph capture.
+// cudaFuncSetAttribute is illegal while a stream is capturing.
+int pearl_capi_warmup_cuda_kernels();
+
 int pearl_capi_iter_batch_graph_prepare(
     void*         workspace,
     void* const*  host_signal_header_pinned_batch,

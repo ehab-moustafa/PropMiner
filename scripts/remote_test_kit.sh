@@ -23,6 +23,7 @@ set -euo pipefail
 export NVIDIA_VISIBLE_DEVICES="${NVIDIA_VISIBLE_DEVICES:-all}"
 export NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
 export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-2}"
+export PEARL_GEMM_DEBUG="${PEARL_GEMM_DEBUG:-1}"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${ROOT}/build_remote_test"
@@ -263,8 +264,18 @@ fi
 if [[ -x "${ROOT}/propminer" && -f "${ROOT}/libpearl_gemm_capi.so" && -f "${ROOT}/libpearl_mining_capi.so" ]]; then
     echo "[build] Prebuilt binaries found. Skipping CMake build." | tee -a "${RESULTS_DIR}/summary.txt"
     mkdir -p "${BUILD_DIR}"
-    cp -v "${ROOT}/propminer" "${ROOT}/libpearl_gemm_capi.so" "${ROOT}/libpearl_mining_capi.so" "${BUILD_DIR}/" \
+    cp -v "${ROOT}/libpearl_gemm_capi.so" "${ROOT}/libpearl_mining_capi.so" "${BUILD_DIR}/" \
         | tee -a "${RESULTS_DIR}/summary.txt"
+    if cp -v "${ROOT}/propminer" "${BUILD_DIR}/" 2>/dev/null; then
+        :
+    elif [[ -x "${BUILD_DIR}/propminer" ]]; then
+        echo "[build] propminer copy skipped (binary busy); reusing ${BUILD_DIR}/propminer" \
+            | tee -a "${RESULTS_DIR}/summary.txt"
+    else
+        echo "[build] ERROR: cannot copy propminer and no usable binary in ${BUILD_DIR}" \
+            | tee -a "${RESULTS_DIR}/summary.txt"
+        exit 1
+    fi
 else
     echo "[build] Configuring CMake for sm_120..." | tee -a "${RESULTS_DIR}/summary.txt"
     rm -rf "${BUILD_DIR}"

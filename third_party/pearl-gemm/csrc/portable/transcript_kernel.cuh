@@ -90,6 +90,9 @@ cudaError_t launch_transcript_gemm_headless(
     HostSignalHeader* host_signal_header_pinned,
     cudaStream_t stream);
 
+// Set dynamic smem / cluster attrs before graph capture (not capturable).
+cudaError_t warmup_transcript_kernel_consumer_attrs();
+
 }  // namespace consumer
 
 namespace legacy {

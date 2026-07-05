@@ -73,14 +73,9 @@ int int8_matmul_into_fp16_div(
             rc, M, N, K);
     return rc;
   }
-  // Surface async kernel faults from the matmul before launching the epilogue.
-  cudaError_t sync_err = cudaStreamSynchronize(stream);
-  if (sync_err != cudaSuccess) {
-    fprintf(stderr,
-            "[pearl-gemm] int8_matmul_into_fp16_div matmul sync failed: %s M=%d N=%d K=%d\n",
-            cudaGetErrorString(sync_err), M, N, K);
-    return -113;
-  }
+  // Do NOT cudaStreamSynchronize here — illegal during CUDA graph capture
+  // (pearl_capi_iter_batch_graph_prepare*).  Async errors surface on the
+  // next capturable op or at stream sync outside capture.
   int64_t n = (int64_t)M * (int64_t)N;
   int block = 256;
   int64_t grid = (n + block - 1) / block;
