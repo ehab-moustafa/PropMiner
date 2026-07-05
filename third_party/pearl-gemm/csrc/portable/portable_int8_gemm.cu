@@ -35,9 +35,6 @@
 #include <cute/atom/copy_atom.hpp>
 #include <cute/tensor.hpp>
 #include <cutlass/arch/mma_sm80.h>
-#if defined(PEARL_GEMM_SM120_NATIVE) && PEARL_GEMM_SM120_NATIVE
-#include <cutlass/arch/mma_sm120.h>
-#endif
 
 namespace pearl::capi::portable {
 
