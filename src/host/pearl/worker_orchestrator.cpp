@@ -350,12 +350,31 @@ int WorkerOrchestrator::run() {
         });
     }
 
+    const bool bench_mode = cfg_.speed_test_seconds > 0;
+    uint32_t bench_target_nbits = 0;
+    std::shared_ptr<SigmaContext> bench_ctx;
+    if (bench_mode) {
+        Job job;
+        job.sigma.fill(0xab);
+        job.b_seed.fill(0xcd);
+        job.config = tuned_config;
+        job.job_key = derive_job_key(job.sigma, tuned_config);
+        job.audit_k = 4;
+        job.target_nbits = 0x01111111;
+        bench_target_nbits = job.target_nbits;
+        bench_ctx = std::make_shared<SigmaContext>(job, tuned_config);
+        std::cerr << "[orchestrator] Benchmark mode: local job, no pool connection\n";
+    }
+
     for (int idx : indices) {
         auto w = std::make_unique<GpuWorker>(idx, static_cast<int>(workers_.size()),
                                              tuned_config, this);
         w->set_matmuls_per_poll(tuned_batch);
         if (watchdog_) w->set_watchdog(watchdog_.get());
-        if (const uint32_t nbits = pending_target_nbits_.load()) {
+        if (bench_ctx) {
+            w->set_sigma(bench_ctx);
+            w->set_target_nbits(bench_target_nbits);
+        } else if (const uint32_t nbits = pending_target_nbits_.load()) {
             w->set_target_nbits(nbits);
         }
         workers_.push_back(std::move(w));
@@ -363,9 +382,11 @@ int WorkerOrchestrator::run() {
 
     for (auto& w : workers_) w->start();
 
-    threads_.emplace_back(&WorkerOrchestrator::network_thread_func, this);
-    threads_.emplace_back(&WorkerOrchestrator::share_sender_thread_func, this);
-    threads_.emplace_back(&WorkerOrchestrator::heartbeat_thread_func, this);
+    if (!bench_mode) {
+        threads_.emplace_back(&WorkerOrchestrator::network_thread_func, this);
+        threads_.emplace_back(&WorkerOrchestrator::share_sender_thread_func, this);
+        threads_.emplace_back(&WorkerOrchestrator::heartbeat_thread_func, this);
+    }
 
     // Stats loop.
     while (!stop_flag_) {
