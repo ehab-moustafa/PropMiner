@@ -13,6 +13,7 @@
 #include "grpc_client.h"
 #include "job_bus.h"
 #include "pearl_types.h"
+#include "watchdog.h"
 
 namespace pearl {
 
@@ -44,10 +45,10 @@ public:
     // Async stop.
     void stop();
 
-    // IShareSink implementation.
+    // IShareSink implementation — queues raw share for async build/send.
     void submit(const ShareFound& share) override;
 
-    // Current aggregate hashrate (H/s).
+    // Current aggregate hashrate (H/s, DAF-normalized tiles/s).
     double total_hashrate() const;
 
 private:
@@ -60,10 +61,14 @@ private:
     bool ensure_connected_and_registered();
     std::vector<proto::GpuCard> enumerate_gpu_cards();
 
+    static constexpr double kTmadsToHashesPerSec = 1e12;
+
     Config cfg_;
     std::unique_ptr<PearlGrpcClient> client_;
+    std::unique_ptr<Watchdog> watchdog_;
     JobBus bus_;
     std::vector<std::unique_ptr<GpuWorker>> workers_;
+    std::vector<std::string> gpu_uuids_;
     std::vector<std::thread> threads_;
 
     std::atomic<bool> stop_flag_{false};
@@ -77,10 +82,10 @@ private:
     std::string session_token_;
     uint64_t miner_event_seq_ = 1;
 
-    // Share queue.
+    // Share queue: raw ShareFound built/sent on share_sender thread.
     std::mutex share_mtx_;
     std::condition_variable share_cv_;
-    std::vector<std::vector<uint8_t>> pending_shares_;
+    std::vector<ShareFound> pending_share_found_;
 };
 
 } // namespace pearl

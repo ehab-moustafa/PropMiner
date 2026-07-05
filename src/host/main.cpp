@@ -63,11 +63,17 @@ static int run_self_test() {
         return 1;
     }
 
-    MiningConfig cfg;
-    cfg.m = 2048;
-    cfg.n = 4096;
-    cfg.k = 128;
-    cfg.r = 128;
+    const char* prod_env = std::getenv("PROP_MINER_SELF_TEST_PROD");
+    const bool prod_mode = prod_env && prod_env[0] == '1';
+
+    MiningConfig cfg = prod_mode ? rtx5090_mining_config()
+                                 : MiningConfig{};
+    if (!prod_mode) {
+        cfg.m = 2048;
+        cfg.n = 4096;
+        cfg.k = 128;
+        cfg.r = 128;
+    }
 
     Job job;
     job.sigma.fill(0xab);
@@ -75,7 +81,6 @@ static int run_self_test() {
     job.config = cfg;
     job.job_key = derive_job_key(job.sigma, cfg);
     job.audit_k = 4;
-    // Very easy target: top byte zero -> 1/256 chance per tile transcript.
     job.target_nbits = 0x01111111;
 
     auto ctx = std::make_shared<SigmaContext>(job, cfg);
@@ -83,11 +88,11 @@ static int run_self_test() {
     GpuWorker worker(0, 0, cfg, &sink);
     worker.set_sigma(ctx);
     worker.set_target_nbits(job.target_nbits);
-    worker.set_matmuls_per_poll(8);
+    worker.set_matmuls_per_poll(prod_mode ? 8 : 8);
     worker.start();
 
     ShareFound share;
-    bool ok = sink.wait(share, 120);
+    bool ok = sink.wait(share, prod_mode ? 180 : 120);
     worker.stop();
 
     if (!ok) {
@@ -95,16 +100,26 @@ static int run_self_test() {
         return 1;
     }
 
+    if (!share.sigma_ctx) share.sigma_ctx = ctx;
+
     bool verified = ShareBuilder::VerifyShare(share, *ctx);
-    if (verified) {
-        fprintf(stderr,
-            "[self-test] Share verified OK (nonce=%llu, rows=%zu, cols=%zu)\n",
-            (unsigned long long)share.nonce,
-            share.a_row_indices.size(), share.b_col_indices.size());
-        return 0;
+    if (!verified) {
+        fprintf(stderr, "[self-test] Share verification FAILED\n");
+        return 1;
     }
-    fprintf(stderr, "[self-test] Share verification FAILED\n");
-    return 1;
+
+    ShareBuilder builder(cfg);
+    auto proof = builder.build(share, *ctx);
+    if (proof.empty()) {
+        fprintf(stderr, "[self-test] Share build FAILED (target guard or proof)\n");
+        return 1;
+    }
+
+    fprintf(stderr,
+        "[self-test] Share verified OK (nonce=%llu, rows=%zu, cols=%zu, proof=%zu B)\n",
+        (unsigned long long)share.nonce,
+        share.a_row_indices.size(), share.b_col_indices.size(), proof.size());
+    return 0;
 }
 
 } // namespace

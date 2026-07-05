@@ -1,6 +1,7 @@
 #include "pearl_types.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <stdexcept>
 
@@ -185,6 +186,7 @@ MiningConfig MiningConfig::auto_shape_for_gpu(const cudaDeviceProp& prop,
     // preferred smem K-tile.  Blackwell defaults to kBK=128; Ampere to 64.
     if (is_ada_plus) {
         cfg.bM = 128; cfg.bN = 256; cfg.bK = 128;
+        cfg.r = 128;
     } else if (is_ampere) {
         cfg.bM = 128; cfg.bN = 128; cfg.bK = 64;
     } else {
@@ -192,6 +194,17 @@ MiningConfig MiningConfig::auto_shape_for_gpu(const cudaDeviceProp& prop,
     }
 
     return cfg;
+}
+
+void MiningConfig::warn_if_cluster_m_mismatch(int cluster_m) {
+    if (cluster_m <= 1) return;
+    const auto rows = default_rows();
+    const auto cols = default_cols();
+    std::fprintf(stderr,
+        "[config] PEARL_GEMM_CONSUMER_CLUSTER_M=%d with default periodic "
+        "pattern (rows=%u cols=%u). If shares fail claimed_hash_mismatch, "
+        "set CLUSTER_M=1 or align rows/cols_pattern with the kernel tile.\n",
+        cluster_m, rows.size(), cols.size());
 }
 
 } // namespace pearl

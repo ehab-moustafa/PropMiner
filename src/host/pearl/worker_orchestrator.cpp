@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <random>
@@ -191,18 +192,27 @@ void WorkerOrchestrator::network_thread_func() {
 
 void WorkerOrchestrator::share_sender_thread_func() {
     while (!stop_flag_) {
-        std::vector<std::vector<uint8_t>> batch;
+        std::vector<ShareFound> batch;
         {
             std::unique_lock<std::mutex> lk(share_mtx_);
-            share_cv_.wait(lk, [this] { return stop_flag_ || !pending_shares_.empty(); });
-            batch.swap(pending_shares_);
+            share_cv_.wait(lk, [this] { return stop_flag_ || !pending_share_found_.empty(); });
+            batch.swap(pending_share_found_);
         }
         if (stop_flag_) break;
-        for (auto& share : batch) {
+        for (const ShareFound& raw : batch) {
+            if (!raw.sigma_ctx) {
+                std::cerr << "share dropped: missing sigma context\n";
+                continue;
+            }
+            ShareBuilder builder(raw.job.config);
+            auto proof = builder.build(raw, *raw.sigma_ctx);
+            if (proof.empty()) {
+                std::cerr << "share dropped: stale target or build failed\n";
+                continue;
+            }
             proto::MinerEvent evt;
             evt.type = proto::MinerEventType::Share;
-            evt.payload = std::move(share);
-            // seq assignment should be serialized; simplest is to read under lock.
+            evt.payload = std::move(proof);
             {
                 std::lock_guard<std::mutex> lk(session_mtx_);
                 evt.seq = ++miner_event_seq_;
@@ -224,36 +234,28 @@ void WorkerOrchestrator::heartbeat_thread_func() {
 
         proto::Heartbeat hb;
         hb.timestamp = now_unix_ms();
-        hb.current_hashrate = total_hashrate();
-        hb.sequence_number = static_cast<uint64_t>(now_unix_ms());
-
+        double wire_total = 0.0;
         std::vector<proto::PerGpuHashrate> gpu_rates;
         for (size_t i = 0; i < workers_.size(); ++i) {
             proto::PerGpuHashrate r;
-            r.gpu_uuid = "gpu" + std::to_string(i);
-            r.hashrate_5m = workers_[i]->hashrate();
+            r.gpu_uuid = i < gpu_uuids_.size() ? gpu_uuids_[i]
+                                               : ("gpu" + std::to_string(i));
+            const double wire_hr = workers_[i]->tmads_per_sec() * kTmadsToHashesPerSec;
+            r.hashrate_5m = wire_hr;
             r.shares_5m = 0;
+            wire_total += wire_hr;
             gpu_rates.push_back(r);
         }
+        hb.current_hashrate = wire_total;
+        hb.sequence_number = static_cast<uint64_t>(now_unix_ms());
         hb.gpu_hashrates = std::move(gpu_rates);
         client_->send_heartbeat(hb);
     }
 }
 
 void WorkerOrchestrator::submit(const ShareFound& share) {
-    if (!share.sigma_ctx) {
-        std::cerr << "share dropped: missing sigma context at finalize\n";
-        return;
-    }
-    ShareBuilder builder(share.job.config);
-    auto proof = builder.build(share, *share.sigma_ctx);
-    if (proof.empty()) {
-        std::cerr << "share dropped: stale target or build failed\n";
-        return;
-    }
-
     std::lock_guard<std::mutex> lk(share_mtx_);
-    pending_shares_.push_back(std::move(proof));
+    pending_share_found_.push_back(share);
     share_cv_.notify_one();
 }
 
@@ -281,6 +283,12 @@ int WorkerOrchestrator::run() {
     int tuned_batch = cfg_.batch_size;
     int tuned_cluster_m = 1;
     int tuned_carveout = -1;
+
+    const char* cluster_env = std::getenv("PEARL_GEMM_CONSUMER_CLUSTER_M");
+    if (cluster_env && cluster_env[0]) {
+        tuned_cluster_m = std::max(1, std::atoi(cluster_env));
+    }
+    MiningConfig::warn_if_cluster_m_mismatch(tuned_cluster_m);
 
     TuneCache tune_cache;
     if (cfg_.autotune && cfg_.speed_test_seconds == 0) {
@@ -327,10 +335,26 @@ int WorkerOrchestrator::run() {
         }
     }
 
+    const auto gpu_cards = enumerate_gpu_cards();
+    gpu_uuids_.clear();
+    for (const auto& c : gpu_cards) gpu_uuids_.push_back(c.uuid);
+
+    if (cfg_.enable_watchdog) {
+        watchdog_ = std::make_unique<Watchdog>();
+        watchdog_->start([this]() {
+            std::cerr << "[watchdog] stall detected — republishing current job\n";
+            auto entry = bus_.drain_latest();
+            if (entry.ctx) {
+                for (auto& w : workers_) w->set_sigma(entry.ctx);
+            }
+        });
+    }
+
     for (int idx : indices) {
         auto w = std::make_unique<GpuWorker>(idx, static_cast<int>(workers_.size()),
                                              tuned_config, this);
         w->set_matmuls_per_poll(tuned_batch);
+        if (watchdog_) w->set_watchdog(watchdog_.get());
         if (const uint32_t nbits = pending_target_nbits_.load()) {
             w->set_target_nbits(nbits);
         }
@@ -362,6 +386,7 @@ int WorkerOrchestrator::run() {
     }
 
     stop();
+    if (watchdog_) watchdog_->stop();
     for (auto& t : threads_) if (t.joinable()) t.join();
     for (auto& w : workers_) w->stop();
     return 0;

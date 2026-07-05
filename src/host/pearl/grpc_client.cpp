@@ -429,10 +429,10 @@ bool PearlGrpcClient::register_miner(const proto::RegisterRequest& req, proto::R
     if (!impl_->connected_) return impl_->set_error("not connected");
     uint32_t sid = impl_->next_stream_id_;
     impl_->next_stream_id_ += 2;
-    if (!impl_->send_headers(sid, "/pearlpool.mining.v2.MinerService/Register", true))
+    if (!impl_->send_headers(sid, "/pearlpool.mining.v2.MinerService/Register", false))
         return false;
     auto body = req.encode();
-    if (!impl_->send_data_message(sid, body, false)) return false;
+    if (!impl_->send_data_message(sid, body, true)) return false;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(impl_->opts.connect_timeout_ms);
     std::vector<uint8_t> response_body;
     while (std::chrono::steady_clock::now() < deadline) {

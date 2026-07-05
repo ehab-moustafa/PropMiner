@@ -15,6 +15,8 @@
 
 namespace pearl {
 
+class Watchdog;
+
 // Callback interface for found shares.
 class IShareSink {
 public:
@@ -47,7 +49,10 @@ public:
     void set_matmuls_per_poll(int mpp);
 
     double hashrate() const;
+    double tmads_per_sec() const { return tmads_per_sec_.load(); }
     uint64_t total_iters() const { return total_iters_.load(); }
+
+    void set_watchdog(Watchdog* wd) { watchdog_ = wd; }
 
 private:
     struct HalfBuffers {
@@ -107,6 +112,9 @@ private:
                         const std::vector<uint8_t>& header,
                         uint64_t nonce);
 
+    // Scan batch for all PoW hits (status==1). Caller must sync stream first.
+    std::vector<int> scan_winners(HalfBuffers& half, int batch);
+
     void check_cuda(CUresult r, const char* msg);
 
     int device_index_;
@@ -143,7 +151,10 @@ private:
 
     std::atomic<uint64_t> total_iters_{0};
     std::atomic<double> hashrate_{0.0};
+    std::atomic<double> tmads_per_sec_{0.0};
     std::atomic<double> last_iter_ms_{0.0};
+
+    Watchdog* watchdog_ = nullptr;
 
     // Per-GPU nonce-space base.  The high 16 bits encode gpu_index so different
     // GPUs never collide; low 32 bits are incremented each batch.

@@ -373,16 +373,19 @@ void GpuWorker::upload_next_seed_async(HalfBuffers& half, uint64_t seed_lo) {
 }
 
 int GpuWorker::sync_and_scan(HalfBuffers& half, int batch) {
-    check_cuda(cuStreamSynchronize(half.stream), "sync batch");
+    auto winners = scan_winners(half, batch);
+    return winners.empty() ? -1 : winners[0];
+}
+
+std::vector<int> GpuWorker::scan_winners(HalfBuffers& half, int batch) {
+    std::vector<int> winners;
     for (int k = 0; k < batch; ++k) {
-        // Kernel writes the winning signal into cudaHostAlloc'd host_headers[k].
-        // host_header_storage is a host-side mirror used by HostSignalHeader.
         std::memcpy(half.host_header_storage[k].data(),
                     half.host_headers[k], half.header_size);
         HostSignalHeader hdr(half.host_header_storage[k]);
-        if (hdr.status() == 1) return k;
+        if (hdr.status() == 1) winners.push_back(k);
     }
-    return -1;
+    return winners;
 }
 
 bool GpuWorker::wait_for_batch(HalfBuffers& half, int timeout_ms) {
@@ -574,19 +577,28 @@ void GpuWorker::run() {
         // a share is found.
         wait_for_batch(*other, /*timeout_ms=*/10);
 
-        int winner = sync_and_scan(*other, batch);
-        if (winner >= 0) {
+        check_cuda(cuStreamSynchronize(other->stream), "sync batch");
+        const auto winners = scan_winners(*other, batch);
+        for (int winner : winners) {
             handle_trigger(*other, *current_sigma,
                            other->host_header_storage[winner],
                            other->batch_seed_start + static_cast<uint64_t>(winner));
         }
+        if (watchdog_) watchdog_->heartbeat();
 
         uint64_t t1 = now_ms();
         double ms = static_cast<double>(t1 - t0);
         last_iter_ms_.store(ms);
-        // Each iter is m*n*k MACs; hashrate in MAC/s.
-        double ops_per_iter = static_cast<double>(cfg_.m) * cfg_.n * cfg_.k * 2.0;
-        hashrate_.store(ops_per_iter / (ms / 1000.0));
+        if (ms > 0.0) {
+            const double sec = ms / 1000.0;
+            const double ips = static_cast<double>(batch) / sec;
+            const double tmads = static_cast<double>(cfg_.m) * cfg_.n * cfg_.k * ips / 1e12;
+            const double tiles_per_iter =
+                static_cast<double>(cfg_.m / cfg_.bM) * (cfg_.n / cfg_.bN);
+            const double tiles_per_sec = ips * tiles_per_iter;
+            tmads_per_sec_.store(tmads);
+            hashrate_.store(tiles_per_sec * cfg_.difficulty_adjustment_factor());
+        }
 
         std::swap(ping, pong);
     }

@@ -49,8 +49,8 @@ struct MiningConfig {
     int32_t k = 128;
 
     // Sparse-noise rank used by the proof-time noise generator.
-    // Matches the protocol default of 64.
-    int32_t r = 64;
+    // Matches akoya-miner default of 128.
+    int32_t r = 128;
 
     // Committed hash-tile periodic pattern. MUST match the kernel's actual tile.
     PeriodicPattern rows_pattern;
@@ -91,6 +91,8 @@ struct MiningConfig {
     // compute intensity high.  budget_bytes = 0 means "use defaults".
     static MiningConfig auto_shape_for_gpu(const cudaDeviceProp& prop,
                                             size_t budget_bytes = 0);
+
+    static void warn_if_cluster_m_mismatch(int cluster_m);
 
     uint32_t tensor_hash_num_blocks(int64_t matrix_bytes) const {
         uint32_t threads = tensor_hash_threads;
