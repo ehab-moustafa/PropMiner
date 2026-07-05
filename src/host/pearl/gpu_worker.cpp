@@ -10,6 +10,7 @@
 #include "merkle_utils.h"
 #include "pearl_blake3.h"
 #include "pow_target_utils.h"
+#include "watchdog.h"
 
 // For cuda runtime helpers (events, graph).  CUstream and cudaStream_t are
 // interchangeable pointers in the CUDA driver/runtime interop layer.
