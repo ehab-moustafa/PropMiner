@@ -366,9 +366,15 @@ int WorkerOrchestrator::run() {
         bench_ctx = std::make_shared<SigmaContext>(job, tuned_config);
         // Full production batch (20) can take >2 min per graph launch on WSL2.
         // Use a smaller batch so at least one completes inside the bench window.
-        tuned_batch = std::min(tuned_batch, 4);
+        int bench_batch = 4;
+        if (const char* bb = std::getenv("PROPMINER_BENCH_BATCH")) {
+            bench_batch = std::max(1, std::atoi(bb));
+        }
+        tuned_batch = bench_batch;
+        const bool bench_graph = !std::getenv("PROPMINER_BENCH_NO_GRAPH");
         std::cerr << "[orchestrator] Benchmark mode: local job, no pool connection"
-                  << " (bench batch=" << tuned_batch << ")\n";
+                  << " (batch=" << tuned_batch
+                  << " graph=" << (bench_graph ? "on" : "off") << ")\n";
     }
 
     for (int idx : indices) {
@@ -403,8 +409,14 @@ int WorkerOrchestrator::run() {
         if (cfg_.speed_test_seconds > 0) {
             static int elapsed = 0;
             elapsed += 5;
+            if (h == 0.0 && elapsed >= 30 && (elapsed % 30 == 0)) {
+                std::cerr << "[bench] " << elapsed << "s elapsed, still awaiting first "
+                          << "batch completion (check nvidia-smi for GPU util)\n";
+            }
             if (elapsed >= cfg_.speed_test_seconds) {
                 std::cout << "benchmark complete: " << h << " H/s" << std::endl;
+                std::cerr << "[bench] finished after " << elapsed << "s, final "
+                          << h << " H/s\n";
                 stop();
                 break;
             }

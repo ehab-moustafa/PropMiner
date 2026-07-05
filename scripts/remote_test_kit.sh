@@ -258,23 +258,73 @@ else
     sleep 3600
 fi
 
-# ── 6. Hashrate benchmark ──────────────────────────────────────────────────
+# ── 6. Hashrate benchmark (with fallbacks) ─────────────────────────────────
+extract_bench_rate() {
+    local logfile="${1}"
+    grep 'benchmark complete:' "${logfile}" 2>/dev/null \
+        | tail -1 | grep -oE '[0-9.]+' | head -1 || echo "0"
+}
+
+run_benchmark_attempt() {
+    local attempt="${1}" batch="${2}" graph="${3}" seconds="${4}" logfile="${5}"
+    export PROPMINER_BENCH_BATCH="${batch}"
+    if [[ "${graph}" == "off" ]]; then
+        export PROPMINER_BENCH_NO_GRAPH=1
+    else
+        unset PROPMINER_BENCH_NO_GRAPH || true
+    fi
+    echo "[bench] attempt ${attempt}: batch=${batch} graph=${graph} duration=${seconds}s" \
+        | tee -a "${RESULTS_DIR}/summary.txt"
+    set +o pipefail
+    run_propminer "${BUILD_DIR}/propminer" --bench "${seconds}" --rtx5090 --gpus 0 \
+        | tee "${logfile}"
+    local rc=${PIPESTATUS[0]}
+    set -o pipefail
+    local rate
+    rate="$(extract_bench_rate "${logfile}")"
+    echo "[bench] attempt ${attempt} result: ${rate} H/s (exit=${rc})" \
+        | tee -a "${RESULTS_DIR}/summary.txt"
+  tail -15 "${logfile}" | tee -a "${RESULTS_DIR}/summary.txt"
+    echo "${rate}"
+}
+
 if [[ "${SKIP_BENCH}" == "1" ]]; then
     echo "[bench] Skipped (PROPMINER_SKIP_BENCH=1)." | tee -a "${RESULTS_DIR}/summary.txt"
 else
-echo "[bench] Running ${BENCH_SECONDS}s hashrate benchmark..." | tee -a "${RESULTS_DIR}/summary.txt"
-set +o pipefail
-run_propminer "${BUILD_DIR}/propminer" --bench "${BENCH_SECONDS}" --rtx5090 --gpus 0 \
-    | tee "${RESULTS_DIR}/benchmark.log"
-bench_rc=${PIPESTATUS[0]}
-set -o pipefail
-if [[ "${bench_rc}" -ne 0 ]]; then
-    echo "[bench] propminer exited ${bench_rc} (see benchmark.log)" | tee -a "${RESULTS_DIR}/summary.txt"
-fi
-tail -40 "${RESULTS_DIR}/benchmark.log" | tee -a "${RESULTS_DIR}/summary.txt"
+echo "[bench] Running hashrate benchmark (up to 3 attempts)..." | tee -a "${RESULTS_DIR}/summary.txt"
 
-# Extract hashrate line if present.
-grep -iE "hash|th/s|gh/s|mh/s|h/s" "${RESULTS_DIR}/benchmark.log" | tail -20 | tee "${RESULTS_DIR}/benchmark_hashrate.txt" || true
+BEST_RATE=0
+BEST_LABEL=""
+
+RATE=$(run_benchmark_attempt 1 4 on "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark.log")
+RATE_INT=$(printf '%.0f' "${RATE:-0}")
+if (( RATE_INT > 0 )); then
+    BEST_RATE=${RATE_INT}
+    BEST_LABEL="batch=4 graph=on"
+else
+    echo "[bench] attempt 1 yielded 0 — trying batch=1..." | tee -a "${RESULTS_DIR}/summary.txt"
+    RATE=$(run_benchmark_attempt 2 1 on 60 "${RESULTS_DIR}/benchmark_try2.log")
+    RATE_INT=$(printf '%.0f' "${RATE:-0}")
+    if (( RATE_INT > BEST_RATE )); then
+        BEST_RATE=${RATE_INT}
+        BEST_LABEL="batch=1 graph=on"
+    fi
+fi
+
+if (( BEST_RATE == 0 )); then
+    echo "[bench] attempts 1-2 yielded 0 — trying batch=4 graph=off..." \
+        | tee -a "${RESULTS_DIR}/summary.txt"
+    RATE=$(run_benchmark_attempt 3 4 off 60 "${RESULTS_DIR}/benchmark_try3.log")
+    RATE_INT=$(printf '%.0f' "${RATE:-0}")
+    if (( RATE_INT > BEST_RATE )); then
+        BEST_RATE=${RATE_INT}
+        BEST_LABEL="batch=4 graph=off"
+    fi
+fi
+
+echo "[bench] best: ${BEST_LABEL} (${BEST_RATE} H/s)" | tee -a "${RESULTS_DIR}/summary.txt"
+grep -iE 'hash|benchmark complete|first batch' "${RESULTS_DIR}"/benchmark*.log 2>/dev/null \
+    | tail -30 | tee "${RESULTS_DIR}/benchmark_hashrate.txt" || true
 fi
 
 # ── 7. ncu profiling (optional) ────────────────────────────────────────────

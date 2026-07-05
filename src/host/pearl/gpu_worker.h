@@ -156,7 +156,10 @@ private:
 
     Watchdog* watchdog_ = nullptr;
 
-    // Per-GPU nonce-space base.  The high 16 bits encode gpu_index so different
+    bool logged_first_queue_ = false;
+    bool logged_first_hashrate_ = false;
+
+    // Per-GPU nonce-space base.
     // GPUs never collide; low 32 bits are incremented each batch.
     uint64_t seed_base_ = 0;
 

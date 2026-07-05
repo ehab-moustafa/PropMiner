@@ -1,6 +1,7 @@
 #include "gpu_worker.h"
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <thread>
 
@@ -311,6 +312,12 @@ void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
 void GpuWorker::prepare_graph(HalfBuffers& half) {
     int batch = matmuls_per_poll_.load();
     if (batch <= 0 || half.workspace == nullptr) return;
+    if (std::getenv("PROPMINER_BENCH_NO_GRAPH")) {
+        half.graph_ready = false;
+        half.graph_batch_count = 0;
+        std::fprintf(stderr, "[gpu] cuda graph disabled (PROPMINER_BENCH_NO_GRAPH)\n");
+        return;
+    }
     // Reset headers to a known state before capture.
     for (int i = 0; i < batch; ++i) {
         std::memset(half.host_headers[i], 0, half.header_size);
@@ -553,6 +560,12 @@ void GpuWorker::run() {
         HalfBuffers* other = pong;
 
         if (first) {
+            if (!logged_first_queue_) {
+                logged_first_queue_ = true;
+                std::fprintf(stderr,
+                    "[gpu] first batch queued (count=%d, graph=%s)\n",
+                    batch, cur->graph_ready ? "on" : "off");
+            }
             upload_next_seed_async(*cur, seed_base_ + global_iter);
             if (seed_copy_done_event_) {
                 cudaError_t w = cudaEventSynchronize(seed_copy_done_event_);
@@ -602,8 +615,14 @@ void GpuWorker::run() {
             const double tiles_per_iter =
                 static_cast<double>(cfg_.m / cfg_.bM) * (cfg_.n / cfg_.bN);
             const double tiles_per_sec = ips * tiles_per_iter;
+            const double hr = tiles_per_sec * cfg_.difficulty_adjustment_factor();
             tmads_per_sec_.store(tmads);
-            hashrate_.store(tiles_per_sec * cfg_.difficulty_adjustment_factor());
+            hashrate_.store(hr);
+            if (!logged_first_hashrate_ && hr > 0.0) {
+                logged_first_hashrate_ = true;
+                std::fprintf(stderr,
+                    "[gpu] first batch completed in %.0f ms -> %.0f H/s\n", ms, hr);
+            }
         }
 
         std::swap(ping, pong);

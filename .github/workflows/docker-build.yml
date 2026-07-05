@@ -60,6 +60,7 @@ jobs:
             ghcr.io/ehab-moustafa/propminer-rtx5090:v1.30-full-rtx5090
             ghcr.io/ehab-moustafa/propminer-rtx5090:v1.31-full-rtx5090
             ghcr.io/ehab-moustafa/propminer-rtx5090:v1.32-full-rtx5090
+            ghcr.io/ehab-moustafa/propminer-rtx5090:v1.33-full-rtx5090
           provenance: false
           cache-from: |
             type=gha,scope=propminer-gemm
