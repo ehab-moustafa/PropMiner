@@ -198,8 +198,8 @@ MiningConfig MiningConfig::auto_shape_for_gpu(const cudaDeviceProp& prop,
 
 void MiningConfig::warn_if_cluster_m_mismatch(int cluster_m) {
     if (cluster_m <= 1) return;
-    const auto rows = default_rows();
-    const auto cols = default_cols();
+    const auto rows = PeriodicPattern::default_rows();
+    const auto cols = PeriodicPattern::default_cols();
     std::fprintf(stderr,
         "[config] PEARL_GEMM_CONSUMER_CLUSTER_M=%d with default periodic "
         "pattern (rows=%u cols=%u). If shares fail claimed_hash_mismatch, "
