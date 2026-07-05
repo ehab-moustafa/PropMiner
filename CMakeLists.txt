@@ -156,6 +156,11 @@ add_custom_command(
 add_custom_target(stage_mining_lib ALL
     DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/libpearl_mining_capi.so")
 
+# Host executables (propminer, tests, benchmarks). Disable for Docker layer-1
+# gemm-only builds where src/host is not copied yet.
+option(PROPMINER_BUILD_HOST "Build propminer and host test/bench targets" ON)
+
+if(PROPMINER_BUILD_HOST)
 # ── Main executable ────────────────────────────────────────────────────
 add_executable(propminer
     src/host/main.cpp
@@ -295,6 +300,7 @@ install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/libpearl_gemm_capi.so"
     "${CMAKE_CURRENT_BINARY_DIR}/libpearl_mining_capi.so"
     DESTINATION bin)
+endif() # PROPMINER_BUILD_HOST
 
 # ── Build summary ──────────────────────────────────────────────────────
 message(STATUS "PropMiner v${PROJECT_VERSION}")
