@@ -1228,7 +1228,6 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
     tensor_hash_set_key(static_cast<const uint8_t*>(p.Key), stream);
   } catch (const std::exception& e) {
     fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
-    return -2;
     destroy_iter_graph(ws);
     return -42;
   }
@@ -1422,7 +1421,6 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
     tensor_hash_set_key(static_cast<const uint8_t*>(p.Key), stream);
   } catch (const std::exception& e) {
     fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
-    return -2;
     destroy_iter_graph(ws);
     return -42;
   }
