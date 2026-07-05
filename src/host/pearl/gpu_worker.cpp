@@ -377,6 +377,10 @@ void GpuWorker::upload_next_seed_async(HalfBuffers& half, uint64_t seed_lo) {
 int GpuWorker::sync_and_scan(HalfBuffers& half, int batch) {
     check_cuda(cuStreamSynchronize(half.stream), "sync batch");
     for (int k = 0; k < batch; ++k) {
+        // Kernel writes the winning signal into cudaHostAlloc'd host_headers[k].
+        // host_header_storage is a host-side mirror used by HostSignalHeader.
+        std::memcpy(half.host_header_storage[k].data(),
+                    half.host_headers[k], half.header_size);
         HostSignalHeader hdr(half.host_header_storage[k]);
         if (hdr.status() == 1) return k;
     }
