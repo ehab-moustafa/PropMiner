@@ -1229,6 +1229,68 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
   } catch (const std::exception& e) {
     fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
+    destroy_iter_graph(ws);
+    return -42;
+  }
+
+  err = cudaStreamSynchronize(stream);
+  if (err != cudaSuccess) {
+    destroy_iter_graph(ws);
+    return -43;
+  }
+
+  bool capturing = false;
+  auto abort_capture = [&]() {
+    if (capturing) {
+      cudaGraph_t aborted = nullptr;
+      (void)cudaStreamEndCapture(stream, &aborted);
+      if (aborted) cudaGraphDestroy(aborted);
+      capturing = false;
+    }
+    destroy_iter_graph(ws);
+  };
+
+  err = cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
+  if (err != cudaSuccess) {
+    destroy_iter_graph(ws);
+    return -44;
+  }
+  capturing = true;
+
+  err = cudaMemcpyAsync(ws->graph_seed_lo_dev, ws->graph_seed_lo_host,
+                        sizeof(uint64_t), cudaMemcpyHostToDevice, stream);
+  if (err != cudaSuccess) {
+    abort_capture();
+    return -45;
+  }
+
+  err = cudaMemsetAsync(p.host_signal_sync, 0, sizeof(HostSignalSync), stream);
+  if (err != cudaSuccess) {
+    abort_capture();
+    return -46;
+  }
+
+  for (int32_t i = 0; i < count; ++i) {
+    int rc = pearl_capi_lcg_int7_fill_indirect(
+        p.A, a_bytes, ws->graph_seed_lo_dev,
+        static_cast<uint64_t>(i), p.sigma_seed, stream_void);
+    if (rc != 0) {
+      abort_capture();
+      return rc;
+    }
+
+    try {
+      tensor_hash_no_key_upload(
+          static_cast<const uint8_t*>(p.A),
+          static_cast<uint32_t>(a_bytes),
+          static_cast<uint8_t*>(p.AHash),
+          static_cast<const uint8_t*>(p.Key),
+          p.th_num_blocks, p.th_threads, p.th_stages, p.th_leaves,
+          static_cast<uint8_t*>(p.Roots), *dprops, stream);
+    } catch (const std::exception& e) {
+      fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
+      abort_capture();
+      return -2;
     }
 
     rc = pearl_capi_commitment_hash_from_merkle_roots(
@@ -1361,6 +1423,66 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
   } catch (const std::exception& e) {
     fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
+    destroy_iter_graph(ws);
+    return -42;
+  }
+
+  err = cudaStreamSynchronize(stream);
+  if (err != cudaSuccess) {
+    destroy_iter_graph(ws);
+    return -43;
+  }
+
+  bool capturing = false;
+  auto abort_capture = [&]() {
+    if (capturing) {
+      cudaGraph_t aborted = nullptr;
+      (void)cudaStreamEndCapture(stream, &aborted);
+      if (aborted) cudaGraphDestroy(aborted);
+      capturing = false;
+    }
+    destroy_iter_graph(ws);
+    // Do not free seed_lo_dev — caller owns it.
+    ws->graph_seed_lo_dev = nullptr;
+  };
+
+  err = cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
+  if (err != cudaSuccess) {
+    destroy_iter_graph(ws);
+    return -44;
+  }
+  capturing = true;
+
+  // NO cudaMemcpyAsync seed copy here.  The caller uploads seeds off the
+  // critical path using a separate copy stream.
+
+  err = cudaMemsetAsync(p.host_signal_sync, 0, sizeof(HostSignalSync), stream);
+  if (err != cudaSuccess) {
+    abort_capture();
+    return -46;
+  }
+
+  for (int32_t i = 0; i < count; ++i) {
+    int rc = pearl_capi_lcg_int7_fill_indirect(
+        p.A, a_bytes, ws->graph_seed_lo_dev,
+        static_cast<uint64_t>(i), p.sigma_seed, stream_void);
+    if (rc != 0) {
+      abort_capture();
+      return rc;
+    }
+
+    try {
+      tensor_hash_no_key_upload(
+          static_cast<const uint8_t*>(p.A),
+          static_cast<uint32_t>(a_bytes),
+          static_cast<uint8_t*>(p.AHash),
+          static_cast<const uint8_t*>(p.Key),
+          p.th_num_blocks, p.th_threads, p.th_stages, p.th_leaves,
+          static_cast<uint8_t*>(p.Roots), *dprops, stream);
+    } catch (const std::exception& e) {
+      fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
+      abort_capture();
+      return -2;
     }
 
     rc = pearl_capi_commitment_hash_from_merkle_roots(
