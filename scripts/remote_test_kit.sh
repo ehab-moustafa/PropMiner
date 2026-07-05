@@ -29,6 +29,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${ROOT}/build_remote_test"
 RESULTS_DIR="${ROOT}/results"
 mkdir -p "${RESULTS_DIR}"
+PROPMINER_LOG_DIR="${RESULTS_DIR}"
+source "${ROOT}/scripts/setup_cuda_env.sh"
 
 BENCH_SECONDS=60
 SWEEP_SECONDS=15
@@ -68,87 +70,7 @@ fi
 echo "[env] ldd propminer:" | tee -a "${RESULTS_DIR}/summary.txt"
 ldd "${BUILD_DIR}/propminer" 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
 
-# ── 1b. Runtime CUDA library setup for Salad WSL2 hosts ────────────────────
-# Salad WSL2 containers need the host driver store files loaded in a specific
-# order. The runtime API needs /usr/lib/x86_64-linux-gnu/libdxcore.so plus the
-# WSL driver store .so files; libcuda_loader.so must be preloaded before
-# libcuda.so.1.1 so the loader can bridge the user-mode driver to /dev/dxg.
-BUNDLED_CUDA="/usr/local/cuda-12.8/targets/x86_64-linux/lib:/usr/local/cuda/lib64"
-WSL_DRIVER_DIRS=(/usr/lib/wsl/drivers/*)
-WSL_DRIVER_PATH="/usr/lib/wsl/drivers"
-if [[ -e /dev/dxg ]]; then
-    echo "[env] WSL2 detected (/dev/dxg present)." | tee -a "${RESULTS_DIR}/summary.txt"
-
-    # Build a list of concrete driver store libraries that exist on this host.
-    DXCORE="/usr/lib/x86_64-linux-gnu/libdxcore.so"
-    WSL_LIBS=()
-    for so in \
-        "${DXCORE}" \
-        /usr/lib/wsl/drivers/*/libnvdxgdmal.so.1 \
-        /usr/lib/wsl/drivers/*/libcuda_loader.so \
-        /usr/lib/wsl/drivers/*/libnvidia-ml_loader.so \
-        /usr/lib/wsl/drivers/*/libcuda.so.1.1; do
-        for f in ${so}; do
-            [[ -f "$f" ]] && WSL_LIBS+=("$f")
-        done
-    done
-
-    # LD_PRELOAD: dxcore first, then the WSL driver store shim libraries.
-    # This is required for the CUDA runtime API to enumerate devices through
-    # /dev/dxg on Salad containers.
-    if [[ ${#WSL_LIBS[@]} -gt 0 ]]; then
-        export LD_PRELOAD=$(IFS=:; echo "${WSL_LIBS[*]}")
-        echo "[env] Set LD_PRELOAD: ${LD_PRELOAD}" | tee -a "${RESULTS_DIR}/summary.txt"
-    fi
-
-    export LD_LIBRARY_PATH=${BUNDLED_CUDA}:${WSL_DRIVER_PATH}:${LD_LIBRARY_PATH:-}
-    echo "[env] Set LD_LIBRARY_PATH for WSL2: ${LD_LIBRARY_PATH}" | tee -a "${RESULTS_DIR}/summary.txt"
-elif [[ -e /dev/nvidia0 ]]; then
-    echo "[env] Native Linux NVIDIA detected (/dev/nvidia0 present)." | tee -a "${RESULTS_DIR}/summary.txt"
-    export LD_LIBRARY_PATH=${BUNDLED_CUDA}:${LD_LIBRARY_PATH:-}
-    echo "[env] Set LD_LIBRARY_PATH for native Linux: ${LD_LIBRARY_PATH}" | tee -a "${RESULTS_DIR}/summary.txt"
-else
-    echo "[env] No GPU device nodes found. Will try bundled CUDA runtime." | tee -a "${RESULTS_DIR}/summary.txt"
-    export LD_LIBRARY_PATH=${BUNDLED_CUDA}:${LD_LIBRARY_PATH:-}
-fi
-
-# ── 1c. PyTorch fallback (emergency) ───────────────────────────────────────
-# If the bundled libs still fail to init CUDA (e.g. on an untested WSL2 host),
-# install the exact PyTorch wheel set that we know works and run the binary
-# against its libraries.
-PYTORCH_CUDA_DIR="/usr/local/lib/python3.12/dist-packages/torch/lib"
-ensure_pytorch_cuda_fallback() {
-    if [[ -d "${PYTORCH_CUDA_DIR}" && -f "${PYTORCH_CUDA_DIR}/libcudart.so.12" ]]; then
-        echo "[env] PyTorch CUDA fallback already installed." | tee -a "${RESULTS_DIR}/summary.txt"
-        return 0
-    fi
-    echo "[env] Installing PyTorch CUDA runtime as fallback (this is slow, one-time)..." | tee -a "${RESULTS_DIR}/summary.txt"
-    pip install torch --index-url https://download.pytorch.org/whl/cu121 --break-system-packages \
-        > "${RESULTS_DIR}/pytorch_install.log" 2>&1 || true
-    if [[ -f "${PYTORCH_CUDA_DIR}/libcudart.so.12" ]]; then
-        echo "[env] PyTorch CUDA fallback installed." | tee -a "${RESULTS_DIR}/summary.txt"
-        return 0
-    fi
-    echo "[env] PyTorch CUDA fallback install failed." | tee -a "${RESULTS_DIR}/summary.txt"
-    return 1
-}
-
-run_propminer() {
-    local bin="${1}"
-    shift
-    # Keep stderr — hiding it caused hours of blind retries on Salad/WSL2.
-    if "${bin}" "$@" 2>>"${RESULTS_DIR}/propminer_stderr.log"; then
-        return 0
-    fi
-    echo "[env] First attempt failed. stderr tail:" | tee -a "${RESULTS_DIR}/summary.txt"
-    tail -20 "${RESULTS_DIR}/propminer_stderr.log" 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
-    echo "[env] Trying PyTorch CUDA fallback..." | tee -a "${RESULTS_DIR}/summary.txt"
-    if ensure_pytorch_cuda_fallback; then
-        LD_LIBRARY_PATH="${PYTORCH_CUDA_DIR}:${LD_LIBRARY_PATH}" "${bin}" "$@"
-        return $?
-    fi
-    return 1
-}
+setup_cuda_runtime_env
 
 if [[ "${PREBUILT}" == "true" ]]; then
     echo "[env] Using prebuilt binaries." | tee -a "${RESULTS_DIR}/summary.txt"
@@ -317,10 +239,15 @@ ls -lh "${BUILD_DIR}/propminer" "${BUILD_DIR}/libpearl_gemm_capi.so" "${BUILD_DI
 
 # ── 5. Correctness self-test (no pool, no real mining) ─────────────────────
 echo "[test] Running self-test..." | tee -a "${RESULTS_DIR}/summary.txt"
-if run_propminer "${BUILD_DIR}/propminer" --self-test --rtx5090 --gpus 0 > "${RESULTS_DIR}/self_test.log" 2>&1; then
+set +o pipefail
+run_propminer "${BUILD_DIR}/propminer" --self-test --rtx5090 --gpus 0 \
+    | tee "${RESULTS_DIR}/self_test.log"
+test_rc=${PIPESTATUS[0]}
+set -o pipefail
+if [[ "${test_rc}" -eq 0 ]]; then
     echo "[test] PASS" | tee -a "${RESULTS_DIR}/summary.txt"
     if [[ "${QUICK_EXIT}" == "1" && "${SKIP_BENCH}" == "1" && "${SKIP_SWEEP}" == "1" ]]; then
-        echo "[done] Quick validation complete (set PROPMINER_SKIP_*=0 for full kit)." | tee -a "${RESULTS_DIR}/summary.txt"
+        echo "[done] Quick validation complete (set PROPMINER_MODE=full for benchmark kit)." | tee -a "${RESULTS_DIR}/summary.txt"
         exit 0
     fi
 else

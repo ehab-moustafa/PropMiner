@@ -155,6 +155,11 @@ RUN mkdir -p /usr/local/cuda/lib64 && \
     ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcublasLt.so.12 /usr/local/cuda/lib64/libcublasLt.so.12 && \
     ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvJitLink.so.12 /usr/local/cuda/lib64/libnvJitLink.so.12
 
+COPY --from=builder /root/PropMiner/scripts/setup_cuda_env.sh ./scripts/setup_cuda_env.sh
+COPY --from=builder /root/PropMiner/scripts/run_mining.sh ./scripts/run_mining.sh
+COPY --from=builder /root/PropMiner/scripts/docker_entrypoint.sh ./scripts/docker_entrypoint.sh
 COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh
 
-ENTRYPOINT ["./scripts/remote_test_kit.sh"]
+RUN chmod +x ./scripts/*.sh
+
+ENTRYPOINT ["./scripts/docker_entrypoint.sh"]
