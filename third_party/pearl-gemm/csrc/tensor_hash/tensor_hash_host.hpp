@@ -49,8 +49,20 @@ void set_key(const uint8_t d_key[blake3::KEY_SIZE], cudaStream_t stream) {
   // stream. Async on the caller's stream is safe because c_key is
   // __constant__: subsequent kernel launches on the same stream observe
   // the new value (same-stream ordering).
-  gpuErrchk(cudaMemcpyToSymbolAsync(c_key, d_key, blake3::KEY_SIZE, 0,
-                                    cudaMemcpyDeviceToDevice, stream));
+  // WSL2 / dynamically-loaded .so note: cudaMemcpyToSymbolAsync on a
+  // __constant__ symbol can fail with "invalid argument" because the host
+  // cannot resolve the symbol address.  Get the device address explicitly
+  // with cudaGetSymbolAddress and copy to that pointer instead.
+  void* c_key_dev = nullptr;
+  cudaError_t addr_err = cudaGetSymbolAddress(&c_key_dev, c_key);
+  if (addr_err != cudaSuccess || c_key_dev == nullptr) {
+    // Fallback: try the symbol API directly (works on native Linux).
+    gpuErrchk(cudaMemcpyToSymbolAsync(c_key, d_key, blake3::KEY_SIZE, 0,
+                                      cudaMemcpyDeviceToDevice, stream));
+  } else {
+    gpuErrchk(cudaMemcpyAsync(c_key_dev, d_key, blake3::KEY_SIZE,
+                              cudaMemcpyDeviceToDevice, stream));
+  }
 }
 
 // kNumConsumerThreads: number of consumer threads for merkle_tree_roots_kernel
