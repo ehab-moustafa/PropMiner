@@ -89,17 +89,27 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
         if (e != cudaSuccess) batch_done_event = nullptr;
     }
 
+    auto check_rt = [](cudaError_t e, const char* msg) {
+        if (e != cudaSuccess) {
+            throw std::runtime_error(std::string(msg) + ": " + cudaGetErrorString(e));
+        }
+    };
+
     constexpr size_t kMaxShareRows = 32;
     pinned_a_slice_bytes = kMaxShareRows * static_cast<size_t>(cfg.k);
     pinned_opened_leaves_bytes = kMaxShareRows * 1024;
-    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&pinned_leaf_cvs),
-                             a_leaf_cv_bytes, cudaHostAllocDefault));
-    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&pinned_a_slice),
-                             pinned_a_slice_bytes, cudaHostAllocDefault));
-    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&pinned_opened_leaves),
-                             pinned_opened_leaves_bytes, cudaHostAllocDefault));
-    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&pinned_hash_b), 32,
-                             cudaHostAllocDefault));
+    check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_leaf_cvs),
+                           a_leaf_cv_bytes, cudaHostAllocDefault),
+             "pinned_leaf_cvs");
+    check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_a_slice),
+                           pinned_a_slice_bytes, cudaHostAllocDefault),
+             "pinned_a_slice");
+    check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_opened_leaves),
+                           pinned_opened_leaves_bytes, cudaHostAllocDefault),
+             "pinned_opened_leaves");
+    check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_hash_b), 32,
+                           cudaHostAllocDefault),
+             "pinned_hash_b");
 
     (void)device_id;
 }
