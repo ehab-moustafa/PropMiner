@@ -27,7 +27,14 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     libssl-dev \
     pkg-config \
+    ccache \
     && rm -rf /var/lib/apt/lists/*
+
+ENV CCACHE_DIR=/ccache
+ENV CCACHE_MAXSIZE=5G
+ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
+ENV CMAKE_CUDA_COMPILER_LAUNCHER=ccache
+ENV PATH=/usr/lib/ccache:${PATH}
 
 # Install Rust stable toolchain.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
@@ -38,7 +45,9 @@ WORKDIR /root/PropMiner
 COPY . /root/PropMiner
 
 # Pre-build PropMiner so runtime nodes only download binaries.
-RUN cmake -S . -B build_runtime \
+# ccache is mounted from the host cache to speed up rebuilds.
+RUN --mount=type=cache,target=/ccache \
+    cmake -S . -B build_runtime \
     -DCMAKE_BUILD_TYPE=Release \
     -DPROP_MINER_CUDA_ARCH=blackwell \
     -DCMAKE_CUDA_ARCHITECTURES=120 \

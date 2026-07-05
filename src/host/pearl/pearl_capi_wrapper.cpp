@@ -1,10 +1,26 @@
 #include "pearl_capi_wrapper.h"
 
 #include <cuda_runtime_api.h>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 
 namespace pearl {
+
+namespace {
+// Verbose pearl-gemm C API checker. On failure prints the failing function,
+// its return code, and the last CUDA error, then throws. This makes remote
+// WSL2/Salad debugging self-service: the logs identify the exact call that died.
+inline void pearl_check(const char* fn, int rc) {
+    if (rc >= 0) return;
+    cudaError_t last = cudaGetLastError();
+    fprintf(stderr,
+            "[pearl-capi] %s failed with rc=%d; last CUDA error: %s (%d)\n",
+            fn, rc, cudaGetErrorString(last), static_cast<int>(last));
+    throw std::runtime_error(std::string(fn) + " failed (rc=" +
+                             std::to_string(rc) + ")");
+}
+} // namespace
 
 Workspace::Workspace(void* ws) : ws_(ws) {
     if (!ws_) throw std::invalid_argument("null workspace");
@@ -75,16 +91,17 @@ Workspace GemmCapi::alloc_workspace(int32_t m, int32_t n, int32_t k, int32_t r,
     // noise_A scratch is used every iter inside noisy_gemm; noise_B scratch is
     // used once per σ inside install_B.  Keep both around so the hot path never
     // pays for cudaMallocAsync and σ-refresh can reuse the same handle.
-    if (pearl_capi_workspace_alloc(m, n, k, r, 1, 1, &ws, stream) != 0 || !ws) {
-        throw std::runtime_error("pearl_capi_workspace_alloc failed");
+    int rc = pearl_capi_workspace_alloc(m, n, k, r, 1, 1, &ws, stream);
+    if (rc != 0 || !ws) {
+        pearl_check("pearl_capi_workspace_alloc", rc);
+        throw std::runtime_error("pearl_capi_workspace_alloc returned null");
     }
     return Workspace(ws);
 }
 
 void GemmCapi::install_params(void* ws, const PearlCapiWorkspaceParams& p) const {
-    if (pearl_capi_workspace_install_params(ws, &p) != 0) {
-        throw std::runtime_error("pearl_capi_workspace_install_params failed");
-    }
+    pearl_check("pearl_capi_workspace_install_params",
+                pearl_capi_workspace_install_params(ws, &p));
 }
 
 int GemmCapi::iter_batch(void* ws,
@@ -94,9 +111,7 @@ int GemmCapi::iter_batch(void* ws,
                          int32_t count) const {
     int triggers = pearl_capi_iter_batch(ws, seed_lo_start,
                                          host_signal_headers, count, stream);
-    if (triggers < 0) {
-        throw std::runtime_error("pearl_capi_iter_batch failed");
-    }
+    pearl_check("pearl_capi_iter_batch", triggers);
     return triggers;
 }
 
@@ -104,19 +119,15 @@ void GemmCapi::iter_batch_graph_prepare(void* ws,
                                         CUstream stream,
                                         void* const* host_signal_headers,
                                         int32_t count) const {
-    int rc = pearl_capi_iter_batch_graph_prepare(ws, host_signal_headers, count, stream);
-    if (rc != 0) {
-        throw std::runtime_error("pearl_capi_iter_batch_graph_prepare failed");
-    }
+    pearl_check("pearl_capi_iter_batch_graph_prepare",
+                pearl_capi_iter_batch_graph_prepare(ws, host_signal_headers, count, stream));
 }
 
 void GemmCapi::iter_batch_graph_launch(void* ws,
                                        CUstream stream,
                                        uint64_t seed_lo_start) const {
-    int rc = pearl_capi_iter_batch_graph_launch(ws, seed_lo_start, stream);
-    if (rc != 0) {
-        throw std::runtime_error("pearl_capi_iter_batch_graph_launch failed");
-    }
+    pearl_check("pearl_capi_iter_batch_graph_launch",
+                pearl_capi_iter_batch_graph_launch(ws, seed_lo_start, stream));
 }
 
 void GemmCapi::iter_batch_graph_prepare_ex(void* ws,
@@ -124,18 +135,14 @@ void GemmCapi::iter_batch_graph_prepare_ex(void* ws,
                                            void* const* host_signal_headers,
                                            int32_t count,
                                            void* seed_lo_dev) const {
-    int rc = pearl_capi_iter_batch_graph_prepare_ex(ws, host_signal_headers, count,
-                                                    seed_lo_dev, stream);
-    if (rc != 0) {
-        throw std::runtime_error("pearl_capi_iter_batch_graph_prepare_ex failed");
-    }
+    pearl_check("pearl_capi_iter_batch_graph_prepare_ex",
+                pearl_capi_iter_batch_graph_prepare_ex(ws, host_signal_headers, count,
+                                                       seed_lo_dev, stream));
 }
 
 void GemmCapi::iter_batch_graph_launch_ex(void* ws, CUstream stream) const {
-    int rc = pearl_capi_iter_batch_graph_launch_ex(ws, stream);
-    if (rc != 0) {
-        throw std::runtime_error("pearl_capi_iter_batch_graph_launch_ex failed");
-    }
+    pearl_check("pearl_capi_iter_batch_graph_launch_ex",
+                pearl_capi_iter_batch_graph_launch_ex(ws, stream));
 }
 
 void GemmCapi::bseed_expand_and_tensor_hash_leaf_cvs(const uint8_t* bseed,
@@ -149,11 +156,11 @@ void GemmCapi::bseed_expand_and_tensor_hash_leaf_cvs(const uint8_t* bseed,
                                                      uint8_t* leaf_cvs,
                                                      int device_id,
                                                      CUstream stream) const {
-    int rc = pearl_capi_bseed_expand_and_tensor_hash_leaf_cvs(
-        bseed, reinterpret_cast<uint8_t*>(data), data_size, out, key,
-        num_blocks, threads, stages, leaves, roots, leaf_cvs,
-        device_id, stream);
-    if (rc != 0) throw std::runtime_error("pearl_capi_bseed_expand_and_tensor_hash_leaf_cvs failed");
+    pearl_check("pearl_capi_bseed_expand_and_tensor_hash_leaf_cvs",
+                pearl_capi_bseed_expand_and_tensor_hash_leaf_cvs(
+                    bseed, reinterpret_cast<uint8_t*>(data), data_size, out, key,
+                    num_blocks, threads, stages, leaves, roots, leaf_cvs,
+                    device_id, stream));
 }
 
 void GemmCapi::commitment_hash_from_merkle_roots(const uint8_t* A_merkle_root,
@@ -163,26 +170,24 @@ void GemmCapi::commitment_hash_from_merkle_roots(const uint8_t* A_merkle_root,
                                                  uint8_t* B_commitment_hash,
                                                  int device_id,
                                                  CUstream stream) const {
-    int rc = pearl_capi_commitment_hash_from_merkle_roots(
-        A_merkle_root, B_merkle_root, key,
-        A_commitment_hash, B_commitment_hash,
-        device_id, stream);
-    if (rc != 0) throw std::runtime_error("pearl_capi_commitment_hash_from_merkle_roots failed");
+    pearl_check("pearl_capi_commitment_hash_from_merkle_roots",
+                pearl_capi_commitment_hash_from_merkle_roots(
+                    A_merkle_root, B_merkle_root, key,
+                    A_commitment_hash, B_commitment_hash,
+                    device_id, stream));
 }
 
 void GemmCapi::lcg_int7_fill(void* dst, int64_t n,
                              uint64_t seed_lo, uint64_t seed_hi,
                              CUstream stream) const {
-    if (pearl_capi_lcg_int7_fill(dst, n, seed_lo, seed_hi, stream) != 0) {
-        throw std::runtime_error("pearl_capi_lcg_int7_fill failed");
-    }
+    pearl_check("pearl_capi_lcg_int7_fill",
+                pearl_capi_lcg_int7_fill(dst, n, seed_lo, seed_hi, stream));
 }
 
 void GemmCapi::bseed_expand_raw_device(const uint8_t* bseed, void* dst,
                                        int64_t n, CUstream stream) const {
-    if (pearl_capi_bseed_expand_raw_device(bseed, dst, n, stream) != 0) {
-        throw std::runtime_error("pearl_capi_bseed_expand_raw_device failed");
-    }
+    pearl_check("pearl_capi_bseed_expand_raw_device",
+                pearl_capi_bseed_expand_raw_device(bseed, dst, n, stream));
 }
 
 void GemmCapi::tensor_hash_leaf_cvs(const uint8_t* data, uint32_t data_size,
@@ -191,12 +196,12 @@ void GemmCapi::tensor_hash_leaf_cvs(const uint8_t* data, uint32_t data_size,
                                     uint32_t stages, uint32_t leaves,
                                     uint8_t* roots, uint8_t* leaf_cvs,
                                     int device_id, CUstream stream) const {
-    int rc = pearl_capi_tensor_hash_leaf_cvs(
-        data, data_size, out, key,
-        num_blocks, threads, stages, leaves,
-        roots, leaf_cvs,
-        device_id, stream);
-    if (rc != 0) throw std::runtime_error("pearl_capi_tensor_hash_leaf_cvs failed");
+    pearl_check("pearl_capi_tensor_hash_leaf_cvs",
+                pearl_capi_tensor_hash_leaf_cvs(
+                    data, data_size, out, key,
+                    num_blocks, threads, stages, leaves,
+                    roots, leaf_cvs,
+                    device_id, stream));
 }
 
 int GemmCapi::host_signal_header_size() const {

@@ -18,6 +18,7 @@ namespace {
         if (r == CUDA_SUCCESS) return;
         const char* s = nullptr;
         cuGetErrorString(r, &s);
+        fprintf(stderr, "[sigma] %s: %s (%d)\n", msg, s ? s : "unknown", static_cast<int>(r));
         throw std::runtime_error(std::string(msg) + ": " + (s ? s : "unknown"));
     }
 }
@@ -168,7 +169,13 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id) {
         job_.job_key.data(),
         job_.job_key.data(),
         stream);
-    if (rc != 0) throw std::runtime_error("pearl_capi_noise_gen (B-side) failed");
+    if (rc != 0) {
+        cudaError_t last = cudaGetLastError();
+        fprintf(stderr,
+                "[sigma] pearl_capi_noise_gen (B-side) failed rc=%d; last CUDA error: %s (%d)\n",
+                rc, cudaGetErrorString(last), static_cast<int>(last));
+        throw std::runtime_error("pearl_capi_noise_gen (B-side) failed");
+    }
 
     PearlCapiNoiseBParams nb{};
     nb.n = cfg_.n;
@@ -182,7 +189,13 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id) {
     nb.BpEB = reinterpret_cast<void*>(resident_.bpeb());
     nb.workspace = workspace;
     rc = pearl_capi_noise_B(&nb, stream);
-    if (rc != 0) throw std::runtime_error("pearl_capi_noise_B failed");
+    if (rc != 0) {
+        cudaError_t last = cudaGetLastError();
+        fprintf(stderr,
+                "[sigma] pearl_capi_noise_B failed rc=%d; last CUDA error: %s (%d)\n",
+                rc, cudaGetErrorString(last), static_cast<int>(last));
+        throw std::runtime_error("pearl_capi_noise_B failed");
+    }
 
     // Wait for both the copy and the device work to finish, then build the tree.
     check_cuda(cuStreamSynchronize(stream), "sync install stream");
