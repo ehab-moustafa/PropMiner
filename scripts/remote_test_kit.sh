@@ -32,6 +32,11 @@ mkdir -p "${RESULTS_DIR}"
 
 BENCH_SECONDS=60
 SWEEP_SECONDS=15
+# Quick Salad loop: self-test only unless explicitly enabled.
+SKIP_SWEEP="${PROPMINER_SKIP_SWEEP:-1}"
+SKIP_BENCH="${PROPMINER_SKIP_BENCH:-1}"
+SKIP_NCU="${PROPMINER_SKIP_NCU:-1}"
+QUICK_EXIT="${PROPMINER_QUICK_EXIT:-1}"
 
 PREBUILT=false
 if [[ -x "${ROOT}/propminer" && -f "${ROOT}/libpearl_gemm_capi.so" && -f "${ROOT}/libpearl_mining_capi.so" ]]; then
@@ -314,6 +319,10 @@ ls -lh "${BUILD_DIR}/propminer" "${BUILD_DIR}/libpearl_gemm_capi.so" "${BUILD_DI
 echo "[test] Running self-test..." | tee -a "${RESULTS_DIR}/summary.txt"
 if run_propminer "${BUILD_DIR}/propminer" --self-test --rtx5090 --gpus 0 > "${RESULTS_DIR}/self_test.log" 2>&1; then
     echo "[test] PASS" | tee -a "${RESULTS_DIR}/summary.txt"
+    if [[ "${QUICK_EXIT}" == "1" && "${SKIP_BENCH}" == "1" && "${SKIP_SWEEP}" == "1" ]]; then
+        echo "[done] Quick validation complete (set PROPMINER_SKIP_*=0 for full kit)." | tee -a "${RESULTS_DIR}/summary.txt"
+        exit 0
+    fi
 else
     echo "[test] FAIL — see results/self_test.log" | tee -a "${RESULTS_DIR}/summary.txt"
     echo "[test] self_test.log:" | tee -a "${RESULTS_DIR}/summary.txt"
@@ -323,6 +332,9 @@ else
 fi
 
 # ── 6. Hashrate benchmark ──────────────────────────────────────────────────
+if [[ "${SKIP_BENCH}" == "1" ]]; then
+    echo "[bench] Skipped (PROPMINER_SKIP_BENCH=1)." | tee -a "${RESULTS_DIR}/summary.txt"
+else
 echo "[bench] Running ${BENCH_SECONDS}s hashrate benchmark..." | tee -a "${RESULTS_DIR}/summary.txt"
 run_propminer "${BUILD_DIR}/propminer" --bench "${BENCH_SECONDS}" --rtx5090 --gpus 0 \
     > "${RESULTS_DIR}/benchmark.log" 2>&1 || true
@@ -330,9 +342,12 @@ tail -40 "${RESULTS_DIR}/benchmark.log" | tee -a "${RESULTS_DIR}/summary.txt"
 
 # Extract hashrate line if present.
 grep -iE "hash|th/s|gh/s|mh/s|h/s" "${RESULTS_DIR}/benchmark.log" | tail -20 | tee "${RESULTS_DIR}/benchmark_hashrate.txt" || true
+fi
 
 # ── 7. ncu profiling (optional) ────────────────────────────────────────────
-if command -v ncu >/dev/null 2>&1; then
+if [[ "${SKIP_NCU}" == "1" ]]; then
+    echo "[ncu] Skipped (PROPMINER_SKIP_NCU=1)." | tee -a "${RESULTS_DIR}/summary.txt"
+elif command -v ncu >/dev/null 2>&1; then
     echo "[ncu] Profiling the consumer GEMM kernel..." | tee -a "${RESULTS_DIR}/summary.txt"
     ncu -o "${RESULTS_DIR}/profile" \
         --target-processes all \
@@ -354,6 +369,9 @@ if ! [[ -f "${RESULTS_DIR}/profile.ncu-rep" ]] && ensure_pytorch_cuda_fallback; 
 fi
 
 # ── 8. Shortened knob sweep (high-value candidates only) ───────────────────
+if [[ "${SKIP_SWEEP}" == "1" ]]; then
+    echo "[sweep] Skipped (PROPMINER_SKIP_SWEEP=1)." | tee -a "${RESULTS_DIR}/summary.txt"
+else
 echo "[sweep] Running shortened Blackwell knob sweep..." | tee -a "${RESULTS_DIR}/summary.txt"
 
 BMS=(128)
@@ -416,6 +434,7 @@ done
 done
 
 echo "[sweep] Best variant: ${BEST_LABEL} (${BEST_RATE} H/s)" | tee -a "${RESULTS_DIR}/summary.txt"
+fi
 
 # ── 9. Final summary ───────────────────────────────────────────────────────
 echo ""

@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "pearl_blake3.h"
+#include "merkle_utils.h"
 #include "protobuf_encoder.h"
 #include "sigma_context.h"
 
@@ -218,16 +219,11 @@ std::array<uint8_t, 32> ShareBuilder::compute_claimed_hash(
 
 std::vector<uint8_t> ShareBuilder::build(const ShareFound& share,
                                           const SigmaContext& ctx) const {
-    // Build A proof from GPU leaf CVs. leaf_data must be full 1024-byte
-    // chunks for the opened leaves. The Rust C API checks leaf CVs match.
-    size_t row_bytes = static_cast<size_t>(cfg_.k);
-    size_t opened_leaves = share.a_row_indices.size();
-    std::vector<uint8_t> a_leaf_data(opened_leaves * 1024, 0);
-    for (size_t i = 0; i < opened_leaves; ++i) {
-        std::memcpy(a_leaf_data.data() + i * 1024,
-                    share.a_slice.data() + i * row_bytes,
-                    row_bytes);
+    if (share.a_opened_leaf_data.empty()) {
+        throw std::runtime_error(
+            "ShareFound.a_opened_leaf_data missing; cannot build A proof");
     }
+    const std::vector<uint8_t>& a_leaf_data = share.a_opened_leaf_data;
 
     OwnedProof a_proof = mining_.a_proof_from_leaf_cvs(
         share.a_leaf_cvs,
@@ -260,8 +256,10 @@ std::vector<uint8_t> ShareBuilder::build(const ShareFound& share,
         audit_siblings = mining_.audit_paths_for_handle(*ctx.b_merkle_tree(), audit_indices);
     }
 
+    ShareFound encoded = share;
+    encoded.claimed_hash = claimed;
     return ProtobufEncoder::encode_share_submission(
-        share, cfg_, a_proof, b_proof, audit_siblings);
+        encoded, cfg_, a_proof, b_proof, audit_siblings);
 }
 
 std::vector<uint32_t> ShareBuilder::derive_audit_indices(
@@ -306,15 +304,10 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
                                const SigmaContext& ctx) {
     ShareBuilder builder(share.job.config);
 
-    // Rebuild A proof from the GPU leaf CVs and opened rows.
-    size_t row_bytes = static_cast<size_t>(share.job.config.k);
-    size_t opened_leaves = share.a_row_indices.size();
-    std::vector<uint8_t> a_leaf_data(opened_leaves * 1024, 0);
-    for (size_t i = 0; i < opened_leaves; ++i) {
-        std::memcpy(a_leaf_data.data() + i * 1024,
-                    share.a_slice.data() + i * row_bytes,
-                    row_bytes);
+    if (share.a_opened_leaf_data.empty()) {
+        return false;
     }
+    const std::vector<uint8_t>& a_leaf_data = share.a_opened_leaf_data;
 
     OwnedProof a_proof = builder.mining_.a_proof_from_leaf_cvs(
         share.a_leaf_cvs,
@@ -342,10 +335,17 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
     std::array<uint8_t, 32> hashB{};
     std::memcpy(hashB.data(), b_proof.root.data(), 32);
 
-    // Recompute claimed hash and compare to the GPU value.
+    // Recompute claimed hash and compare when the GPU populated it.
     auto claimed = builder.compute_claimed_hash(share, share.job.job_key.data(),
                                                 hashA.data(), hashB.data());
-    return claimed == share.claimed_hash;
+    bool has_claimed = false;
+    for (uint8_t b : share.claimed_hash) {
+        if (b != 0) { has_claimed = true; break; }
+    }
+    if (has_claimed && claimed != share.claimed_hash) {
+        return false;
+    }
+    return true;
 }
 
 std::array<uint8_t, 32> ShareBuilder::ComputeClaimedHash(

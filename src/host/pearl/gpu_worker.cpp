@@ -7,6 +7,7 @@
 #include <cuda_runtime.h>
 
 #include "host_signal_header.h"
+#include "merkle_utils.h"
 #include "pearl_blake3.h"
 
 // For cuda runtime helpers (events, graph).  CUstream and cudaStream_t are
@@ -465,6 +466,18 @@ bool GpuWorker::handle_trigger(HalfBuffers& half, const SigmaContext& ctx,
             half.a + row * row_bytes,
             row_bytes, half.stream), "a slice d2h");
     }
+
+    const auto a_leaf_indices =
+        compute_leaf_indices_from_rows(a_rows, row_bytes);
+    std::vector<uint8_t> a_opened_leaf_data(a_leaf_indices.size() * 1024);
+    for (size_t i = 0; i < a_leaf_indices.size(); ++i) {
+        const uint64_t byte_off =
+            static_cast<uint64_t>(a_leaf_indices[i]) * 1024;
+        check_cuda(cuMemcpyDtoHAsync(
+            a_opened_leaf_data.data() + i * 1024,
+            half.a + byte_off,
+            1024, half.stream), "a opened leaf d2h");
+    }
     check_cuda(cuStreamSynchronize(half.stream), "sync trigger d2h");
 
     // BHash from resident state.
@@ -484,6 +497,7 @@ bool GpuWorker::handle_trigger(HalfBuffers& half, const SigmaContext& ctx,
     share.b_col_indices = std::move(b_cols);
     share.hash_b = hash_b;
     share.a_slice = std::move(a_slice);
+    share.a_opened_leaf_data = std::move(a_opened_leaf_data);
     share.a_leaf_cvs = std::move(a_leaf_cvs_host);
 
     if (sink_) sink_->submit(share);

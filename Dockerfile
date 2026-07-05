@@ -48,12 +48,11 @@ RUN rustup default stable
 
 WORKDIR /root/PropMiner
 
-# Layer 1: deps + CUDA/Rust libs. Cached when only host C++ sources change.
+# Layer 1: third-party CUDA/Rust libs only. Cached when only host C++ changes.
 COPY CMakeLists.txt .
 COPY third_party third_party
 COPY include include
 COPY src/cuda src/cuda
-COPY src/host src/host
 
 ARG CMAKE_BUILD_ARGS="\
   -DCMAKE_BUILD_TYPE=Release \
@@ -67,24 +66,29 @@ ARG CMAKE_BUILD_ARGS="\
   -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
   -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async"
 
-RUN --mount=type=cache,target=/ccache \
-    --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/root/PropMiner/build_runtime/pearl_mining_capi \
+RUN --mount=type=cache,id=propminer-ccache,target=/ccache \
+    --mount=type=cache,id=propminer-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=propminer-cargo-git,target=/root/.cargo/git \
+    --mount=type=cache,id=propminer-gemm-build,target=/root/PropMiner/third_party/pearl-gemm/csrc/capi/build \
+    --mount=type=cache,id=propminer-rust-build,target=/root/PropMiner/build_runtime/pearl_mining_capi \
     cmake -S . -B build_runtime ${CMAKE_BUILD_ARGS} \
     && cmake --build build_runtime \
        --target stage_gemm_lib stage_mining_lib \
        -j"$(nproc)" \
     && ccache -s
 
-# Layer 2: scripts + final link. Re-runs on host edits; nvcc stays cached via ccache.
+# Layer 2: host sources + scripts + propminer link. Fast when only src/host changes.
+COPY src/host src/host
 COPY scripts scripts
 
-RUN --mount=type=cache,target=/ccache \
-    --mount=type=cache,target=/root/.cargo/registry \
-    --mount=type=cache,target=/root/.cargo/git \
-    --mount=type=cache,target=/root/PropMiner/build_runtime/pearl_mining_capi \
-    cmake --build build_runtime --target propminer -j"$(nproc)" \
+RUN --mount=type=cache,id=propminer-ccache,target=/ccache \
+    --mount=type=cache,id=propminer-cargo-registry,target=/root/.cargo/registry \
+    --mount=type=cache,id=propminer-cargo-git,target=/root/.cargo/git \
+    --mount=type=cache,id=propminer-gemm-build,target=/root/PropMiner/third_party/pearl-gemm/csrc/capi/build \
+    --mount=type=cache,id=propminer-rust-build,target=/root/PropMiner/build_runtime/pearl_mining_capi \
+    --mount=type=cache,id=propminer-cmake-build,target=/root/PropMiner/build_runtime \
+    cmake -S . -B build_runtime ${CMAKE_BUILD_ARGS} \
+    && cmake --build build_runtime --target propminer -j"$(nproc)" \
     && ccache -s
 
 # Audit: all cubins must be sm_120a only (RTX 5090 native).
@@ -95,10 +99,6 @@ RUN cuobjdump -lelf build_runtime/libpearl_gemm_capi.so | tee build_runtime/cubi
     && echo "${ONLY_ARCHS}" | grep -qx 'sm_120a'
 
 # ── CUDA 12.8 runtime stage ────────────────────────────────────────────────
-# Extract only the runtime libraries we need from the official CUDA 12.8
-# redist tarballs.  This avoids PyTorch ABI mismatch issues and gives us a
-# clean, version-matched libcudart without running an x86_64 installer on the
-# build host.
 FROM ubuntu:24.04 AS cuda128-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -110,14 +110,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Component archives from the official NVIDIA CUDA redist (linux-x86_64).
-# Verified hashes from redistrib_12.8.0.json.
 RUN BASE="https://developer.download.nvidia.com/compute/cuda/redist" && \
     DEST="/root/cuda128/usr/local/cuda-12.8/targets/x86_64-linux" && \
-    mkdir -p "${DEST}"
-
-RUN BASE="https://developer.download.nvidia.com/compute/cuda/redist" && \
-    DEST="/root/cuda128/usr/local/cuda-12.8/targets/x86_64-linux" && \
+    mkdir -p "${DEST}" && \
     cd /tmp && \
     curl -fsSL -o cuda_cudart.tar.xz "${BASE}/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.8.57-archive.tar.xz" && \
     curl -fsSL -o cuda_nvrtc.tar.xz "${BASE}/cuda_nvrtc/linux-x86_64/cuda_nvrtc-linux-x86_64-12.8.61-archive.tar.xz" && \
@@ -133,6 +128,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV PEARL_GEMM_CONSUMER_CLUSTER_M=2
+# Quick Salad validation: self-test only (~30s), no 16-variant knob sweep.
+ENV PROPMINER_SKIP_SWEEP=1
+ENV PROPMINER_SKIP_BENCH=1
 
 RUN apt-get update && apt-get install -y \
     libssl3 \
@@ -144,12 +142,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /root/PropMiner
 
-# Copy prebuilt binaries from the builder stage.
 COPY --from=builder /root/PropMiner/build_runtime/propminer .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_gemm_capi.so .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_mining_capi.so .
 
-# Copy CUDA 12.8 runtime libraries extracted from the official runfile.
 COPY --from=cuda128-runtime /root/cuda128/usr/local/cuda-12.8 /usr/local/cuda-12.8
 RUN mkdir -p /usr/local/cuda/lib64 && \
     ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so.12 && \
@@ -159,7 +155,6 @@ RUN mkdir -p /usr/local/cuda/lib64 && \
     ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcublasLt.so.12 /usr/local/cuda/lib64/libcublasLt.so.12 && \
     ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvJitLink.so.12 /usr/local/cuda/lib64/libnvJitLink.so.12
 
-# Copy scripts needed for benchmark/self-test.
 COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh
 
 ENTRYPOINT ["./scripts/remote_test_kit.sh"]
