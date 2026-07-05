@@ -132,9 +132,13 @@ private:
     std::atomic<bool> stop_flag_{false};
     std::thread thread_;
 
+    void upload_pow_target(HalfBuffers& half, uint32_t nbits);
+    void upload_pow_target_both_halves(uint32_t nbits);
+
     std::mutex sigma_mtx_;
     std::shared_ptr<SigmaContext> sigma_;
     std::atomic<uint32_t> target_nbits_{0};
+    std::atomic<bool> target_dirty_{false};
     std::atomic<int> matmuls_per_poll_{8};
 
     std::atomic<uint64_t> total_iters_{0};

@@ -93,6 +93,8 @@ public:
 
     uint64_t sigma_seed() const { return sigma_seed_; }
 
+    void set_target_nbits(uint32_t nbits) { job_.target_nbits = nbits; }
+
 private:
     Job job_;
     MiningConfig cfg_;

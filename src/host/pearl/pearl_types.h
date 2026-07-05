@@ -3,11 +3,15 @@
 #include <array>
 #include <cstdint>
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 #include "cuda_compat.h"
+#include "pow_target_utils.h"
 
 namespace pearl {
+
+class SigmaContext;
 
 // Periodic pattern for the committed hash-tile shape.
 // Mirrors C# Akoya.Crypto.PeriodicPattern.
@@ -96,7 +100,7 @@ struct MiningConfig {
 };
 
 struct Job {
-    std::array<uint8_t, 32> sigma{};
+    std::array<uint8_t, kSigmaHeaderBytes> sigma{};
     std::array<uint8_t, 32> job_key{};   // BLAKE3(sigma || config_bytes)
     std::array<uint8_t, 32> b_seed{};
     uint32_t target_nbits = 0;
@@ -108,6 +112,8 @@ struct Job {
 
 struct ShareFound {
     Job job;
+    std::shared_ptr<SigmaContext> sigma_ctx;  // σ snapshot at trigger (proof build)
+    uint32_t installed_target_nbits = 0;      // GPU target when share was found
     uint64_t nonce = 0;
     uint32_t tile_row = 0;
     uint32_t tile_col = 0;

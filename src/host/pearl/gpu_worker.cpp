@@ -9,6 +9,7 @@
 #include "host_signal_header.h"
 #include "merkle_utils.h"
 #include "pearl_blake3.h"
+#include "pow_target_utils.h"
 
 // For cuda runtime helpers (events, graph).  CUstream and cudaStream_t are
 // interchangeable pointers in the CUDA driver/runtime interop layer.
@@ -29,19 +30,6 @@ namespace {
     uint64_t now_ms() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
-    }
-
-    std::array<uint8_t, 32> nbits_to_target_le(uint32_t nbits) {
-        int exp = static_cast<int>(nbits >> 24);
-        uint32_t mant = nbits & 0xFFFFFFu;
-        std::array<uint8_t, 32> t{};
-        for (int i = 0; i < 3; ++i) {
-            int pos = 32 - exp + i;
-            if (pos >= 0 && pos < 32) {
-                t[pos] = static_cast<uint8_t>(mant >> (8 * (2 - i)));
-            }
-        }
-        return t;
     }
 }
 
@@ -205,10 +193,24 @@ void GpuWorker::set_sigma(std::shared_ptr<SigmaContext> ctx) {
 
 void GpuWorker::set_target_nbits(uint32_t nbits) {
     target_nbits_.store(nbits);
+    target_dirty_.store(true);
 }
 
 void GpuWorker::set_matmuls_per_poll(int mpp) {
     if (mpp > 0) matmuls_per_poll_.store(mpp);
+}
+
+void GpuWorker::upload_pow_target(HalfBuffers& half, uint32_t nbits) {
+    if (!half.pow_target || !half.stream) return;
+    const uint64_t daf = cfg_.difficulty_adjustment_factor();
+    auto words = target_le_to_pow_u32(adjusted_pow_target_le(nbits, daf));
+    check_cuda(cuMemcpyHtoDAsync(half.pow_target, words.data(), 32, half.stream),
+               "pow_target h2d");
+}
+
+void GpuWorker::upload_pow_target_both_halves(uint32_t nbits) {
+    upload_pow_target(ping_, nbits);
+    upload_pow_target(pong_, nbits);
 }
 
 double GpuWorker::hashrate() const {
@@ -230,14 +232,8 @@ void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
     // on the second half it reuses the already-installed buffers owned by ctx.
     ctx.install(half.stream, half.workspace, device_index_);
 
-    // PoW target: nbits -> 32-byte LE uint32 array on device.
-    auto target = nbits_to_target_le(target_nbits_.load());
-    std::array<uint32_t, 8> target_u32{};
-    for (int i = 0; i < 8; ++i) {
-        std::memcpy(&target_u32[i], target.data() + i * 4, 4);
-    }
-    check_cuda(cuMemcpyHtoDAsync(half.pow_target, target_u32.data(), 32, half.stream),
-               "pow_target h2d");
+    // PoW target: nbits * DAF -> 32-byte LE uint32 array on device.
+    upload_pow_target(half, target_nbits_.load());
 
     PearlCapiWorkspaceParams p{};
     p.m = cfg_.m; p.n = cfg_.n; p.k = cfg_.k; p.r = cfg_.r;
@@ -488,6 +484,12 @@ bool GpuWorker::handle_trigger(HalfBuffers& half, const SigmaContext& ctx,
 
     ShareFound share;
     share.job = ctx.job();
+    share.installed_target_nbits = target_nbits_.load();
+    share.job.target_nbits = share.installed_target_nbits;
+    {
+        std::lock_guard<std::mutex> lk(sigma_mtx_);
+        share.sigma_ctx = sigma_;
+    }
     share.nonce = nonce;
     share.tile_row = a_rows.empty() ? 0 : a_rows[0];
     share.tile_col = b_cols.empty() ? 0 : b_cols[0];
@@ -527,7 +529,10 @@ void GpuWorker::run() {
             batch = matmuls_per_poll_.load();
             install_sigma(*current_sigma, *ping);
             install_sigma(*current_sigma, *pong);
+            target_dirty_.store(false);
             first = true;
+        } else if (target_dirty_.exchange(false)) {
+            upload_pow_target_both_halves(target_nbits_.load());
         }
 
         if (!current_sigma) {

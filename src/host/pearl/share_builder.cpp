@@ -6,6 +6,7 @@
 
 #include "pearl_blake3.h"
 #include "merkle_utils.h"
+#include "pow_target_utils.h"
 #include "protobuf_encoder.h"
 #include "sigma_context.h"
 
@@ -258,6 +259,16 @@ std::vector<uint8_t> ShareBuilder::build(const ShareFound& share,
 
     ShareFound encoded = share;
     encoded.claimed_hash = claimed;
+    std::memcpy(encoded.hash_b.data(), hashB.data(), 32);
+
+    const uint32_t live_nbits = share.installed_target_nbits
+        ? share.installed_target_nbits
+        : share.job.target_nbits;
+    if (!claimed_hash_clears_target(claimed.data(), live_nbits,
+                                    cfg_.difficulty_adjustment_factor())) {
+        return {};
+    }
+
     return ProtobufEncoder::encode_share_submission(
         encoded, cfg_, a_proof, b_proof, audit_siblings);
 }

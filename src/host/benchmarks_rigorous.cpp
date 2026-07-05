@@ -95,7 +95,7 @@ static void bench_job_key() {
     sigma.fill(0xab);
     auto cfg = MiningConfig::conservative();
     auto s = benchmark(5, 10000, 30, [&]() {
-        auto k = derive_job_key(sigma.data(), cfg);
+        auto k = derive_job_key(sigma.data(), sigma.size(), cfg);
         (void)k;
     });
     print_stats("derive_job_key", s, 1.0);

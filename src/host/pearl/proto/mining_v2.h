@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "../pow_target_utils.h"
+
 namespace pearl {
 namespace proto {
 
@@ -138,7 +140,7 @@ struct MinerEvent {
 
 struct JobAssignment {
     std::array<uint8_t, 16> job_id{};
-    std::array<uint8_t, 32> sigma{};
+    std::array<uint8_t, pearl::kSigmaHeaderBytes> sigma{};
     uint32_t target_nbits = 0;
     uint32_t network_target_nbits = 0;
     int64_t block_height = 0;

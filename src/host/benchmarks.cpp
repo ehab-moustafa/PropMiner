@@ -56,7 +56,7 @@ static void benchmark_job_key_derivation() {
     sigma.fill(0xab);
     MiningConfig cfg = MiningConfig::conservative();
     double ms = bench_ms(iterations, [&]() {
-        auto k = derive_job_key(sigma.data(), cfg);
+        auto k = derive_job_key(sigma.data(), sigma.size(), cfg);
         (void)k;
     });
     std::printf("derive_job_key         : %.3f ms  %.2f kops/s\n",

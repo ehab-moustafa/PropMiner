@@ -95,6 +95,12 @@ bool WorkerOrchestrator::ensure_connected_and_registered() {
         miner_id_ = resp.miner_id;
         session_token_ = resp.session_token;
     }
+    if (resp.initial_difficulty_nbits != 0) {
+        pending_target_nbits_.store(resp.initial_difficulty_nbits);
+        for (auto& w : workers_) {
+            w->set_target_nbits(resp.initial_difficulty_nbits);
+        }
+    }
     registered_ = true;
     return true;
 }
@@ -124,9 +130,15 @@ void WorkerOrchestrator::handle_pool_event(const proto::PoolEvent& evt) {
         case proto::PoolEventType::Job:
             publish_job_from_assignment(evt.job);
             break;
-        case proto::PoolEventType::Vardiff:
-            for (auto& w : workers_) w->set_target_nbits(evt.vardiff.new_target_nbits);
+        case proto::PoolEventType::Vardiff: {
+            const uint32_t nbits = evt.vardiff.new_target_nbits;
+            for (auto& w : workers_) w->set_target_nbits(nbits);
+            auto entry = bus_.drain_latest();
+            if (entry.ctx) {
+                entry.ctx->set_target_nbits(nbits);
+            }
             break;
+        }
         case proto::PoolEventType::ShareResult:
             // Log accepted/rejected. The pool does not need a client-side ack.
             std::cout << "share " << evt.share_result.outcome
@@ -229,10 +241,16 @@ void WorkerOrchestrator::heartbeat_thread_func() {
 }
 
 void WorkerOrchestrator::submit(const ShareFound& share) {
+    if (!share.sigma_ctx) {
+        std::cerr << "share dropped: missing sigma context at finalize\n";
+        return;
+    }
     ShareBuilder builder(share.job.config);
-    auto ctx = bus_.drain_latest().ctx;
-    if (!ctx) return;
-    auto proof = builder.build(share, *ctx);
+    auto proof = builder.build(share, *share.sigma_ctx);
+    if (proof.empty()) {
+        std::cerr << "share dropped: stale target or build failed\n";
+        return;
+    }
 
     std::lock_guard<std::mutex> lk(share_mtx_);
     pending_shares_.push_back(std::move(proof));
@@ -313,6 +331,9 @@ int WorkerOrchestrator::run() {
         auto w = std::make_unique<GpuWorker>(idx, static_cast<int>(workers_.size()),
                                              tuned_config, this);
         w->set_matmuls_per_poll(tuned_batch);
+        if (const uint32_t nbits = pending_target_nbits_.load()) {
+            w->set_target_nbits(nbits);
+        }
         workers_.push_back(std::move(w));
     }
 

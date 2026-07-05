@@ -4,6 +4,8 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "pow_target_utils.h"
+
 namespace pearl {
 namespace proto {
 
@@ -292,7 +294,13 @@ bool JobAssignment::decode(const uint8_t* data, size_t len) {
                 if (f.len == 16) std::memcpy(job_id.data(), f.data, 16);
                 break;
             case 2:
-                if (f.len == 32) std::memcpy(sigma.data(), f.data, 32);
+                if (f.len == pearl::kSigmaHeaderBytes) {
+                    std::memcpy(sigma.data(), f.data, pearl::kSigmaHeaderBytes);
+                } else if (f.len == 32) {
+                    // Self-test / legacy: zero-pad to full header size.
+                    sigma.fill(0);
+                    std::memcpy(sigma.data(), f.data, 32);
+                }
                 break;
             case 3: target_nbits = static_cast<uint32_t>(f.value); break;
             case 4: network_target_nbits = static_cast<uint32_t>(f.value); break;

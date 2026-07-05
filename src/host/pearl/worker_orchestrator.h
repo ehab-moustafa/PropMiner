@@ -68,6 +68,7 @@ private:
 
     std::atomic<bool> stop_flag_{false};
     std::atomic<bool> registered_{false};
+    std::atomic<uint32_t> pending_target_nbits_{0};
     std::atomic<double> total_hashrate_{0.0};
 
     // Session state.

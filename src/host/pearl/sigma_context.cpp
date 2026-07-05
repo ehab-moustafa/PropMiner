@@ -7,6 +7,7 @@
 #include "cuda_compat.h"
 #include "job_key.h"
 #include "pearl_blake3.h"
+#include "pow_target_utils.h"
 
 namespace pearl {
 
@@ -81,8 +82,8 @@ void ResidentBState::free(CUstream stream) {
 
 SigmaContext::SigmaContext(const Job& job, const MiningConfig& cfg)
     : job_(job), cfg_(cfg), sigma_seed_(0) {
-    if (job_.sigma.size() != K32) {
-        throw std::invalid_argument("sigma must be 32 bytes");
+    if (job_.sigma.size() != kSigmaHeaderBytes) {
+        throw std::invalid_argument("sigma must be 76 bytes");
     }
     if (job_.b_seed.size() != K32) {
         throw std::invalid_argument("b_seed must be 32 bytes");

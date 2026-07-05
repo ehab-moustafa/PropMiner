@@ -180,6 +180,7 @@ add_executable(propminer
     src/host/pearl/protobuf_encoder.cpp
     src/host/pearl/host_signal_header.cpp
     src/host/pearl/job_bus.cpp
+    src/host/pearl/pow_target_utils.cpp
     src/host/pearl/worker_orchestrator.cpp
     src/host/pearl/grpc_client.cpp
     src/host/pearl/proto/mining_v2.cpp
