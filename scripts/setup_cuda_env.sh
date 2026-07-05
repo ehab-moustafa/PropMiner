@@ -18,7 +18,9 @@ propminer_log() {
 setup_cuda_runtime_env() {
     export NVIDIA_VISIBLE_DEVICES="${NVIDIA_VISIBLE_DEVICES:-all}"
     export NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
-    export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-2}"
+    export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-1}"
+    export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-EAGER}"
+    export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
 
     if [[ -e /dev/dxg ]]; then
         echo "[env] WSL2 detected (/dev/dxg present)." | propminer_log

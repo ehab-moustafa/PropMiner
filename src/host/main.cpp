@@ -291,10 +291,34 @@ int main(int argc, char* argv[]) {
         if (std::strcmp(argv[i], "--config") == 0) { user_overrode_config = true; break; }
     }
     if (use_rtx5090_profile) {
-        cfg.mining_config = pearl::rtx5090_mining_config();
+        size_t vram_free = 0;
+        if (!cfg.gpu_indices.empty()) {
+            cudaSetDevice(cfg.gpu_indices[0]);
+            size_t total = 0;
+            cudaMemGetInfo(&vram_free, &total);
+            if (vram_free > (512ULL << 20)) vram_free -= (512ULL << 20);
+        }
+        const int n_cap = (bench_seconds > 0) ? pearl::Rtx5090Profile::kBenchMaxN : 0;
+        cfg.mining_config = pearl::rtx5090_mining_config(vram_free, n_cap);
         cfg.batch_size = pearl::Rtx5090Profile::kDefaultBatch;
-        fprintf(stderr, "[main] Using RTX 5090 hard-coded profile: M=%d N=%d batch=%d\n",
-                cfg.mining_config.m, cfg.mining_config.n, cfg.batch_size);
+        const int ctas = pearl::Rtx5090Profile::tiles(cfg.mining_config.m,
+                                                      cfg.mining_config.n);
+        const int tail = ctas % pearl::Rtx5090Profile::kSMCount;
+        fprintf(stderr,
+                "[main] RTX 5090 profile: M=%d N=%d batch=%d CTAs=%d "
+                "waves~%d tail=%d swizzle=<3,4,3>%s\n",
+                cfg.mining_config.m, cfg.mining_config.n, cfg.batch_size,
+                ctas, (ctas + pearl::Rtx5090Profile::kSMCount - 1)
+                          / pearl::Rtx5090Profile::kSMCount,
+                tail,
+                n_cap > 0 ? " (bench N cap)" : "");
+        // Rtx5090 profile is pre-tuned; skip multi-minute autotune unless requested.
+        const char* autotune_env = std::getenv("PROPMINER_AUTOTUNE");
+        if (!autotune_env || autotune_env[0] == '\0' ||
+            std::strcmp(autotune_env, "0") == 0) {
+            cfg.autotune = false;
+            fprintf(stderr, "[main] RTX 5090: autotune off (set PROPMINER_AUTOTUNE=1 to enable)\n");
+        }
     } else if (!user_overrode_config) {
         for (int idx : cfg.gpu_indices) {
             if (idx < 0 || idx >= n) continue;

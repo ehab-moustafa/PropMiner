@@ -158,7 +158,8 @@ MiningConfig MiningConfig::auto_shape_for_gpu(const cudaDeviceProp& prop,
     struct Shape { int m, n, k; };
     std::vector<Shape> candidates;
     if (is_ada_plus) {
-        candidates = {{8192, 32768, 128}, {8192, 16384, 128}, {4096, 32768, 128},
+        candidates = {{8192, 262144, 128}, {8192, 131072, 128}, {8192, 65536, 128},
+                      {8192, 32768, 128}, {8192, 16384, 128}, {4096, 32768, 128},
                       {4096, 16384, 128}, {4096, 8192, 128}};
     } else if (is_ampere) {
         candidates = {{4096, 16384, 128}, {4096, 8192, 128}, {2048, 16384, 128},

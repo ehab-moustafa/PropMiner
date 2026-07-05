@@ -16,12 +16,16 @@ namespace {
     constexpr int MAX_REGS = 256;
 }
 
-HostSignalHeader::HostSignalHeader(const std::vector<uint8_t>& header) : h_(header) {}
+HostSignalHeader::HostSignalHeader(const std::vector<uint8_t>& header)
+    : data_(header.data()), size_(header.size()) {}
+
+HostSignalHeader::HostSignalHeader(const uint8_t* data, size_t size)
+    : data_(data), size_(size) {}
 
 int HostSignalHeader::le32(int off) const {
-    if (off + 4 > static_cast<int>(h_.size())) return 0;
+    if (!data_ || off + 4 > static_cast<int>(size_)) return 0;
     uint32_t v = 0;
-    std::memcpy(&v, h_.data() + off, 4);
+    std::memcpy(&v, data_ + off, 4);
     return static_cast<int>(v);
 }
 
@@ -44,9 +48,9 @@ int HostSignalHeader::mma_tile_n() const {
 }
 
 uint16_t HostSignalHeader::num_registers_per_thread() const {
-    if (OFF_NUM_REGISTERS_PER_THREAD + 2 > static_cast<int>(h_.size())) return 0;
+    if (!data_ || OFF_NUM_REGISTERS_PER_THREAD + 2 > static_cast<int>(size_)) return 0;
     uint16_t v = 0;
-    std::memcpy(&v, h_.data() + OFF_NUM_REGISTERS_PER_THREAD, 2);
+    std::memcpy(&v, data_ + OFF_NUM_REGISTERS_PER_THREAD, 2);
     return v;
 }
 
@@ -59,8 +63,8 @@ void HostSignalHeader::extract_indices(std::vector<uint32_t>& a_rows,
 
     std::vector<uint8_t> rbuf(n), cbuf(n);
     for (int i = 0; i < n; ++i) {
-        rbuf[i] = h_[OFF_THREAD_ROWS + i];
-        cbuf[i] = h_[OFF_THREAD_COLS + i];
+        rbuf[i] = data_[OFF_THREAD_ROWS + i];
+        cbuf[i] = data_[OFF_THREAD_COLS + i];
     }
     std::sort(rbuf.begin(), rbuf.end());
     std::sort(cbuf.begin(), cbuf.end());

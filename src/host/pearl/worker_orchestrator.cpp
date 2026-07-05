@@ -11,6 +11,7 @@
 #include "gpu_tuner.h"
 #include "job_key.h"
 #include "pearl_capi_wrapper.h"
+#include "rtx5090_profile.h"
 #include "share_builder.h"
 #include "tune_cache.h"
 
@@ -333,6 +334,20 @@ int WorkerOrchestrator::run() {
                        std::to_string(tuned_carveout).c_str(), 1);
             }
         }
+    }
+
+    {
+        std::cerr << "[orchestrator] RTX 5090: GPU-isolated path (VRAM-resident B, "
+                     "CUDA graphs, pinned PCIe, no CPU mining)\n";
+        const int ctas = Rtx5090Profile::tiles(tuned_config.m, tuned_config.n);
+        const int tail = ctas % Rtx5090Profile::kSMCount;
+        std::cerr << "[orchestrator] GEMM grid: M=" << tuned_config.m
+                  << " N=" << tuned_config.n << " K=" << tuned_config.k
+                  << " CTAs=" << ctas
+                  << " waves~" << ((ctas + Rtx5090Profile::kSMCount - 1)
+                                    / Rtx5090Profile::kSMCount)
+                  << " tail_slots=" << tail
+                  << " batch=" << tuned_batch << "\n";
     }
 
     const auto gpu_cards = enumerate_gpu_cards();

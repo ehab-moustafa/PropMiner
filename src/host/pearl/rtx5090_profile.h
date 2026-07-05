@@ -3,18 +3,16 @@
 #include "cuda_compat.h"
 #include "pearl_types.h"
 
+#include <cstdint>
+#include <numeric>
+
 namespace pearl {
 
 // Hard-coded physical profile for the NVIDIA GeForce RTX 5090 (GB202).
 //
-// Target compute capability: native Blackwell sm_120 (NOT sm_90 Hopper, NOT
-// sm_100a datacenter).  We deliberately avoid any datacenter bleed-through and
-// size the grid so the kernel waves fill exactly the 170 physical SMs.
-//
-// Occupancy math for the default shape M=8192, N=32768, tile=128x256:
-//   grid = (8192/128) * (32768/256) = 64 * 128 = 8192 CTAs.
-//   With 170 SMs the kernel launches ~48 waves, giving every SM a persistent
-//   stream of work and hiding all launch/PCIe latency behind execution.
+// Target compute capability: native Blackwell sm_120a (CC 12.0). NOT sm_90 Hopper,
+// NOT sm_100a datacenter.  Grid sizing prefers the largest N that fits in VRAM
+// while keeping CTA waves aligned to the 170 physical SMs.
 struct Rtx5090Profile {
     static constexpr int kSMCount = 170;        // enabled SMs on RTX 5090
     static constexpr int kWarpsPerSM = 48;      // practical warp slots per SM
@@ -29,7 +27,7 @@ struct Rtx5090Profile {
     static constexpr int kTileN = 256;
     static constexpr int kTileK = 128;
 
-    // Default matrix shape for ~12-14 GB VRAM footprint.
+    // Compile-time fallback shape (runtime may pick a larger N from VRAM).
     static constexpr int kDefaultM = 8192;
     static constexpr int kDefaultN = 32768;
     static constexpr int kDefaultK = 128;
@@ -37,6 +35,10 @@ struct Rtx5090Profile {
 
     // Batch size tuned to amortize launch overhead without excessive latency.
     static constexpr int kDefaultBatch = 20;
+
+    // Bench cap: large-N GEMMs may not finish one batch inside the Salad/WSL2
+    // 120s bench window.  Production mining uses pick_n_for_vram() without cap.
+    static constexpr int kBenchMaxN = 32768;
 
     // Number of CTAs launched per GEMM = (M/kTileM) * (N/kTileN).
     static constexpr int tiles(int M, int N) {
@@ -47,9 +49,50 @@ struct Rtx5090Profile {
     static constexpr bool full_occupancy(int M, int N) {
         return tiles(M, N) >= kSMCount * 2;
     }
+
+    // True when total CTAs divide evenly across 170 SMs (no tail wave).
+    static constexpr bool wave_aligned(int M, int N) {
+        return tiles(M, N) % kSMCount == 0;
+    }
+
+    // Smallest N >= min_n (tile-aligned) with wave_aligned(M, N).
+    static int wave_aligned_n_at_least(int M, int min_n) {
+        const int grid_x = M / kTileM;
+        const int step_t = kSMCount / std::gcd(grid_x, kSMCount);
+        int t = (min_n + kTileN - 1) / kTileN;
+        if ((grid_x * t) % kSMCount != 0) {
+            t = ((t + step_t - 1) / step_t) * step_t;
+        }
+        return t * kTileN;
+    }
+
+    static bool shape_fits_vram(int M, int N, int K, size_t free_bytes) {
+        const int64_t a = int64_t(M) * K;
+        const int64_t b = int64_t(K) * N;
+        const int64_t c = int64_t(M) * N;
+        int64_t bytes = a + b + 4 * c;
+        bytes += bytes / 4;  // leaf CVs, noise, alignment headroom
+        return free_bytes == 0 || static_cast<size_t>(bytes) < free_bytes;
+    }
+
+    // Prefer largest high-intensity N validated on 5090; fall back gracefully.
+    // Wave alignment is logged at startup; a small tail wave is cheaper than
+    // shrinking N (e.g. 262144 -> 65280).
+    static int pick_n_for_vram(size_t free_bytes, int cap_n = 0) {
+        static constexpr int kCandidates[] = {
+            262144, 131072, 65536, 65280, 43520, 32768,
+        };
+        for (int n : kCandidates) {
+            if (cap_n > 0 && n > cap_n) continue;
+            if (n % kTileN != 0) continue;
+            if (!shape_fits_vram(kDefaultM, n, kDefaultK, free_bytes)) continue;
+            return n;
+        }
+        return (cap_n > 0 && cap_n < kDefaultN) ? cap_n : kDefaultN;
+    }
 };
 
-// Compile-time guarantees that the default RTX 5090 shape saturates the chip.
+// Compile-time guarantees that the fallback RTX 5090 shape saturates the chip.
 static_assert(Rtx5090Profile::kDefaultM % Rtx5090Profile::kTileM == 0,
               "M must be a multiple of tile M");
 static_assert(Rtx5090Profile::kDefaultN % Rtx5090Profile::kTileN == 0,
@@ -62,13 +105,13 @@ static_assert(Rtx5090Profile::full_occupancy(Rtx5090Profile::kDefaultM,
 
 // Return a MiningConfig pre-tuned for RTX 5090.
 //
-// Important: this profile intentionally hardcodes RTX 5090 geometry instead of
-// exposing runtime knobs.  For other NVIDIA GPUs the generic GpuTuner path is
-// used; for a 5090 we want deterministic, optimal launch dimensions.
-inline MiningConfig rtx5090_mining_config() {
+// vram_budget_bytes: free VRAM after driver reserve (0 = pick largest candidate).
+// cap_n: when >0, limit N (bench mode uses kBenchMaxN for short windows).
+inline MiningConfig rtx5090_mining_config(size_t vram_budget_bytes = 0,
+                                          int cap_n = 0) {
     MiningConfig cfg;
     cfg.m = Rtx5090Profile::kDefaultM;
-    cfg.n = Rtx5090Profile::kDefaultN;
+    cfg.n = Rtx5090Profile::pick_n_for_vram(vram_budget_bytes, cap_n);
     cfg.k = Rtx5090Profile::kDefaultK;
     cfg.r = Rtx5090Profile::kDefaultR;
     cfg.bM = Rtx5090Profile::kTileM;

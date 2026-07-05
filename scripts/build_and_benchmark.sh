@@ -6,7 +6,7 @@
 #
 # Requirements:
 #   - Linux with CUDA 12.8+ and nvcc
-#   - RTX 5090 (sm_120)
+#   - RTX 5090 (sm_120a)
 #   - Rust toolchain (cargo) for pearl-mining-capi
 #   - CMake >= 3.24, make, git
 
@@ -25,13 +25,13 @@ if [[ ! -f "${ROOT}/third_party/pearl-gemm/third_party/cutlass/include/cutlass/c
         "${ROOT}/third_party/pearl-gemm/third_party/cutlass" || true
 fi
 
-# Configure for native Blackwell sm_120 with RTX 5090 knobs.
+# Configure for native Blackwell sm_120a with RTX 5090 knobs.
 # Hard constraints:
 #   - Tile 128x256x128 maps to the 170-SM occupancy grid.
 #   - STAGES=2 with KBLOCK=128 fits shared memory while keeping the Tensor
 #     Core datapath fed.
 #   - SWIZZLE_BITS=3 is the Blackwell-native swizzle from Alpha tuning.
-echo "[build] Configuring CMake for PEARL_GEMM_ARCH=blackwell (sm_120)..."
+echo "[build] Configuring CMake for PEARL_GEMM_ARCH=blackwell (sm_120a)..."
 cmake -S "${ROOT}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DPROP_MINER_CUDA_ARCH=blackwell \

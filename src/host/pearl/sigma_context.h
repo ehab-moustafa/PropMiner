@@ -78,7 +78,8 @@ public:
     // Safe to call multiple times; the second call is a no-op.
     // `workspace` is the per-σ pearl_capi_workspace handle (for noise_B scratch).
     // `device_id` is the CUDA device ordinal used for property lookups.
-    void install(CUstream stream, void* workspace, int device_id);
+    void install(CUstream stream, void* workspace, int device_id,
+                 CUstream copy_stream = nullptr);
 
     bool installed() const { return installed_; }
 

@@ -4,7 +4,7 @@
 # What this does:
 #   - Checks the GPU / driver / CUDA stack.
 #   - Installs build deps if they are missing.
-#   - Builds PropMiner targeting sm_120 (Blackwell consumer).
+#   - Builds PropMiner targeting sm_120a (Blackwell consumer, RTX 5090).
 #   - Runs correctness self-test (no pool connection).
 #   - Runs a 60-second hashrate benchmark.
 #   - Profiles the GEMM kernel with ncu if available.
@@ -187,7 +187,7 @@ else
     fi
 fi
 
-# ── 4. Build PropMiner for sm_120 (skip if prebuilt binaries exist) ────────
+# ── 4. Build PropMiner for sm_120a (skip if prebuilt binaries exist) ───────
 if [[ -x "${ROOT}/propminer" && -f "${ROOT}/libpearl_gemm_capi.so" && -f "${ROOT}/libpearl_mining_capi.so" ]]; then
     echo "[build] Prebuilt binaries found. Skipping CMake build." | tee -a "${RESULTS_DIR}/summary.txt"
     mkdir -p "${BUILD_DIR}"
@@ -204,7 +204,7 @@ if [[ -x "${ROOT}/propminer" && -f "${ROOT}/libpearl_gemm_capi.so" && -f "${ROOT
         exit 1
     fi
 else
-    echo "[build] Configuring CMake for sm_120..." | tee -a "${RESULTS_DIR}/summary.txt"
+    echo "[build] Configuring CMake for sm_120a (blackwell)..." | tee -a "${RESULTS_DIR}/summary.txt"
     rm -rf "${BUILD_DIR}"
     mkdir -p "${BUILD_DIR}"
 
@@ -235,6 +235,16 @@ else
     echo "[build] SUCCESS" | tee -a "${RESULTS_DIR}/summary.txt"
 fi
 
+if command -v cuobjdump >/dev/null 2>&1 && [[ -f "${BUILD_DIR}/libpearl_gemm_capi.so" ]]; then
+    CUBIN_ARCHS="$(cuobjdump -lelf "${BUILD_DIR}/libpearl_gemm_capi.so" 2>/dev/null \
+        | grep -oE 'sm_[0-9a-z_]+' | sort -u | tr '\n' ' ')"
+    echo "[build] Cubin archs: ${CUBIN_ARCHS}" | tee -a "${RESULTS_DIR}/summary.txt"
+    if ! echo " ${CUBIN_ARCHS} " | grep -q ' sm_120a '; then
+        echo "[build] WARN: expected sm_120a cubin for RTX 5090 blackwell build" \
+            | tee -a "${RESULTS_DIR}/summary.txt"
+    fi
+fi
+
 ls -lh "${BUILD_DIR}/propminer" "${BUILD_DIR}/libpearl_gemm_capi.so" "${BUILD_DIR}/libpearl_mining_capi.so" | tee "${RESULTS_DIR}/binaries.txt"
 
 # ── 5. Correctness self-test (no pool, no real mining) ─────────────────────
@@ -259,10 +269,14 @@ else
 fi
 
 # ── 6. Hashrate benchmark (with fallbacks) ─────────────────────────────────
+bench_log() {
+    echo "$@" | tee -a "${RESULTS_DIR}/summary.txt" >&2
+}
+
 extract_bench_rate() {
     local logfile="${1}"
-    grep 'benchmark complete:' "${logfile}" 2>/dev/null \
-        | tail -1 | grep -oE '[0-9.]+' | head -1 || echo "0"
+    grep 'benchmark complete:' "${logfile}" 2>/dev/null | tail -1 \
+        | sed -E 's/.*benchmark complete:[[:space:]]*([0-9.eE+-]+).*/\1/' || echo "0"
 }
 
 run_benchmark_attempt() {
@@ -273,19 +287,21 @@ run_benchmark_attempt() {
     else
         unset PROPMINER_BENCH_NO_GRAPH || true
     fi
-    echo "[bench] attempt ${attempt}: batch=${batch} graph=${graph} duration=${seconds}s" \
-        | tee -a "${RESULTS_DIR}/summary.txt"
+    bench_log "[bench] attempt ${attempt}: batch=${batch} graph=${graph} duration=${seconds}s"
     set +o pipefail
     run_propminer "${BUILD_DIR}/propminer" --bench "${seconds}" --rtx5090 --gpus 0 \
-        | tee "${logfile}"
+        | tee "${logfile}" >&2
     local rc=${PIPESTATUS[0]}
     set -o pipefail
     local rate
     rate="$(extract_bench_rate "${logfile}")"
-    echo "[bench] attempt ${attempt} result: ${rate} H/s (exit=${rc})" \
-        | tee -a "${RESULTS_DIR}/summary.txt"
-  tail -15 "${logfile}" | tee -a "${RESULTS_DIR}/summary.txt"
+    bench_log "[bench] attempt ${attempt} result: ${rate} H/s (exit=${rc})"
+    tail -15 "${logfile}" | tee -a "${RESULTS_DIR}/summary.txt" >&2
     echo "${rate}"
+}
+
+bench_rate_to_int() {
+    awk -v r="${1:-0}" 'BEGIN { printf "%.0f", r + 0 }'
 }
 
 if [[ "${SKIP_BENCH}" == "1" ]]; then
@@ -297,14 +313,14 @@ BEST_RATE=0
 BEST_LABEL=""
 
 RATE=$(run_benchmark_attempt 1 4 on "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark.log")
-RATE_INT=$(printf '%.0f' "${RATE:-0}")
+RATE_INT=$(bench_rate_to_int "${RATE}")
 if (( RATE_INT > 0 )); then
     BEST_RATE=${RATE_INT}
     BEST_LABEL="batch=4 graph=on"
 else
-    echo "[bench] attempt 1 yielded 0 — trying batch=1..." | tee -a "${RESULTS_DIR}/summary.txt"
+    echo "[bench] attempt 1 yielded 0 — trying batch=1..." | tee -a "${RESULTS_DIR}/summary.txt" >&2
     RATE=$(run_benchmark_attempt 2 1 on 60 "${RESULTS_DIR}/benchmark_try2.log")
-    RATE_INT=$(printf '%.0f' "${RATE:-0}")
+    RATE_INT=$(bench_rate_to_int "${RATE}")
     if (( RATE_INT > BEST_RATE )); then
         BEST_RATE=${RATE_INT}
         BEST_LABEL="batch=1 graph=on"
@@ -315,7 +331,7 @@ if (( BEST_RATE == 0 )); then
     echo "[bench] attempts 1-2 yielded 0 — trying batch=4 graph=off..." \
         | tee -a "${RESULTS_DIR}/summary.txt"
     RATE=$(run_benchmark_attempt 3 4 off 60 "${RESULTS_DIR}/benchmark_try3.log")
-    RATE_INT=$(printf '%.0f' "${RATE:-0}")
+    RATE_INT=$(bench_rate_to_int "${RATE}")
     if (( RATE_INT > BEST_RATE )); then
         BEST_RATE=${RATE_INT}
         BEST_LABEL="batch=4 graph=off"
@@ -361,7 +377,7 @@ BMS=(128)
 BNS=(256)
 KBLOCKS=(64 128)
 STAGES_LIST=(2 3)
-SWIZZLES=(3 4)
+SWIZZLES=(2 3)
 MIN_BLOCKS_LIST=(1 2)
 LOAD_POLICIES=(cp_async)
 
@@ -377,7 +393,7 @@ for LOAD_POLICY in "${LOAD_POLICIES[@]}"; do
     echo "[sweep] Building ${LABEL}..." | tee -a "${RESULTS_DIR}/summary.txt"
 
     cmake -S "${ROOT}" -B "${BUILD_DIR}" \
-        -DPEARL_GEMM_ARCH=blackwell \
+        -DPROP_MINER_CUDA_ARCH=blackwell \
         -DCMAKE_CUDA_ARCHITECTURES=120a \
         -DPEARL_GEMM_BLACKWELL_BM=128 \
         -DPEARL_GEMM_BLACKWELL_BN=256 \

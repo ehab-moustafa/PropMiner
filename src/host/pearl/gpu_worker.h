@@ -10,7 +10,6 @@
 #include "cuda_compat.h"
 #include "pearl_capi_wrapper.h"
 #include "pearl_types.h"
-#include "seed_generator.h"
 #include "sigma_context.h"
 
 namespace pearl {
@@ -93,6 +92,14 @@ private:
         void* seed_dev_ptr = nullptr;
         uint64_t batch_seed_start = 0;  // seed_lo at graph launch for this batch
 
+        // Pinned PCIe staging for rare share-D2H paths (GPU isolation).
+        uint8_t* pinned_leaf_cvs = nullptr;
+        uint8_t* pinned_a_slice = nullptr;
+        uint8_t* pinned_opened_leaves = nullptr;
+        uint8_t* pinned_hash_b = nullptr;
+        size_t pinned_a_slice_bytes = 0;
+        size_t pinned_opened_leaves_bytes = 0;
+
         void allocate(const MiningConfig& cfg, int device_id, CUstream s);
         void free();
     };
@@ -129,12 +136,10 @@ private:
     // uploaded here while the Tensor Cores run on ping_/pong_.stream.
     CUstream seed_copy_stream_ = nullptr;
     cudaEvent_t seed_copy_done_event_ = nullptr;
+    uint64_t* pinned_seed_host_ = nullptr;
 
     HalfBuffers ping_;
     HalfBuffers pong_;
-
-    // CPU-side seed generation ring.  Performs 0% hashing math.
-    std::unique_ptr<SeedGenerator> seed_gen_;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_flag_{false};

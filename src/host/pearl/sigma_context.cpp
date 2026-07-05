@@ -102,7 +102,8 @@ SigmaContext::SigmaContext(const Job& job, const MiningConfig& cfg)
     sigma_seed_ = *reinterpret_cast<const uint64_t*>(job_.sigma.data());
 }
 
-void SigmaContext::install(CUstream stream, void* workspace, int device_id) {
+void SigmaContext::install(CUstream stream, void* workspace, int device_id,
+                           CUstream copy_stream) {
     std::lock_guard<std::mutex> lk(install_mtx_);
     if (installed_) return;
 
@@ -146,17 +147,30 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id) {
         throw;
     }
 
-    // Asynchronously copy leaf CVs to host on a side stream; the Merkle tree
-    // build then happens while noise_B runs on the main stream.
-    std::vector<uint8_t> leaf_cvs_host(resident_.leaf_cv_bytes());
-    CUstream copy_stream = nullptr;
-    cudaStream_t copy_stream_rt = nullptr;
-    cudaError_t ce = cudaStreamCreateWithFlags(&copy_stream_rt, cudaStreamNonBlocking);
-    if (ce != cudaSuccess) throw std::runtime_error("cudaStreamCreateWithFlags failed");
-    copy_stream = reinterpret_cast<CUstream>(copy_stream_rt);
-    check_cuda(cuMemcpyDtoHAsync(leaf_cvs_host.data(), resident_.leaf_cvs(),
-                                 resident_.leaf_cv_bytes(), copy_stream),
+    // Pinned staging for leaf CV D2H — avoids PCIe driver pageable staging.
+    uint8_t* leaf_cvs_pinned = nullptr;
+    cudaError_t perr = cudaHostAlloc(reinterpret_cast<void**>(&leaf_cvs_pinned),
+                                     resident_.leaf_cv_bytes(),
+                                     cudaHostAllocDefault);
+    if (perr != cudaSuccess || !leaf_cvs_pinned) {
+        throw std::runtime_error("cudaHostAlloc leaf_cvs failed");
+    }
+
+    CUstream leaf_copy_stream = copy_stream;
+    cudaStream_t ephemeral_copy = nullptr;
+    if (!leaf_copy_stream) {
+        cudaError_t ce = cudaStreamCreateWithFlags(&ephemeral_copy, cudaStreamNonBlocking);
+        if (ce != cudaSuccess) {
+            cudaFreeHost(leaf_cvs_pinned);
+            throw std::runtime_error("cudaStreamCreateWithFlags failed");
+        }
+        leaf_copy_stream = reinterpret_cast<CUstream>(ephemeral_copy);
+    }
+    check_cuda(cuMemcpyDtoHAsync(leaf_cvs_pinned, resident_.leaf_cvs(),
+                                 resident_.leaf_cv_bytes(), leaf_copy_stream),
                "leaf_cvs d2h async");
+
+    std::vector<uint8_t> leaf_cvs_host(resident_.leaf_cv_bytes());
 
     // Build noise_B side: noise_gen(B-side only) + noise_B.
     // Use the device-resident key copy (already uploaded above); like
@@ -203,8 +217,14 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id) {
 
     // Wait for both the copy and the device work to finish, then build the tree.
     check_cuda(cuStreamSynchronize(stream), "sync install stream");
-    cudaStreamSynchronize(copy_stream_rt);
-    cudaStreamDestroy(copy_stream_rt);
+    if (ephemeral_copy) {
+        cudaStreamSynchronize(ephemeral_copy);
+        cudaStreamDestroy(ephemeral_copy);
+    } else if (leaf_copy_stream) {
+        cudaStreamSynchronize(reinterpret_cast<cudaStream_t>(leaf_copy_stream));
+    }
+    std::memcpy(leaf_cvs_host.data(), leaf_cvs_pinned, resident_.leaf_cv_bytes());
+    cudaFreeHost(leaf_cvs_pinned);
 
     b_tree_ = std::make_unique<MerkleTree>(
         mining_.build_bseed_tree_from_leaf_cvs(

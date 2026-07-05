@@ -89,6 +89,18 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
         if (e != cudaSuccess) batch_done_event = nullptr;
     }
 
+    constexpr size_t kMaxShareRows = 32;
+    pinned_a_slice_bytes = kMaxShareRows * static_cast<size_t>(cfg.k);
+    pinned_opened_leaves_bytes = kMaxShareRows * 1024;
+    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&pinned_leaf_cvs),
+                             a_leaf_cv_bytes, cudaHostAllocDefault));
+    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&pinned_a_slice),
+                             pinned_a_slice_bytes, cudaHostAllocDefault));
+    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&pinned_opened_leaves),
+                             pinned_opened_leaves_bytes, cudaHostAllocDefault));
+    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&pinned_hash_b), 32,
+                             cudaHostAllocDefault));
+
     (void)device_id;
 }
 
@@ -113,6 +125,13 @@ void GpuWorker::HalfBuffers::free() {
     }
     host_headers.clear();
     host_header_storage.clear();
+    if (pinned_leaf_cvs) { cudaFreeHost(pinned_leaf_cvs); pinned_leaf_cvs = nullptr; }
+    if (pinned_a_slice) { cudaFreeHost(pinned_a_slice); pinned_a_slice = nullptr; }
+    if (pinned_opened_leaves) {
+        cudaFreeHost(pinned_opened_leaves);
+        pinned_opened_leaves = nullptr;
+    }
+    if (pinned_hash_b) { cudaFreeHost(pinned_hash_b); pinned_hash_b = nullptr; }
 }
 
 GpuWorker::GpuWorker(int device_index, int gpu_index,
@@ -144,6 +163,8 @@ GpuWorker::GpuWorker(int device_index, int gpu_index,
 
     CUDA_CHECK(cudaEventCreateWithFlags(&seed_copy_done_event_,
                                         cudaEventDisableTiming));
+    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&pinned_seed_host_),
+                             sizeof(uint64_t), cudaHostAllocDefault));
 
     ping_.allocate(cfg_, device_index_, ping_.stream);
     pong_.allocate(cfg_, device_index_, pong_.stream);
@@ -153,18 +174,14 @@ GpuWorker::GpuWorker(int device_index, int gpu_index,
     // central coordination.
     seed_base_ = (static_cast<uint64_t>(gpu_index_) << 48) |
                  (static_cast<uint64_t>(now_ms() & 0xFFFF) << 32);
-
-    // CPU seed generator: zero hashing math, only nonce/seed pre-generation.
-    seed_gen_ = std::make_unique<SeedGenerator>(seed_base_);
-    seed_gen_->start(1024);
 }
 
 GpuWorker::~GpuWorker() {
     stop();
-    seed_gen_.reset();
     ping_.free();
     pong_.free();
     if (seed_copy_done_event_) { cudaEventDestroy(seed_copy_done_event_); seed_copy_done_event_ = nullptr; }
+    if (pinned_seed_host_) { cudaFreeHost(pinned_seed_host_); pinned_seed_host_ = nullptr; }
     if (seed_copy_stream_) { cuStreamDestroy(seed_copy_stream_); seed_copy_stream_ = nullptr; }
     if (merkle_copy_stream_) cuStreamDestroy(merkle_copy_stream_);
     // Primary context is implicit with Runtime API; do not destroy it.
@@ -232,7 +249,7 @@ void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
 
     // Ensure resident B state is allocated and computed on device.  Idempotent;
     // on the second half it reuses the already-installed buffers owned by ctx.
-    ctx.install(half.stream, half.workspace, device_index_);
+    ctx.install(half.stream, half.workspace, device_index_, merkle_copy_stream_);
 
     // PoW target: nbits * DAF -> 32-byte LE uint32 array on device.
     upload_pow_target(half, target_nbits_.load());
@@ -367,10 +384,9 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
 }
 
 void GpuWorker::upload_next_seed_async(HalfBuffers& half, uint64_t seed_lo) {
-    if (!seed_copy_stream_) return;
-    // Upload the seed for the *next* batch on the dedicated copy stream.
-    // This overlaps with GEMM execution on the other half's compute stream.
-    cudaError_t e = cudaMemcpyAsync(half.seed_dev_ptr, &seed_lo,
+    if (!seed_copy_stream_ || !pinned_seed_host_) return;
+    *pinned_seed_host_ = seed_lo;
+    cudaError_t e = cudaMemcpyAsync(half.seed_dev_ptr, pinned_seed_host_,
                                     sizeof(uint64_t), cudaMemcpyHostToDevice,
                                     seed_copy_stream_);
     if (e != cudaSuccess) check_cuda(CUDA_ERROR_UNKNOWN, "seed h2d");
@@ -388,10 +404,13 @@ int GpuWorker::sync_and_scan(HalfBuffers& half, int batch) {
 std::vector<int> GpuWorker::scan_winners(HalfBuffers& half, int batch) {
     std::vector<int> winners;
     for (int k = 0; k < batch; ++k) {
-        std::memcpy(half.host_header_storage[k].data(),
-                    half.host_headers[k], half.header_size);
-        HostSignalHeader hdr(half.host_header_storage[k]);
-        if (hdr.status() == 1) winners.push_back(k);
+        HostSignalHeader hdr(static_cast<const uint8_t*>(half.host_headers[k]),
+                             half.header_size);
+        if (hdr.status() == 1) {
+            std::memcpy(half.host_header_storage[k].data(),
+                        half.host_headers[k], half.header_size);
+            winners.push_back(k);
+        }
     }
     return winners;
 }
@@ -403,26 +422,27 @@ bool GpuWorker::wait_for_batch(HalfBuffers& half, int timeout_ms) {
     }
     cudaError_t e = cudaEventQuery(half.batch_done_event);
     if (e == cudaSuccess) return true;
-    if (e == cudaErrorNotReady) {
-        if (timeout_ms > 5) {
-            for (;;) {
-                e = cudaEventQuery(half.batch_done_event);
-                if (e == cudaSuccess) return true;
-                if (e != cudaErrorNotReady) {
-                    check_cuda(CUDA_ERROR_UNKNOWN, cudaGetErrorString(e));
-                    return false;
-                }
-                if (watchdog_) watchdog_->heartbeat();
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-        }
-        return false;
-    }
-    if (e != cudaSuccess) {
+    if (e != cudaErrorNotReady) {
         check_cuda(CUDA_ERROR_UNKNOWN, cudaGetErrorString(e));
         return false;
     }
-    return false;
+    if (timeout_ms <= 0) {
+        CUDA_CHECK(cudaEventSynchronize(half.batch_done_event));
+        return true;
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeout_ms);
+    while (true) {
+        if (watchdog_) watchdog_->heartbeat();
+        e = cudaEventQuery(half.batch_done_event);
+        if (e == cudaSuccess) return true;
+        if (e != cudaErrorNotReady) {
+            check_cuda(CUDA_ERROR_UNKNOWN, cudaGetErrorString(e));
+            return false;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 bool GpuWorker::handle_trigger(HalfBuffers& half, const SigmaContext& ctx,
@@ -463,40 +483,47 @@ bool GpuWorker::handle_trigger(HalfBuffers& half, const SigmaContext& ctx,
         device_index_,
         half.stream);
 
-    // D2H the compact leaf-CV table plus the opened A rows.
-    std::vector<uint8_t> a_leaf_cvs_host(half.a_leaf_cv_bytes);
-    check_cuda(cuMemcpyDtoHAsync(a_leaf_cvs_host.data(), half.a_leaf_cvs,
+    // D2H compact proof inputs into pinned staging (single PCIe sync below).
+    if (!half.pinned_leaf_cvs || half.a_leaf_cv_bytes == 0) return false;
+    check_cuda(cuMemcpyDtoHAsync(half.pinned_leaf_cvs, half.a_leaf_cvs,
                                  half.a_leaf_cv_bytes, half.stream),
                "a_leaf_cvs d2h");
 
-    size_t row_bytes = static_cast<size_t>(cfg_.k);
-    std::vector<uint8_t> a_slice(a_rows.size() * row_bytes);
+    const size_t row_bytes = static_cast<size_t>(cfg_.k);
+    if (a_rows.size() * row_bytes > half.pinned_a_slice_bytes) return false;
     for (size_t i = 0; i < a_rows.size(); ++i) {
-        uint32_t row = a_rows[i];
+        const uint32_t row = a_rows[i];
         check_cuda(cuMemcpyDtoHAsync(
-            a_slice.data() + i * row_bytes,
+            half.pinned_a_slice + i * row_bytes,
             half.a + row * row_bytes,
             row_bytes, half.stream), "a slice d2h");
     }
 
     const auto a_leaf_indices =
         compute_leaf_indices_from_rows(a_rows, row_bytes);
-    std::vector<uint8_t> a_opened_leaf_data(a_leaf_indices.size() * 1024);
+    const size_t opened_bytes = a_leaf_indices.size() * 1024;
+    if (opened_bytes > half.pinned_opened_leaves_bytes) return false;
     for (size_t i = 0; i < a_leaf_indices.size(); ++i) {
         const uint64_t byte_off =
             static_cast<uint64_t>(a_leaf_indices[i]) * 1024;
         check_cuda(cuMemcpyDtoHAsync(
-            a_opened_leaf_data.data() + i * 1024,
+            half.pinned_opened_leaves + i * 1024,
             half.a + byte_off,
             1024, half.stream), "a opened leaf d2h");
     }
+
+    check_cuda(cuMemcpyDtoHAsync(half.pinned_hash_b, ctx.resident().b_hash(), 32,
+                                 half.stream), "b_hash d2h");
     check_cuda(cuStreamSynchronize(half.stream), "sync trigger d2h");
 
-    // BHash from resident state.
+    std::vector<uint8_t> a_leaf_cvs_host(half.a_leaf_cv_bytes);
+    std::memcpy(a_leaf_cvs_host.data(), half.pinned_leaf_cvs, half.a_leaf_cv_bytes);
+    std::vector<uint8_t> a_slice(a_rows.size() * row_bytes);
+    std::memcpy(a_slice.data(), half.pinned_a_slice, a_slice.size());
+    std::vector<uint8_t> a_opened_leaf_data(opened_bytes);
+    std::memcpy(a_opened_leaf_data.data(), half.pinned_opened_leaves, opened_bytes);
     std::array<uint8_t, 32> hash_b{};
-    check_cuda(cuMemcpyDtoHAsync(hash_b.data(), ctx.resident().b_hash(), 32,
-                                 half.stream), "b_hash d2h");
-    check_cuda(cuStreamSynchronize(half.stream), "sync b_hash");
+    std::memcpy(hash_b.data(), half.pinned_hash_b, 32);
 
     ShareFound share;
     share.job = ctx.job();
@@ -567,10 +594,6 @@ void GpuWorker::run() {
                     batch, cur->graph_ready ? "on" : "off");
             }
             upload_next_seed_async(*cur, seed_base_ + global_iter);
-            if (seed_copy_done_event_) {
-                cudaError_t w = cudaEventSynchronize(seed_copy_done_event_);
-                if (w != cudaSuccess) check_cuda(CUDA_ERROR_UNKNOWN, "seed sync first batch");
-            }
             queue_batch(*cur, seed_base_ + global_iter, batch);
             // Start uploading the seed for the next batch immediately so the
             // conveyor belt is primed.
@@ -594,9 +617,9 @@ void GpuWorker::run() {
         // Wait for the previously-launched batch on `other` with a short sleep
         // so the host does not burn a core.  We still want low latency in case
         // a share is found.
-        wait_for_batch(*other, /*timeout_ms=*/10);
-
-        check_cuda(cuStreamSynchronize(other->stream), "sync batch");
+        if (!wait_for_batch(*other, 0)) {
+            check_cuda(cuStreamSynchronize(other->stream), "sync batch");
+        }
         const auto winners = scan_winners(*other, batch);
         for (int winner : winners) {
             handle_trigger(*other, *current_sigma,

@@ -95,8 +95,13 @@ else ifeq ($(PEARL_GEMM_ARCH),ada)
   ARCH := -gencode=arch=compute_89,code=sm_89
   ARCH_DEFINES := -DPEARL_GEMM_PORTABLE -DPEARL_GEMM_ADA
 else ifeq ($(PEARL_GEMM_ARCH),blackwell)
-  # RTX 5090 only: native sm_120a cubin. No sm_80/sm_89 cubins at all.
+  # RTX 5090: native sm_120a cubin. Optional sm_120 fallback for older toolchains
+  # (set PEARL_GEMM_BLACKWELL_SM120_FALLBACK=1; production Docker audits sm_120a only).
   ARCH := -gencode=arch=compute_120a,code=sm_120a
+ifeq ($(PEARL_GEMM_BLACKWELL_SM120_FALLBACK),1)
+  ARCH += -gencode=arch=compute_120,code=sm_120
+  $(info NOTE: blackwell sm_120 fallback gencode enabled)
+endif
   ARCH_DEFINES := -DPEARL_GEMM_PORTABLE -DPEARL_GEMM_BLACKWELL -DPEARL_GEMM_SM120_NATIVE=1
 else ifeq ($(PEARL_GEMM_ARCH),b200)
   ARCH := -gencode=arch=compute_100a,code=sm_100a
@@ -107,9 +112,16 @@ endif
 
 # Escape hatch for low-RAM dev hosts (e.g. WSL ~8 GiB) where the full
 # portable multi-arch nvcc batch OOMs.  Setting
-# PEARL_GEMM_LOCAL_ARCH=sm_86 (or sm_120a etc) overrides the gencode list
+# PEARL_GEMM_LOCAL_ARCH=sm_86 (or sm_120a / sm_120 etc) overrides the gencode list
 # above to that one cubin only.  Production builds must NOT set this.
 ifneq ($(PEARL_GEMM_LOCAL_ARCH),)
+  ifeq ($(PEARL_GEMM_ARCH),blackwell)
+    ifneq ($(PEARL_GEMM_LOCAL_ARCH),sm_120a)
+      ifneq ($(PEARL_GEMM_LOCAL_ARCH),sm_120)
+        $(error blackwell profile: PEARL_GEMM_LOCAL_ARCH must be sm_120a or sm_120)
+      endif
+    endif
+  endif
   _LOCAL_COMPUTE := $(subst sm_,compute_,$(PEARL_GEMM_LOCAL_ARCH))
   ARCH := -gencode=arch=$(_LOCAL_COMPUTE),code=$(PEARL_GEMM_LOCAL_ARCH)
   $(info NOTE: PEARL_GEMM_LOCAL_ARCH override → $(ARCH))

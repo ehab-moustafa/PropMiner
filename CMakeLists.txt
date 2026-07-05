@@ -19,13 +19,16 @@ find_package(CUDAToolkit REQUIRED)
 find_package(OpenSSL REQUIRED)
 
 # ── Auto-detect GPU architecture ───────────────────────────────────────
-set(PROP_MINER_CUDA_ARCH "auto" CACHE STRING
+# Default blackwell (sm_120a) for RTX 5090; use auto only when building for
+# other SKUs on a machine with nvidia-smi visible at configure time.
+set(PROP_MINER_CUDA_ARCH "blackwell" CACHE STRING
     "GPU arch profile: auto|h100|volta|turing|portable|ampere|ada|blackwell|b200")
 
 function(detect_gpu_arch out_var)
     find_program(NVIDIA_SMI nvidia-smi)
     if(NOT NVIDIA_SMI)
-        set(${out_var} "portable" PARENT_SCOPE)
+        set(${out_var} "blackwell" PARENT_SCOPE)
+        message(STATUS "nvidia-smi not found; using blackwell (sm_120a) for RTX 5090")
         return()
     endif()
     execute_process(
@@ -59,6 +62,9 @@ if(PROP_MINER_CUDA_ARCH STREQUAL "auto")
     message(STATUS "Auto-detected PEARL_GEMM_ARCH=${PROP_MINER_CUDA_ARCH}")
 endif()
 set(PEARL_GEMM_ARCH "${PROP_MINER_CUDA_ARCH}" CACHE STRING "" FORCE)
+if(PEARL_GEMM_ARCH STREQUAL "blackwell")
+    message(STATUS "Blackwell build: nvcc targets sm_120a (RTX 5090 native)")
+endif()
 
 # ── Kernel tuning knobs (only affect consumer/Blackwell/Ada builds) ────
 set(PEARL_GEMM_BLACKWELL_BM "128" CACHE STRING "Blackwell consumer tile M")

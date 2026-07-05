@@ -7,6 +7,7 @@
 #include "pearl/host_signal_header.h"
 #include "pearl/job_key.h"
 #include "pearl/pearl_types.h"
+#include "pearl/rtx5090_profile.h"
 #include "pearl/proto/mining_v2.h"
 #include "pearl/protobuf_encoder.h"
 
@@ -195,6 +196,19 @@ static void test_mining_config_conservative() {
     EXPECT(cfg.difficulty_adjustment_factor() > 0);
 }
 
+static void test_rtx5090_wave_alignment() {
+    EXPECT(Rtx5090Profile::wave_aligned(8192, 65280));
+    EXPECT(Rtx5090Profile::wave_aligned(8192, 43520));
+    EXPECT(!Rtx5090Profile::wave_aligned(8192, 32768));
+    EXPECT(Rtx5090Profile::wave_aligned_n_at_least(8192, 32768) >= 43520);
+    auto cfg = rtx5090_mining_config(0);
+    EXPECT(cfg.m == 8192);
+    EXPECT(cfg.n >= 32768);
+    EXPECT(Rtx5090Profile::tiles(cfg.m, cfg.n) >= Rtx5090Profile::kSMCount * 2);
+    auto bench_cfg = rtx5090_mining_config(0, Rtx5090Profile::kBenchMaxN);
+    EXPECT(bench_cfg.n == Rtx5090Profile::kBenchMaxN);
+}
+
 static void test_share_found_serialization_sanity() {
     ShareFound share;
     share.job.config = MiningConfig::conservative();
@@ -359,6 +373,7 @@ int main() {
     test_reference_claimed_hash_deterministic();
     test_host_signal_header_index_extraction();
     test_mining_config_conservative();
+    test_rtx5090_wave_alignment();
     test_share_found_serialization_sanity();
 #if !PROP_MINER_HOST_ONLY_TESTS
     test_merkle_proof_roundtrip();

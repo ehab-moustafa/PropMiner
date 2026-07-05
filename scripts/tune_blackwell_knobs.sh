@@ -21,7 +21,7 @@ BMS=(128 256)
 BNS=(128 256)
 KBLOCKS=(64 128)
 STAGES_LIST=(2 3 4)
-SWIZZLES=(2 3 4)
+SWIZZLES=(2 3)
 MIN_BLOCKS_LIST=(1 2)
 LOAD_POLICIES=(cp_async tma)
 
@@ -39,7 +39,7 @@ for LOAD_POLICY in "${LOAD_POLICIES[@]}"; do
     echo "[tune] Building ${LABEL}..."
 
     cmake -S "${ROOT}" -B "${BUILD_DIR}" \
-        -DPEARL_GEMM_ARCH=blackwell \
+        -DPROP_MINER_CUDA_ARCH=blackwell \
         -DCMAKE_CUDA_ARCHITECTURES=120a \
         -DPEARL_GEMM_BLACKWELL_BM="${BM}" \
         -DPEARL_GEMM_BLACKWELL_BN="${BN}" \
