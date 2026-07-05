@@ -364,7 +364,11 @@ int WorkerOrchestrator::run() {
         job.target_nbits = 0x01111111;
         bench_target_nbits = job.target_nbits;
         bench_ctx = std::make_shared<SigmaContext>(job, tuned_config);
-        std::cerr << "[orchestrator] Benchmark mode: local job, no pool connection\n";
+        // Full production batch (20) can take >2 min per graph launch on WSL2.
+        // Use a smaller batch so at least one completes inside the bench window.
+        tuned_batch = std::min(tuned_batch, 4);
+        std::cerr << "[orchestrator] Benchmark mode: local job, no pool connection"
+                  << " (bench batch=" << tuned_batch << ")\n";
     }
 
     for (int idx : indices) {

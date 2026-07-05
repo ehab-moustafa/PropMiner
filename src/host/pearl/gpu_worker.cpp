@@ -397,12 +397,17 @@ bool GpuWorker::wait_for_batch(HalfBuffers& half, int timeout_ms) {
     cudaError_t e = cudaEventQuery(half.batch_done_event);
     if (e == cudaSuccess) return true;
     if (e == cudaErrorNotReady) {
-        // Brief nap to let the GPU run without spinning the CPU core.
-        // For long batches we wait on the event; for very fast batches we just
-        // poll to keep latency low.
         if (timeout_ms > 5) {
-            cudaError_t w = cudaEventSynchronize(half.batch_done_event);
-            return w == cudaSuccess;
+            for (;;) {
+                e = cudaEventQuery(half.batch_done_event);
+                if (e == cudaSuccess) return true;
+                if (e != cudaErrorNotReady) {
+                    check_cuda(CUDA_ERROR_UNKNOWN, cudaGetErrorString(e));
+                    return false;
+                }
+                if (watchdog_) watchdog_->heartbeat();
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
         }
         return false;
     }
