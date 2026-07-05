@@ -87,6 +87,13 @@ RUN --mount=type=cache,target=/ccache \
     cmake --build build_runtime --target propminer -j"$(nproc)" \
     && ccache -s
 
+# Audit: prove which architecture each cubin in the gemm library targets.
+# Expects sm_120a for the bulk of the library and sm_80/sm_89 only for the
+# SM80-atom kernels that are forced via per-object gencode override.
+RUN cuobjdump -lelf build_runtime/libpearl_gemm_capi.so | tee build_runtime/cubins.txt \
+    && echo "==> unique cubin archs:" \
+    && grep -oE 'sm_[0-9a-z_]+' build_runtime/cubins.txt | sort -u
+
 # ── CUDA 12.8 runtime stage ────────────────────────────────────────────────
 # Extract only the runtime libraries we need from the official CUDA 12.8
 # redist tarballs.  This avoids PyTorch ABI mismatch issues and gives us a

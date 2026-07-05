@@ -263,16 +263,18 @@ NVCC_FLAGS_BASE := \
 LINK_ARCH := $(ARCH)
 NVCC_FILE_ARCH := $(ARCH)
 
-# On Blackwell the portable int8 GEMM uses the hard-coded SM80 IMMA atom
+# On Blackwell the kernels below hard-code the SM80 IMMA atom
 # (SM80_16x8x32_S32S8S8S32_TN). Embedding that atom into an sm_120a cubin can
 # trigger CUTLASS arch-conditional MMA assertions on RTX 5090 / WSL2.
-# Compile the affected helper TUs only for the SM80 ISA; the CUDA loader will
-# run the sm_80 cubin via forward compatibility on SM120, where Ampere-style
-# mma.sync is supported (consumer Blackwell has no TMEM/UMMA path).
+# Compile the affected TUs only for sm_80/sm_89; the CUDA loader will run the
+# sm_80 cubin via forward compatibility on SM120, where Ampere-style mma.sync
+# is supported (consumer Blackwell has no TMEM/UMMA path).
 ifeq ($(PEARL_GEMM_ARCH),blackwell)
-PORTABLE_SM80_ONLY_ARCH := \
+SM80_ONLY_ARCH := \
   -gencode=arch=compute_80,code=sm_80 \
   -gencode=arch=compute_89,code=sm_89
+else
+SM80_ONLY_ARCH :=
 endif
 
 # Sources — everything pearl_capi_* needs.
@@ -388,9 +390,16 @@ $(TARGET): $(STATIC_SWITCH_HEADERS) $(OBJS) | $(BUILD)
 	@echo "==> ldd:"
 	@ldd $@ | sed 's/^/    /' || true
 
+# Compile the SM80 MMA-atom kernels only for sm_80/sm_89 on Blackwell. The RTX
+# 5090 uses those cubins via forward compatibility and avoids arch-conditional
+# MMA assertions for SM80 atoms embedded in sm_120a.
 $(BUILD)/portable/portable_int8_gemm.cu.o: $(SRC)/portable/portable_int8_gemm.cu | $(BUILD)
 	@mkdir -p $(dir $@)
-	$(NVCC) $(NVCC_FLAGS_BASE) $(if $(PORTABLE_SM80_ONLY_ARCH),$(PORTABLE_SM80_ONLY_ARCH),$(NVCC_FILE_ARCH)) --threads $(NVCC_THREADS) -c $< -o $@
+	$(NVCC) $(NVCC_FLAGS_BASE) $(if $(SM80_ONLY_ARCH),$(SM80_ONLY_ARCH),$(NVCC_FILE_ARCH)) --threads $(NVCC_THREADS) -c $< -o $@
+
+$(BUILD)/consumer/transcript_gemm_kernel.cu.o: $(SRC)/consumer/transcript_gemm_kernel.cu | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(NVCC_FLAGS_BASE) $(if $(SM80_ONLY_ARCH),$(SM80_ONLY_ARCH),$(NVCC_FILE_ARCH)) --threads $(NVCC_THREADS) -DPEARL_CONSUMER_DISABLE_CLUSTER_LAUNCH -c $< -o $@
 
 $(BUILD)/%.cu.o: $(SRC)/%.cu | $(BUILD)
 	@mkdir -p $(dir $@)

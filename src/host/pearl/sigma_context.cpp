@@ -158,6 +158,9 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id) {
                "leaf_cvs d2h async");
 
     // Build noise_B side: noise_gen(B-side only) + noise_B.
+    // Use the device-resident key copy (already uploaded above); like
+    // tensor_hash, the noise-generation kernel reads key data from GPU memory.
+    const uint8_t* dev_key = reinterpret_cast<const uint8_t*>(resident_.key());
     int rc = pearl_capi_noise_gen(
         cfg_.r, 0, cfg_.n, cfg_.k,
         nullptr, nullptr,
@@ -166,8 +169,8 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id) {
         reinterpret_cast<void*>(resident_.ebl_k()),
         reinterpret_cast<void*>(resident_.ebr()),
         reinterpret_cast<void*>(resident_.ebr_fp16()),
-        job_.job_key.data(),
-        job_.job_key.data(),
+        dev_key,
+        dev_key,
         stream);
     if (rc != 0) {
         cudaError_t last = cudaGetLastError();
