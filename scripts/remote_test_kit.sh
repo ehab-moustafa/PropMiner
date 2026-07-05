@@ -32,7 +32,7 @@ mkdir -p "${RESULTS_DIR}"
 PROPMINER_LOG_DIR="${RESULTS_DIR}"
 source "${ROOT}/scripts/setup_cuda_env.sh"
 
-BENCH_SECONDS=60
+BENCH_SECONDS="${PROPMINER_BENCH_SECONDS:-60}"
 SWEEP_SECONDS=15
 # Quick Salad loop: self-test only unless explicitly enabled.
 SKIP_SWEEP="${PROPMINER_SKIP_SWEEP:-1}"

@@ -339,7 +339,9 @@ int WorkerOrchestrator::run() {
     gpu_uuids_.clear();
     for (const auto& c : gpu_cards) gpu_uuids_.push_back(c.uuid);
 
-    if (cfg_.enable_watchdog) {
+    const bool bench_mode = cfg_.speed_test_seconds > 0;
+
+    if (cfg_.enable_watchdog && !bench_mode) {
         watchdog_ = std::make_unique<Watchdog>();
         watchdog_->start([this]() {
             std::cerr << "[watchdog] stall detected — republishing current job\n";
@@ -350,7 +352,6 @@ int WorkerOrchestrator::run() {
         });
     }
 
-    const bool bench_mode = cfg_.speed_test_seconds > 0;
     uint32_t bench_target_nbits = 0;
     std::shared_ptr<SigmaContext> bench_ctx;
     if (bench_mode) {
