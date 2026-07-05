@@ -86,6 +86,7 @@ private:
         // the compute stream is busy with the previous batch.
         CUdeviceptr seed_dev = 0;
         void* seed_dev_ptr = nullptr;
+        uint64_t batch_seed_start = 0;  // seed_lo at graph launch for this batch
 
         void allocate(const MiningConfig& cfg, int device_id, CUstream s);
         void free();

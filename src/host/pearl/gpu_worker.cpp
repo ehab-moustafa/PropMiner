@@ -329,6 +329,7 @@ void GpuWorker::prepare_graph(HalfBuffers& half) {
 }
 
 void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count) {
+    half.batch_seed_start = seed_lo_start;
     // Clear host headers.
     for (int i = 0; i < count; ++i) {
         std::memset(half.host_headers[i], 0, half.header_size);
@@ -524,6 +525,11 @@ void GpuWorker::run() {
         HalfBuffers* other = pong;
 
         if (first) {
+            upload_next_seed_async(*cur, seed_base_ + global_iter);
+            if (seed_copy_done_event_) {
+                cudaError_t w = cudaEventSynchronize(seed_copy_done_event_);
+                if (w != cudaSuccess) check_cuda(CUDA_ERROR_UNKNOWN, "seed sync first batch");
+            }
             queue_batch(*cur, seed_base_ + global_iter, batch);
             // Start uploading the seed for the next batch immediately so the
             // conveyor belt is primed.
@@ -553,7 +559,7 @@ void GpuWorker::run() {
         if (winner >= 0) {
             handle_trigger(*other, *current_sigma,
                            other->host_header_storage[winner],
-                           seed_base_ + global_iter - 2 * batch + winner);
+                           other->batch_seed_start + static_cast<uint64_t>(winner));
         }
 
         uint64_t t1 = now_ms();
