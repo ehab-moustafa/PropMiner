@@ -66,13 +66,21 @@ struct Rtx5090Profile {
         return t * kTileN;
     }
 
+    // Conservative VRAM budget for production N selection (ping-pong C, resident B,
+    // CUDA graphs, pearl workspace).  Strict < free_bytes.
     static bool shape_fits_vram(int M, int N, int K, size_t free_bytes) {
-        const int64_t a = int64_t(M) * K;
-        const int64_t b = int64_t(K) * N;
-        const int64_t c = int64_t(M) * N;
-        int64_t bytes = a + b + 4 * c;
-        bytes += bytes / 4;  // leaf CVs, noise, alignment headroom
-        return free_bytes == 0 || static_cast<size_t>(bytes) < free_bytes;
+        if (free_bytes == 0) {
+            // Assume 32 GB GDDR7 minus ~4 GiB driver/OS reserve when query unavailable.
+            free_bytes = (28ULL << 30);
+        }
+        const int64_t a_ping_pong = 2 * int64_t(M) * K;
+        const int64_t b_resident = int64_t(K) * N;
+        const int64_t c_ping_pong = 2 * int64_t(M) * N * 2;  // two fp16 C halves
+        const int64_t r = 128;
+        const int64_t resident_b = b_resident + 6 * int64_t(N) * r;  // B + noise side
+        int64_t bytes = a_ping_pong + b_resident + c_ping_pong + resident_b;
+        bytes += bytes / 4;  // workspace, graphs, leaf CVs, alignment
+        return static_cast<size_t>(bytes) < free_bytes;
     }
 
     // Prefer largest high-intensity N validated on 5090; fall back gracefully.

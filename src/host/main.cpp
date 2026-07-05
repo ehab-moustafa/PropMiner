@@ -144,7 +144,7 @@ static void print_usage(const char* prog) {
         "  --bench SECONDS      Run benchmark only, don't connect to pool\n"
         "  --self-test          Mine tiny problem + verify first share, then exit\n"
         "  --config M,N,K,R     Override default mining dimensions\n"
-        "  --rtx5090            Use hard-coded RTX 5090 profile (M=8192,N=32768)\n"
+        "  --rtx5090            RTX 5090 profile (M=8192, N up to 262144 from VRAM)\n"
         "  --no-watchdog        Disable GPU watchdog/auto-recovery thread\n"
         "  --disable-cpu        Explicitly disable CPU mining (default; no-op)\n"
         "  --tls 0/1            Use TLS (default: 1)\n"
@@ -344,8 +344,17 @@ int main(int argc, char* argv[]) {
     if (bench_seconds > 0) {
         fprintf(stderr, "[main] Benchmark mode: %d seconds\n", bench_seconds);
     } else {
-        fprintf(stderr, "[main] Wallet: %s Worker: %s\n\n",
+        fprintf(stderr, "[main] Production mine mode: pool %s:%d TLS=%s\n",
+                cfg.pool_host.c_str(), cfg.pool_port, cfg.use_tls ? "on" : "off");
+        fprintf(stderr, "[main] Wallet: %s Worker: %s\n",
                 cfg.wallet_address.c_str(), cfg.worker_name.c_str());
+        if (use_rtx5090_profile) {
+            fprintf(stderr,
+                    "[main] Expect first pool job + sigma install before hashrate > 0 "
+                    "(full N may take 60-120s for first batch).\n\n");
+        } else {
+            fprintf(stderr, "\n");
+        }
     }
 
     return orch.run();

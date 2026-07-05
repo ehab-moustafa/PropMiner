@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Route container start by PROPMINER_MODE:
-#   test      — quick self-test then exit (default)
-#   full      — self-test + 60s benchmark (+ optional sweep if enabled)
-#   mine      — connect to pool and mine until stopped
+#   full      — self-test + 120s benchmark (default for zero-config Salad validation)
+#   test      — quick self-test only
+#   mine      — connect to pool and mine until stopped (requires PROPMINER_WALLET)
 set -euo pipefail
 
-MODE="${PROPMINER_MODE:-full}"
+MODE_RAW="${PROPMINER_MODE:-full}"
+MODE="$(printf '%s' "${MODE_RAW}" | tr '[:upper:]' '[:lower:]')"
+
+echo "[entrypoint] PROPMINER_MODE=${MODE_RAW} -> ${MODE}" >&2
 
 case "${MODE}" in
     mine|mining)
@@ -18,7 +21,16 @@ case "${MODE}" in
         export PROPMINER_SKIP_NCU=1
         exec ./scripts/remote_test_kit.sh
         ;;
-    test|*)
+    test)
+        export PROPMINER_QUICK_EXIT=1
+        export PROPMINER_SKIP_BENCH=1
+        export PROPMINER_SKIP_SWEEP=1
+        export PROPMINER_SKIP_NCU=1
         exec ./scripts/remote_test_kit.sh
+        ;;
+    *)
+        echo "[entrypoint] ERROR: unknown PROPMINER_MODE='${MODE_RAW}'." >&2
+        echo "[entrypoint] Valid values: full, test, mine (or mining)." >&2
+        exit 1
         ;;
 esac

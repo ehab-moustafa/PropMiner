@@ -130,7 +130,8 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV PEARL_GEMM_CONSUMER_CLUSTER_M=1
 ENV CUDA_MODULE_LOADING=EAGER
 ENV CUDA_DEVICE_MAX_CONNECTIONS=1
-# Zero-config Salad deploy: full validation kit (self-test + 60s benchmark).
+# Zero-config Salad validation: PROPMINER_MODE=full (self-test + 120s benchmark).
+# Production mining: override PROPMINER_MODE=mine and set PROPMINER_WALLET.
 ENV PROPMINER_MODE=full
 ENV PROPMINER_QUICK_EXIT=0
 ENV PROPMINER_SKIP_BENCH=0

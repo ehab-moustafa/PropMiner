@@ -277,7 +277,7 @@ int WorkerOrchestrator::run() {
 
     if (cfg_.disable_cpu_mining) {
         std::cerr << "[orchestrator] CPU mining disabled; CPU is used only for "
-                     "host management, seed generation, and PCIe feeding.\n";
+                     "host management, seed upload, and PCIe feeding.\n";
     }
 
     MiningConfig tuned_config = cfg_.mining_config;
@@ -336,9 +336,14 @@ int WorkerOrchestrator::run() {
         }
     }
 
-    {
+    const bool rtx5090_shape =
+        (tuned_config.m == Rtx5090Profile::kDefaultM &&
+         tuned_config.n >= Rtx5090Profile::kDefaultN);
+    if (rtx5090_shape) {
         std::cerr << "[orchestrator] RTX 5090: GPU-isolated path (VRAM-resident B, "
                      "CUDA graphs, pinned PCIe, no CPU mining)\n";
+    }
+    {
         const int ctas = Rtx5090Profile::tiles(tuned_config.m, tuned_config.n);
         const int tail = ctas % Rtx5090Profile::kSMCount;
         std::cerr << "[orchestrator] GEMM grid: M=" << tuned_config.m
@@ -350,11 +355,16 @@ int WorkerOrchestrator::run() {
                   << " batch=" << tuned_batch << "\n";
     }
 
+    const bool bench_mode = cfg_.speed_test_seconds > 0;
+    if (!bench_mode) {
+        std::cerr << "[orchestrator] Production mine mode: pool "
+                  << cfg_.pool_host << ":" << cfg_.pool_port
+                  << " (awaiting first job before GPU work begins)\n";
+    }
+
     const auto gpu_cards = enumerate_gpu_cards();
     gpu_uuids_.clear();
     for (const auto& c : gpu_cards) gpu_uuids_.push_back(c.uuid);
-
-    const bool bench_mode = cfg_.speed_test_seconds > 0;
 
     if (cfg_.enable_watchdog && !bench_mode) {
         watchdog_ = std::make_unique<Watchdog>();
