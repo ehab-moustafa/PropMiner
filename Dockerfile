@@ -31,10 +31,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CCACHE_DIR=/ccache
-ENV CCACHE_MAXSIZE=5G
+ENV CCACHE_MAXSIZE=10G
+ENV CCACHE_COMPRESS=1
+ENV CCACHE_SLOPPINESS=include_file_mtime,include_file_ctime,time_macros
+ENV CCACHE_BASEDIR=/root/PropMiner
 ENV CMAKE_CXX_COMPILER_LAUNCHER=ccache
 ENV CMAKE_CUDA_COMPILER_LAUNCHER=ccache
+ENV NVCC="ccache /usr/local/cuda/bin/nvcc"
 ENV PATH=/usr/lib/ccache:${PATH}
+RUN ln -sf /usr/bin/ccache /usr/lib/ccache/nvcc
 
 # Install Rust stable toolchain.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
@@ -42,23 +47,45 @@ ENV PATH=/root/.cargo/bin:${PATH}
 RUN rustup default stable
 
 WORKDIR /root/PropMiner
-COPY . /root/PropMiner
 
-# Pre-build PropMiner so runtime nodes only download binaries.
-# ccache is mounted from the host cache to speed up rebuilds.
+# Layer 1: deps + CUDA/Rust libs. Cached when only host C++ sources change.
+COPY CMakeLists.txt .
+COPY third_party third_party
+COPY include include
+COPY src/cuda src/cuda
+
+ARG CMAKE_BUILD_ARGS="\
+  -DCMAKE_BUILD_TYPE=Release \
+  -DPROP_MINER_CUDA_ARCH=blackwell \
+  -DCMAKE_CUDA_ARCHITECTURES=120 \
+  -DPEARL_GEMM_BLACKWELL_BM=128 \
+  -DPEARL_GEMM_BLACKWELL_BN=256 \
+  -DPEARL_GEMM_BLACKWELL_KBLOCK=128 \
+  -DPEARL_GEMM_BLACKWELL_STAGES=2 \
+  -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=3 \
+  -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
+  -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async"
+
 RUN --mount=type=cache,target=/ccache \
-    cmake -S . -B build_runtime \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DPROP_MINER_CUDA_ARCH=blackwell \
-    -DCMAKE_CUDA_ARCHITECTURES=120 \
-    -DPEARL_GEMM_BLACKWELL_BM=128 \
-    -DPEARL_GEMM_BLACKWELL_BN=256 \
-    -DPEARL_GEMM_BLACKWELL_KBLOCK=128 \
-    -DPEARL_GEMM_BLACKWELL_STAGES=2 \
-    -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=3 \
-    -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
-    -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
-    && cmake --build build_runtime --target propminer -j"$(nproc)"
+    --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/root/PropMiner/build_runtime/pearl_mining_capi \
+    cmake -S . -B build_runtime ${CMAKE_BUILD_ARGS} \
+    && cmake --build build_runtime \
+       --target stage_gemm_lib stage_mining_lib \
+       -j"$(nproc)" \
+    && ccache -s
+
+# Layer 2: host sources + final link. Fast when only PropMiner host code changes.
+COPY src/host src/host
+COPY scripts scripts
+
+RUN --mount=type=cache,target=/ccache \
+    --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/root/PropMiner/build_runtime/pearl_mining_capi \
+    cmake --build build_runtime --target propminer -j"$(nproc)" \
+    && ccache -s
 
 # ── CUDA 12.8 runtime stage ────────────────────────────────────────────────
 # Extract only the runtime libraries we need from the official CUDA 12.8
