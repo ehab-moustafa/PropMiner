@@ -82,6 +82,7 @@ static int run_self_test() {
     CaptureSink sink;
     GpuWorker worker(0, 0, cfg, &sink);
     worker.set_sigma(ctx);
+    worker.set_target_nbits(job.target_nbits);
     worker.set_matmuls_per_poll(8);
     worker.start();
 
