@@ -35,12 +35,27 @@
 #include <cute/atom/copy_atom.hpp>
 #include <cute/tensor.hpp>
 #include <cutlass/arch/mma_sm80.h>
+#if defined(PEARL_GEMM_SM120_NATIVE) && PEARL_GEMM_SM120_NATIVE
+#include <cutlass/arch/mma_sm120.h>
+#endif
 
 namespace pearl::capi::portable {
 
 namespace {
 
 using namespace cute;
+
+// Native sm_120a int8 IMMA for noise_A / noise_B portable projections.
+// CUTLASS has no SM120_16x8x32_TN Operation for int8 (only FP8/FP4); consumer
+// Blackwell executes the same mma.sync m16n8k32.s32.s8.s8.s32 hardware insn
+// via the SM80 MMA_Atom traits compiled into an sm_120a cubin (no sm_80/sm_89
+// forward-compat cubins).
+#ifndef PEARL_PORTABLE_MMA_ATOM_TYPE
+#define PEARL_PORTABLE_MMA_ATOM_TYPE SM80_16x8x32_S32S8S8S32_TN
+#endif
+#if defined(PEARL_GEMM_SM120_NATIVE) && PEARL_GEMM_SM120_NATIVE
+#pragma message("portable_int8_gemm.cu: sm_120a native cubin, SM80 int8 MMA atom (hardware m16n8k32)")
+#endif
 
 // ── Tile shape ──────────────────────────────────────────────────────────────
 //   bM=64, bN={64,128}, bK=64 chosen so:
@@ -73,7 +88,7 @@ using SmemLayoutA = decltype(tile_to_shape(
 template <int kTileN>
 struct Int8GemmTraits {
   using SmTiledMma = TiledMMA<
-      MMA_Atom<SM80_16x8x32_S32S8S8S32_TN>,
+      MMA_Atom<PEARL_PORTABLE_MMA_ATOM_TYPE>,
       Layout<Shape<_4, _1, _1>>,
       Tile<Int<kBM>, Int<kTileN>, Int<kAtomK>>>;
 

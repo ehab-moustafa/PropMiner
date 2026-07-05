@@ -542,10 +542,15 @@ PEARL_CAPI_EXPORT int pearl_capi_noise_B(const PearlCapiNoiseBParams* p,
     }
 
     // EARxBpEB_fp16 = (BpEB @ EAR_K_major.T) / 2^12   shapes: (n,k)@(k,r) → (n,r)
-    rc = int8_matmul_into_fp16_div(
-        static_cast<const int8_t*>(p->BpEB),
-        static_cast<const int8_t*>(p->EAR_K_major),
-        p->EARxBpEB, scratch, n, r, k, /*divisor_log2*/12, stream);
+    // σ-install (PropMiner sigma_context) only computes BpEB; EAR is generated
+    // per-nonce inside pearl_capi_iter once CommitA exists.  ROCm mirrors this:
+    // install_B noise_B only materialises BpEB.  Skip when EAR is absent.
+    if (p->EAR_K_major != nullptr && p->EARxBpEB != nullptr) {
+      rc = int8_matmul_into_fp16_div(
+          static_cast<const int8_t*>(p->BpEB),
+          static_cast<const int8_t*>(p->EAR_K_major),
+          p->EARxBpEB, scratch, n, r, k, /*divisor_log2*/12, stream);
+    }
     if (scratch_owned) cudaFreeAsync(scratch, stream);
     return rc;
 #else

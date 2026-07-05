@@ -66,11 +66,20 @@ int int8_matmul_into_fp16_div(
     void* out_fp16, int32_t* scratch_i32,
     int M, int N, int K, int divisor_log2,
   cudaStream_t stream) {
+  if (!A || !B || !out_fp16 || !scratch_i32) return -112;
   int rc = int8_matmul_i32_native(A, B, scratch_i32, M, N, K, stream);
   if (rc != 0) {
     fprintf(stderr, "[pearl-gemm] int8_matmul_into_fp16_div matmul failed rc=%d M=%d N=%d K=%d\n",
             rc, M, N, K);
     return rc;
+  }
+  // Surface async kernel faults from the matmul before launching the epilogue.
+  cudaError_t sync_err = cudaStreamSynchronize(stream);
+  if (sync_err != cudaSuccess) {
+    fprintf(stderr,
+            "[pearl-gemm] int8_matmul_into_fp16_div matmul sync failed: %s M=%d N=%d K=%d\n",
+            cudaGetErrorString(sync_err), M, N, K);
+    return -113;
   }
   int64_t n = (int64_t)M * (int64_t)N;
   int block = 256;
