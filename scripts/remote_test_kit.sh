@@ -125,12 +125,13 @@ ensure_pytorch_cuda_fallback() {
 run_propminer() {
     local bin="${1}"
     shift
-    # First try bundled CUDA 12.8 runtime + WSL2 driver store setup.
-    if "${bin}" "$@" 2>/dev/null; then
+    # Keep stderr — hiding it caused hours of blind retries on Salad/WSL2.
+    if "${bin}" "$@" 2>>"${RESULTS_DIR}/propminer_stderr.log"; then
         return 0
     fi
-    # If it failed, try once more with the PyTorch fallback libs.
-    echo "[env] First CUDA init attempt failed; trying PyTorch fallback..." | tee -a "${RESULTS_DIR}/summary.txt"
+    echo "[env] First attempt failed. stderr tail:" | tee -a "${RESULTS_DIR}/summary.txt"
+    tail -20 "${RESULTS_DIR}/propminer_stderr.log" 2>/dev/null | tee -a "${RESULTS_DIR}/summary.txt" || true
+    echo "[env] Trying PyTorch CUDA fallback..." | tee -a "${RESULTS_DIR}/summary.txt"
     if ensure_pytorch_cuda_fallback; then
         LD_LIBRARY_PATH="${PYTORCH_CUDA_DIR}:${LD_LIBRARY_PATH}" "${bin}" "$@"
         return $?

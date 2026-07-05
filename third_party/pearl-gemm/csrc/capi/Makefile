@@ -95,12 +95,13 @@ else ifeq ($(PEARL_GEMM_ARCH),ada)
   ARCH := -gencode=arch=compute_89,code=sm_89
   ARCH_DEFINES := -DPEARL_GEMM_PORTABLE -DPEARL_GEMM_ADA
 else ifeq ($(PEARL_GEMM_ARCH),blackwell)
-  # RTX 50-series native sm_120a plus sm_80 cubin so the SM80-based
+  # RTX 50-series native sm_120a plus sm_80 cubin/PTX so the SM80-based
   # tensor_hash kernels can run via forward compatibility on WSL2 hosts.
-  # (sm_89 / PTX dropped — they doubled nvcc time with no RTX 5090 benefit.)
   ARCH := \
     -gencode=arch=compute_120a,code=sm_120a \
-    -gencode=arch=compute_80,code=sm_80
+    -gencode=arch=compute_89,code=sm_89 \
+    -gencode=arch=compute_80,code=sm_80 \
+    -gencode=arch=compute_80,code=compute_80
   ARCH_DEFINES := -DPEARL_GEMM_PORTABLE -DPEARL_GEMM_BLACKWELL
 else ifeq ($(PEARL_GEMM_ARCH),b200)
   ARCH := -gencode=arch=compute_100a,code=sm_100a

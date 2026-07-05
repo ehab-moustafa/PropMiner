@@ -128,7 +128,7 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id) {
             reinterpret_cast<void*>(resident_.b()),
             static_cast<uint32_t>(resident_.b_bytes()),
             reinterpret_cast<uint8_t*>(resident_.b_hash()),
-            job_.job_key.data(),
+            reinterpret_cast<const uint8_t*>(resident_.key()),
             cfg_.tensor_hash_num_blocks(resident_.b_bytes()),
             cfg_.tensor_hash_threads,
             cfg_.tensor_hash_stages,
