@@ -53,7 +53,9 @@ elseif(PEARL_GEMM_ARCH STREQUAL "ada")
   set(CMAKE_CUDA_ARCHITECTURES 89)
   set(ARCH_DEFINES PEARL_GEMM_PORTABLE PEARL_GEMM_ADA)
 elseif(PEARL_GEMM_ARCH STREQUAL "blackwell")
-  set(CMAKE_CUDA_ARCHITECTURES 120a)
+  # Native sm_120a plus sm_89/sm_80 cubin and forward-compatible PTX so the
+  # SM80-based tensor_hash path runs on early Blackwell drivers / WSL2.
+  set(CMAKE_CUDA_ARCHITECTURES 120a 89 80)
   set(ARCH_DEFINES PEARL_GEMM_PORTABLE PEARL_GEMM_BLACKWELL)
 elseif(PEARL_GEMM_ARCH STREQUAL "b200")
   set(CMAKE_CUDA_ARCHITECTURES 100a)
