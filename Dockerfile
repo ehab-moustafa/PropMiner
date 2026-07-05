@@ -87,9 +87,7 @@ RUN --mount=type=cache,target=/ccache \
     cmake --build build_runtime --target propminer -j"$(nproc)" \
     && ccache -s
 
-# Audit: prove which architecture each cubin in the gemm library targets.
-# Expects sm_120a for the bulk of the library and sm_80/sm_89 only for the
-# SM80-atom kernels that are forced via per-object gencode override.
+# Audit: all cubins must be sm_120a only (RTX 5090 native).
 RUN cuobjdump -lelf build_runtime/libpearl_gemm_capi.so | tee build_runtime/cubins.txt \
     && echo "==> unique cubin archs:" \
     && grep -oE 'sm_[0-9a-z_]+' build_runtime/cubins.txt | sort -u
@@ -132,6 +130,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV PEARL_GEMM_CONSUMER_CLUSTER_M=2
 
 RUN apt-get update && apt-get install -y \
     libssl3 \

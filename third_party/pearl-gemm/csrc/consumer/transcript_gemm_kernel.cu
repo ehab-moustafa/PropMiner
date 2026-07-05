@@ -519,7 +519,7 @@ static int read_carveout_env() {
 
 // Runtime knob: PEARL_GEMM_CONSUMER_CLUSTER_M (or legacy
 // PEARL_GEMM_BLACKWELL_CLUSTER_M)
-//   - unset / "default" → use the conservative tuned default below
+//   - unset / "default" → PEARL_CONSUMER_DEFAULT_CLUSTER_M (2 on sm_120a native)
 //   - "0", "1", "off"  → disable thread-block clustering
 //   - "2" or "4"       → cluster adjacent M tiles when the grid divides
 //
@@ -541,6 +541,14 @@ static int read_cluster_m_env() {
   } catch (...) {}
   return -1;
 }
+
+#ifndef PEARL_CONSUMER_DEFAULT_CLUSTER_M
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_SM120_NATIVE) && PEARL_GEMM_SM120_NATIVE
+#define PEARL_CONSUMER_DEFAULT_CLUSTER_M 2
+#else
+#define PEARL_CONSUMER_DEFAULT_CLUSTER_M 1
+#endif
+#endif
 
 static cudaError_t ensure_transcript_kernel_attrs(size_t smem_bytes) {
   static std::atomic<unsigned long long> attrs_set_mask{0};
@@ -579,10 +587,7 @@ static cudaError_t ensure_transcript_kernel_attrs(size_t smem_bytes) {
   // Opt into non-portable cluster sizes on sm_120 so cudaLaunchKernelEx
   // with clusterDim={2,1,1} won't fail with cudaErrorInvalidValue on
   // consumer Blackwell where default policy can reject otherwise-valid
-  // cluster requests.  When the consumer kernel is deliberately built for
-  // sm_80/sm_89 only on Blackwell (forward-compatibility path), cluster
-  // attributes are undefined for that binary, so skip them.
-#ifndef PEARL_CONSUMER_DISABLE_CLUSTER_LAUNCH
+  // cluster requests.
   if (sm_major >= 12) {
     cudaError_t err = cudaFuncSetAttribute(
         transcript_gemm_kernel_consumer,
@@ -590,7 +595,6 @@ static cudaError_t ensure_transcript_kernel_attrs(size_t smem_bytes) {
         1);
     if (err != cudaSuccess) return err;
   }
-#endif
 
   if (bit != 0ull) {
     attrs_set_mask.fetch_or(bit, std::memory_order_release);
@@ -625,14 +629,10 @@ cudaError_t launch_transcript_gemm(
   int sm_major = 0;
   if (dev >= 0) cudaDeviceGetAttribute(&sm_major, cudaDevAttrComputeCapabilityMajor, dev);
   int cluster_m = read_cluster_m_env();
-  if (cluster_m < 0) cluster_m = 1;
-#ifndef PEARL_CONSUMER_DISABLE_CLUSTER_LAUNCH
+  if (cluster_m < 0) cluster_m = PEARL_CONSUMER_DEFAULT_CLUSTER_M;
   bool use_cluster = (sm_major >= 12) &&
                      (cluster_m > 1) &&
                      ((grid.x % (unsigned)cluster_m) == 0);
-#else
-  bool use_cluster = false;
-#endif
 
   (void)cudaGetLastError();
   if (use_cluster) {
@@ -687,14 +687,10 @@ cudaError_t launch_transcript_gemm_headless(
   int sm_major = 0;
   if (dev >= 0) cudaDeviceGetAttribute(&sm_major, cudaDevAttrComputeCapabilityMajor, dev);
   int cluster_m = read_cluster_m_env();
-  if (cluster_m < 0) cluster_m = 1;
-#ifndef PEARL_CONSUMER_DISABLE_CLUSTER_LAUNCH
+  if (cluster_m < 0) cluster_m = PEARL_CONSUMER_DEFAULT_CLUSTER_M;
   bool use_cluster = (sm_major >= 12) &&
                      (cluster_m > 1) &&
                      ((grid.x % (unsigned)cluster_m) == 0);
-#else
-  bool use_cluster = false;
-#endif
 
   (void)cudaGetLastError();
   if (use_cluster) {

@@ -20,9 +20,9 @@ mkdir -p "${BUILD_DIR}"
 
 # Ensure CUTLASS submodule is present.
 if [[ ! -f "${ROOT}/third_party/pearl-gemm/third_party/cutlass/include/cutlass/cutlass.h" ]]; then
-    echo "[build] Fetching CUTLASS submodule..."
-    git -C "${ROOT}/third_party/pearl-gemm" submodule update --init --depth 1 \
-        third_party/cutlass || true
+    echo "[build] Fetching CUTLASS v4.4.0..."
+    git clone --depth 1 --branch v4.4.0 https://github.com/NVIDIA/cutlass.git \
+        "${ROOT}/third_party/pearl-gemm/third_party/cutlass" || true
 fi
 
 # Configure for native Blackwell sm_120 with RTX 5090 knobs.

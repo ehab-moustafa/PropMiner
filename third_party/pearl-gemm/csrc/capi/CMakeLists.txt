@@ -53,10 +53,9 @@ elseif(PEARL_GEMM_ARCH STREQUAL "ada")
   set(CMAKE_CUDA_ARCHITECTURES 89)
   set(ARCH_DEFINES PEARL_GEMM_PORTABLE PEARL_GEMM_ADA)
 elseif(PEARL_GEMM_ARCH STREQUAL "blackwell")
-  # Native sm_120a plus sm_89/sm_80 cubin and forward-compatible PTX so the
-  # SM80-based tensor_hash path runs on early Blackwell drivers / WSL2.
-  set(CMAKE_CUDA_ARCHITECTURES 120a 89 80)
-  set(ARCH_DEFINES PEARL_GEMM_PORTABLE PEARL_GEMM_BLACKWELL)
+  # RTX 5090 only: native sm_120a cubin.
+  set(CMAKE_CUDA_ARCHITECTURES 120a)
+  set(ARCH_DEFINES PEARL_GEMM_PORTABLE PEARL_GEMM_BLACKWELL PEARL_GEMM_SM120_NATIVE)
 elseif(PEARL_GEMM_ARCH STREQUAL "b200")
   set(CMAKE_CUDA_ARCHITECTURES 100a)
   set(ARCH_DEFINES PEARL_GEMM_PORTABLE PEARL_GEMM_B200)
@@ -108,6 +107,12 @@ set(SRCS_CONSUMER
   "${SRC}/portable/portable_int8_gemm.cu"
   "${SRC}/capi/portable_int8_helpers.cu")
 
+set(SRCS_BLACKWELL_SM120
+  "${SRC}/portable/transcript_kernel.cu"
+  "${SRC}/blackwell/transcript_gemm_sm120.cu"
+  "${SRC}/portable/portable_int8_gemm.cu"
+  "${SRC}/capi/portable_int8_helpers.cu")
+
 set(SRCS_B200
   "${SRC}/portable/transcript_kernel.cu"
   "${SRC}/blackwell/transcript_gemm_sm100.cu"
@@ -122,7 +127,9 @@ elseif(PEARL_GEMM_ARCH STREQUAL "turing")
   set(ARCH_SRCS ${SRCS_TURING})
 elseif(PEARL_GEMM_ARCH STREQUAL "b200")
   set(ARCH_SRCS ${SRCS_B200})
-elseif(PEARL_GEMM_ARCH MATCHES "^(ampere|ada|blackwell)$")
+elseif(PEARL_GEMM_ARCH STREQUAL "blackwell")
+  set(ARCH_SRCS ${SRCS_BLACKWELL_SM120})
+elseif(PEARL_GEMM_ARCH MATCHES "^(ampere|ada)$")
   set(ARCH_SRCS ${SRCS_CONSUMER})
 else() # portable
   set(ARCH_SRCS ${SRCS_PORTABLE})

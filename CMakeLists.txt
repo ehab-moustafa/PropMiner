@@ -74,23 +74,16 @@ set(PEARL_GEMM_BLACKWELL_LOAD_POLICY "cp_async" CACHE STRING
 include(ExternalProject)
 find_package(Git)
 if(NOT EXISTS "${CUTLASS_ROOT}/include/cutlass/cutlass.h")
-    message(STATUS "CUTLASS not found; fetching submodule")
+    message(STATUS "CUTLASS not found; fetching v4.4.0 (SM120 MMA traits)")
     if(NOT GIT_EXECUTABLE)
         message(FATAL_ERROR "Git is required to fetch CUTLASS")
     endif()
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" -C "${PEARL_GEMM_ROOT}"
-            submodule update --init --depth 1 third_party/cutlass
+        COMMAND "${GIT_EXECUTABLE}" clone --depth 1 --branch v4.4.0
+            https://github.com/NVIDIA/cutlass.git "${CUTLASS_ROOT}"
         RESULT_VARIABLE _cutlass_rc)
     if(NOT _cutlass_rc EQUAL 0)
-        # Fallback: shallow clone directly
-        execute_process(
-            COMMAND "${GIT_EXECUTABLE}" clone --depth 1
-                https://github.com/NVIDIA/cutlass.git "${CUTLASS_ROOT}"
-            RESULT_VARIABLE _cutlass_rc2)
-        if(NOT _cutlass_rc2 EQUAL 0)
-            message(FATAL_ERROR "Failed to fetch CUTLASS")
-        endif()
+        message(FATAL_ERROR "Failed to fetch CUTLASS v4.4.0")
     endif()
 endif()
 

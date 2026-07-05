@@ -19,6 +19,11 @@
 
 set -euo pipefail
 
+# Default GPU env — no manual configuration required on Salad/Docker hosts.
+export NVIDIA_VISIBLE_DEVICES="${NVIDIA_VISIBLE_DEVICES:-all}"
+export NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-2}"
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${ROOT}/build_remote_test"
 RESULTS_DIR="${ROOT}/results"
@@ -231,8 +236,8 @@ if [[ "${PREBUILT}" == "true" ]]; then
     echo "[deps] Prebuilt binaries present. Skipping CUTLASS/pearl-blake3 fetch." | tee -a "${RESULTS_DIR}/summary.txt"
 else
     if [[ ! -f "${ROOT}/third_party/pearl-gemm/third_party/cutlass/include/cutlass/cutlass.h" ]]; then
-        echo "[cutlass] Cloning CUTLASS..." | tee -a "${RESULTS_DIR}/summary.txt"
-        git clone --depth 1 https://github.com/NVIDIA/cutlass.git \
+        echo "[cutlass] Cloning CUTLASS v4.4.0..." | tee -a "${RESULTS_DIR}/summary.txt"
+        git clone --depth 1 --branch v4.4.0 https://github.com/NVIDIA/cutlass.git \
             "${ROOT}/third_party/pearl-gemm/third_party/cutlass" || true
     fi
 

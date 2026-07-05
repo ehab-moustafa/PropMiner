@@ -45,20 +45,15 @@
 #define PEARL_GEMM_BLACKWELL 1
 #endif
 
-// Use the native Blackwell MMA atom only when explicitly requested.  The user
-// must verify their CUTLASS checkout has include/cute/atom/mma_traits_sm120.hpp.
+// Use the native Blackwell MMA atom when explicitly requested and the types
+// are supported by CUTLASS (FP8/FP4).  Legacy int8 IMMA for Pearl mining uses
+// SM80_16x8x32_S32S8S8S32_TN compiled into an sm_120a cubin — consumer
+// Blackwell executes the same mma.sync m16n8k32.s32.s8.s8.s32 instruction;
+// CUTLASS does not provide a separate SM120_16x8x32_TN Operation for int8.
 #if defined(PEARL_GEMM_SM120_NATIVE) && PEARL_GEMM_SM120_NATIVE
-  #if !defined(__CUDA_ARCH__)
-    // Host-side compile: include the atom header so the type is known.
-    #include <cute/atom/mma_traits_sm120.hpp>
-  #endif
-  // SM120_16x8x32_TN has the same 16x8x32 MNK shape and thread/fragment layout
-  // as the SM80 atom for legacy int8.  This lets us reuse the consumer mainloop
-  // verbatim while emitting Blackwell-native Tensor Core instructions on sm_120a.
-  #define PEARL_CONSUMER_MMA_ATOM_TYPE SM120_16x8x32_TN<int8_t, int8_t, int32_t>
-  #pragma message("transcript_gemm_sm120.cu: using native SM120 MMA atom")
+  #pragma message("transcript_gemm_sm120.cu: sm_120a native build with SM80 int8 MMA atom + Blackwell tuning")
 #else
-  #pragma message("transcript_gemm_sm120.cu: using SM80 MMA atom compiled for sm_120a")
+  #pragma message("transcript_gemm_sm120.cu: sm_120a build with SM80 MMA atom")
 #endif
 
 // Pull in the full consumer kernel.  It will use ConsumerTiledMma defined above.

@@ -95,14 +95,9 @@ else ifeq ($(PEARL_GEMM_ARCH),ada)
   ARCH := -gencode=arch=compute_89,code=sm_89
   ARCH_DEFINES := -DPEARL_GEMM_PORTABLE -DPEARL_GEMM_ADA
 else ifeq ($(PEARL_GEMM_ARCH),blackwell)
-  # RTX 50-series native sm_120a plus sm_80 cubin/PTX so the SM80-based
-  # tensor_hash kernels can run via forward compatibility on WSL2 hosts.
-  ARCH := \
-    -gencode=arch=compute_120a,code=sm_120a \
-    -gencode=arch=compute_89,code=sm_89 \
-    -gencode=arch=compute_80,code=sm_80 \
-    -gencode=arch=compute_80,code=compute_80
-  ARCH_DEFINES := -DPEARL_GEMM_PORTABLE -DPEARL_GEMM_BLACKWELL
+  # RTX 5090 only: native sm_120a cubin. No sm_80/sm_89 cubins at all.
+  ARCH := -gencode=arch=compute_120a,code=sm_120a
+  ARCH_DEFINES := -DPEARL_GEMM_PORTABLE -DPEARL_GEMM_BLACKWELL -DPEARL_GEMM_SM120_NATIVE=1
 else ifeq ($(PEARL_GEMM_ARCH),b200)
   ARCH := -gencode=arch=compute_100a,code=sm_100a
   ARCH_DEFINES := -DPEARL_GEMM_PORTABLE -DPEARL_GEMM_B200
@@ -259,23 +254,11 @@ NVCC_FLAGS_BASE := \
   -include $(PRELUDE) \
   $(INCLUDES) $(DEFINES)
 
-# Default architecture list for the link step and for TUs with no override.
+# Default architecture list for the link step and for all compile units.
 LINK_ARCH := $(ARCH)
 NVCC_FILE_ARCH := $(ARCH)
 
-# On Blackwell the kernels below hard-code the SM80 IMMA atom
-# (SM80_16x8x32_S32S8S8S32_TN). Embedding that atom into an sm_120a cubin can
-# trigger CUTLASS arch-conditional MMA assertions on RTX 5090 / WSL2.
-# Compile the affected TUs only for sm_80/sm_89; the CUDA loader will run the
-# sm_80 cubin via forward compatibility on SM120, where Ampere-style mma.sync
-# is supported (consumer Blackwell has no TMEM/UMMA path).
-ifeq ($(PEARL_GEMM_ARCH),blackwell)
-SM80_ONLY_ARCH := \
-  -gencode=arch=compute_80,code=sm_80 \
-  -gencode=arch=compute_89,code=sm_89
-else
-SM80_ONLY_ARCH :=
-endif
+NVCC_FLAGS := $(NVCC_FLAGS_BASE) $(NVCC_FILE_ARCH) --threads $(NVCC_THREADS)
 
 # Sources — everything pearl_capi_* needs.
 # Excludes: csrc/gemm/pearl_gemm_api.cpp (pybind shell, depends on libtorch)
@@ -331,7 +314,7 @@ SRCS_AMPERE := \
 
 SRCS_BLACKWELL := \
   $(SRC)/portable/transcript_kernel.cu \
-  $(SRC)/consumer/transcript_gemm_kernel.cu \
+  $(SRC)/blackwell/transcript_gemm_sm120.cu \
   $(SRC)/portable/portable_int8_gemm.cu \
   $(SRC)/capi/portable_int8_helpers.cu
 
@@ -390,24 +373,13 @@ $(TARGET): $(STATIC_SWITCH_HEADERS) $(OBJS) | $(BUILD)
 	@echo "==> ldd:"
 	@ldd $@ | sed 's/^/    /' || true
 
-# Compile the SM80 MMA-atom kernels only for sm_80/sm_89 on Blackwell. The RTX
-# 5090 uses those cubins via forward compatibility and avoids arch-conditional
-# MMA assertions for SM80 atoms embedded in sm_120a.
-$(BUILD)/portable/portable_int8_gemm.cu.o: $(SRC)/portable/portable_int8_gemm.cu | $(BUILD)
-	@mkdir -p $(dir $@)
-	$(NVCC) $(NVCC_FLAGS_BASE) $(if $(SM80_ONLY_ARCH),$(SM80_ONLY_ARCH),$(NVCC_FILE_ARCH)) --threads $(NVCC_THREADS) -c $< -o $@
-
-$(BUILD)/consumer/transcript_gemm_kernel.cu.o: $(SRC)/consumer/transcript_gemm_kernel.cu | $(BUILD)
-	@mkdir -p $(dir $@)
-	$(NVCC) $(NVCC_FLAGS_BASE) $(if $(SM80_ONLY_ARCH),$(SM80_ONLY_ARCH),$(NVCC_FILE_ARCH)) --threads $(NVCC_THREADS) -DPEARL_CONSUMER_DISABLE_CLUSTER_LAUNCH -c $< -o $@
-
 $(BUILD)/%.cu.o: $(SRC)/%.cu | $(BUILD)
 	@mkdir -p $(dir $@)
-	$(NVCC) $(NVCC_FLAGS_BASE) $(NVCC_FILE_ARCH) --threads $(NVCC_THREADS) -c $< -o $@
+	$(NVCC) $(NVCC_FLAGS) -c $< -o $@
 
 $(BUILD)/%.cpp.o: $(SRC)/%.cpp | $(BUILD)
 	@mkdir -p $(dir $@)
-	$(NVCC) $(NVCC_FLAGS_BASE) $(NVCC_FILE_ARCH) --threads $(NVCC_THREADS) -x cu -c $< -o $@
+	$(NVCC) $(NVCC_FLAGS) -x cu -c $< -o $@
 
 $(STATIC_SWITCH_HEADERS): generate-static-switches
 
