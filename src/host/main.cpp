@@ -261,6 +261,9 @@ int main(int argc, char* argv[]) {
     }
 
     cfg.speed_test_seconds = bench_seconds;
+    if (bench_seconds > 0) {
+        cfg.enable_watchdog = false;
+    }
 
     if (self_test) {
         return run_self_test();
