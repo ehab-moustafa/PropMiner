@@ -128,9 +128,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV PEARL_GEMM_CONSUMER_CLUSTER_M=2
-# Quick Salad validation: self-test only (~30s), no 16-variant knob sweep.
+# Zero-config Salad deploy: full validation kit (self-test + 60s benchmark).
+ENV PROPMINER_MODE=full
+ENV PROPMINER_QUICK_EXIT=0
+ENV PROPMINER_SKIP_BENCH=0
 ENV PROPMINER_SKIP_SWEEP=1
-ENV PROPMINER_SKIP_BENCH=1
+ENV PROPMINER_SKIP_NCU=1
 
 RUN apt-get update && apt-get install -y \
     libssl3 \
