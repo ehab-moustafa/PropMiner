@@ -67,7 +67,11 @@ int int8_matmul_into_fp16_div(
     int M, int N, int K, int divisor_log2,
   cudaStream_t stream) {
   int rc = int8_matmul_i32_native(A, B, scratch_i32, M, N, K, stream);
-  if (rc != 0) return rc;
+  if (rc != 0) {
+    fprintf(stderr, "[pearl-gemm] int8_matmul_into_fp16_div matmul failed rc=%d M=%d N=%d K=%d\n",
+            rc, M, N, K);
+    return rc;
+  }
   int64_t n = (int64_t)M * (int64_t)N;
   int block = 256;
   int64_t grid = (n + block - 1) / block;
@@ -75,7 +79,13 @@ int int8_matmul_into_fp16_div(
   float inv_divisor = 1.0f / static_cast<float>(int64_t{1} << divisor_log2);
   kernel_i32_div_to_fp16<<<(int)grid, block, 0, stream>>>(
       scratch_i32, reinterpret_cast<__half*>(out_fp16), n, inv_divisor);
-  return cudaGetLastError() == cudaSuccess ? 0 : -111;
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    fprintf(stderr, "[pearl-gemm] int8_matmul_into_fp16_div epilogue launch failed: %s M=%d N=%d K=%d\n",
+            cudaGetErrorString(err), M, N, K);
+    return -111;
+  }
+  return 0;
 }
 
 int int8_add_clamp_to_int8(

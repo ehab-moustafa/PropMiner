@@ -372,7 +372,13 @@ int launch_int8_matmul_i32_native(
 
   portable_int8_gemm_kernel<kTileN><<<grid, block, smem_bytes, stream>>>(
       A, B, C, M, N, K);
-  return cudaGetLastError() == cudaSuccess ? 0 : -202;
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    fprintf(stderr, "[pearl-gemm] int8_matmul_i32 launch failed: %s M=%d N=%d K=%d smem=%zu\n",
+            cudaGetErrorString(err), M, N, K, smem_bytes);
+    return -202;
+  }
+  return 0;
 }
 
 template <int kTileN>
@@ -405,7 +411,13 @@ int launch_int8_matmul_add_clamp_native(
 
   portable_int8_gemm_addclamp_kernel<kTileN><<<grid, block, smem_bytes, stream>>>(
       A, B, base, out, M, N, K);
-  return cudaGetLastError() == cudaSuccess ? 0 : -202;
+  cudaError_t err2 = cudaGetLastError();
+  if (err2 != cudaSuccess) {
+    fprintf(stderr, "[pearl-gemm] int8_matmul_add_clamp launch failed: %s M=%d N=%d K=%d smem=%zu\n",
+            cudaGetErrorString(err2), M, N, K, smem_bytes);
+    return -202;
+  }
+  return 0;
 }
 
 }  // namespace

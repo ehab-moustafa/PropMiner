@@ -163,7 +163,8 @@ PEARL_CAPI_EXPORT int pearl_capi_tensor_hash(const uint8_t* data,
   try {
     tensor_hash(data, data_size, out, key, num_blocks, threads_per_block,
                 num_stages, leaves_per_mt_block, roots, *dprops, stream);
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
   }
   return 0;
@@ -193,7 +194,8 @@ PEARL_CAPI_EXPORT int pearl_capi_tensor_hash_leaf_cvs(
     tensor_hash_with_leaf_cvs(
         data, data_size, out, key, num_blocks, threads_per_block,
         num_stages, leaves_per_mt_block, roots, leaf_cvs, *dprops, stream);
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
   }
   return 0;
@@ -223,7 +225,8 @@ PEARL_CAPI_EXPORT int pearl_capi_bseed_expand_and_tensor_hash(
     bseed_expand_and_tensor_hash(
         bseed, data, data_size, out, key, num_blocks, threads_per_block,
         num_stages, leaves_per_mt_block, roots, *dprops, stream);
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
   }
   return 0;
@@ -276,7 +279,8 @@ PEARL_CAPI_EXPORT int pearl_capi_commitment_hash_from_merkle_roots(
     commitment_hash_from_merkle_roots(A_merkle_root, B_merkle_root, key,
                                       A_commitment_hash, B_commitment_hash,
                                       *dprops, stream);
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
   }
   return 0;
@@ -322,7 +326,8 @@ PEARL_CAPI_EXPORT int pearl_capi_noise_gen(int R,
     } else {
       return -4;
     }
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
   }
   return 0;
@@ -475,7 +480,8 @@ PEARL_CAPI_EXPORT int pearl_capi_workspace_alloc(int32_t m, int32_t n,
 
     *out_workspace = ws;
     return 0;
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
   }
 }
@@ -607,7 +613,8 @@ PEARL_CAPI_EXPORT int pearl_capi_noise_B(const PearlCapiNoiseBParams* p,
     if (!kernel_found) return -4;
     (void)tile_size_n; (void)pipeline_stages;
 #endif  // PEARL_GEMM_PORTABLE
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
   }
   return 0;
@@ -693,7 +700,8 @@ PEARL_CAPI_EXPORT int pearl_capi_install_B(
           stream);
       }
     }
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
   }
 
@@ -1036,7 +1044,8 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
     }
     if (!matmul_found) return -9;
 #endif  // PEARL_GEMM_PORTABLE
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
     return -2;
   }
   return 0;
@@ -1217,68 +1226,9 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
 
   try {
     tensor_hash_set_key(static_cast<const uint8_t*>(p.Key), stream);
-  } catch (const std::exception&) {
-    destroy_iter_graph(ws);
-    return -42;
-  }
-
-  err = cudaStreamSynchronize(stream);
-  if (err != cudaSuccess) {
-    destroy_iter_graph(ws);
-    return -43;
-  }
-
-  bool capturing = false;
-  auto abort_capture = [&]() {
-    if (capturing) {
-      cudaGraph_t aborted = nullptr;
-      (void)cudaStreamEndCapture(stream, &aborted);
-      if (aborted) cudaGraphDestroy(aborted);
-      capturing = false;
-    }
-    destroy_iter_graph(ws);
-  };
-
-  err = cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
-  if (err != cudaSuccess) {
-    destroy_iter_graph(ws);
-    return -44;
-  }
-  capturing = true;
-
-  err = cudaMemcpyAsync(ws->graph_seed_lo_dev, ws->graph_seed_lo_host,
-                        sizeof(uint64_t), cudaMemcpyHostToDevice, stream);
-  if (err != cudaSuccess) {
-    abort_capture();
-    return -45;
-  }
-
-  err = cudaMemsetAsync(p.host_signal_sync, 0, sizeof(HostSignalSync), stream);
-  if (err != cudaSuccess) {
-    abort_capture();
-    return -46;
-  }
-
-  for (int32_t i = 0; i < count; ++i) {
-    int rc = pearl_capi_lcg_int7_fill_indirect(
-        p.A, a_bytes, ws->graph_seed_lo_dev,
-        static_cast<uint64_t>(i), p.sigma_seed, stream_void);
-    if (rc != 0) {
-      abort_capture();
-      return rc;
-    }
-
-    try {
-      tensor_hash_no_key_upload(
-          static_cast<const uint8_t*>(p.A),
-          static_cast<uint32_t>(a_bytes),
-          static_cast<uint8_t*>(p.AHash),
-          static_cast<const uint8_t*>(p.Key),
-          p.th_num_blocks, p.th_threads, p.th_stages, p.th_leaves,
-          static_cast<uint8_t*>(p.Roots), *dprops, stream);
-    } catch (const std::exception&) {
-      abort_capture();
-      return -2;
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
+    return -2;
     }
 
     rc = pearl_capi_commitment_hash_from_merkle_roots(
@@ -1408,66 +1358,9 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
 
   try {
     tensor_hash_set_key(static_cast<const uint8_t*>(p.Key), stream);
-  } catch (const std::exception&) {
-    destroy_iter_graph(ws);
-    return -42;
-  }
-
-  err = cudaStreamSynchronize(stream);
-  if (err != cudaSuccess) {
-    destroy_iter_graph(ws);
-    return -43;
-  }
-
-  bool capturing = false;
-  auto abort_capture = [&]() {
-    if (capturing) {
-      cudaGraph_t aborted = nullptr;
-      (void)cudaStreamEndCapture(stream, &aborted);
-      if (aborted) cudaGraphDestroy(aborted);
-      capturing = false;
-    }
-    destroy_iter_graph(ws);
-    // Do not free seed_lo_dev — caller owns it.
-    ws->graph_seed_lo_dev = nullptr;
-  };
-
-  err = cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
-  if (err != cudaSuccess) {
-    destroy_iter_graph(ws);
-    return -44;
-  }
-  capturing = true;
-
-  // NO cudaMemcpyAsync seed copy here.  The caller uploads seeds off the
-  // critical path using a separate copy stream.
-
-  err = cudaMemsetAsync(p.host_signal_sync, 0, sizeof(HostSignalSync), stream);
-  if (err != cudaSuccess) {
-    abort_capture();
-    return -46;
-  }
-
-  for (int32_t i = 0; i < count; ++i) {
-    int rc = pearl_capi_lcg_int7_fill_indirect(
-        p.A, a_bytes, ws->graph_seed_lo_dev,
-        static_cast<uint64_t>(i), p.sigma_seed, stream_void);
-    if (rc != 0) {
-      abort_capture();
-      return rc;
-    }
-
-    try {
-      tensor_hash_no_key_upload(
-          static_cast<const uint8_t*>(p.A),
-          static_cast<uint32_t>(a_bytes),
-          static_cast<uint8_t*>(p.AHash),
-          static_cast<const uint8_t*>(p.Key),
-          p.th_num_blocks, p.th_threads, p.th_stages, p.th_leaves,
-          static_cast<uint8_t*>(p.Roots), *dprops, stream);
-    } catch (const std::exception&) {
-      abort_capture();
-      return -2;
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
+    return -2;
     }
 
     rc = pearl_capi_commitment_hash_from_merkle_roots(
