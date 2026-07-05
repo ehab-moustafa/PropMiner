@@ -53,6 +53,7 @@ COPY CMakeLists.txt .
 COPY third_party third_party
 COPY include include
 COPY src/cuda src/cuda
+COPY src/host src/host
 
 ARG CMAKE_BUILD_ARGS="\
   -DCMAKE_BUILD_TYPE=Release \
@@ -76,8 +77,7 @@ RUN --mount=type=cache,target=/ccache \
        -j"$(nproc)" \
     && ccache -s
 
-# Layer 2: host sources + final link. Fast when only PropMiner host code changes.
-COPY src/host src/host
+# Layer 2: scripts + final link. Re-runs on host edits; nvcc stays cached via ccache.
 COPY scripts scripts
 
 RUN --mount=type=cache,target=/ccache \
