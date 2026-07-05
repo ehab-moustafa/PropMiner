@@ -254,7 +254,8 @@ PEARL_CAPI_EXPORT int pearl_capi_bseed_expand_and_tensor_hash_leaf_cvs(
     bseed_expand_and_tensor_hash_with_leaf_cvs(
         bseed, data, data_size, out, key, num_blocks, threads_per_block,
         num_stages, leaves_per_mt_block, roots, leaf_cvs, *dprops, stream);
-  } catch (const std::exception&) {
+  } catch (const std::exception& e) {
+    fprintf(stderr, "[pearl-gemm] bseed_expand_and_tensor_hash_leaf_cvs exception: %s\n", e.what());
     return -2;
   }
   return 0;
