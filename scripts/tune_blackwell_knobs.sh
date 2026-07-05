@@ -40,7 +40,7 @@ for LOAD_POLICY in "${LOAD_POLICIES[@]}"; do
 
     cmake -S "${ROOT}" -B "${BUILD_DIR}" \
         -DPEARL_GEMM_ARCH=blackwell \
-        -DCMAKE_CUDA_ARCHITECTURES=120 \
+        -DCMAKE_CUDA_ARCHITECTURES=120a \
         -DPEARL_GEMM_BLACKWELL_BM="${BM}" \
         -DPEARL_GEMM_BLACKWELL_BN="${BN}" \
         -DPEARL_GEMM_BLACKWELL_KBLOCK="${KBLOCK}" \

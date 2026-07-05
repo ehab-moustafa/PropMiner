@@ -58,7 +58,7 @@ COPY src/host src/host
 ARG CMAKE_BUILD_ARGS="\
   -DCMAKE_BUILD_TYPE=Release \
   -DPROP_MINER_CUDA_ARCH=blackwell \
-  -DCMAKE_CUDA_ARCHITECTURES=120 \
+  -DCMAKE_CUDA_ARCHITECTURES=120a \
   -DPEARL_GEMM_BLACKWELL_BM=128 \
   -DPEARL_GEMM_BLACKWELL_BN=256 \
   -DPEARL_GEMM_BLACKWELL_KBLOCK=128 \
@@ -90,7 +90,9 @@ RUN --mount=type=cache,target=/ccache \
 # Audit: all cubins must be sm_120a only (RTX 5090 native).
 RUN cuobjdump -lelf build_runtime/libpearl_gemm_capi.so | tee build_runtime/cubins.txt \
     && echo "==> unique cubin archs:" \
-    && grep -oE 'sm_[0-9a-z_]+' build_runtime/cubins.txt | sort -u
+    && ONLY_ARCHS="$(grep -oE 'sm_[0-9a-z_]+' build_runtime/cubins.txt | sort -u)" \
+    && echo "${ONLY_ARCHS}" \
+    && echo "${ONLY_ARCHS}" | grep -qx 'sm_120a'
 
 # ── CUDA 12.8 runtime stage ────────────────────────────────────────────────
 # Extract only the runtime libraries we need from the official CUDA 12.8
