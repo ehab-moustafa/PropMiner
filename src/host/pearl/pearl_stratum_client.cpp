@@ -13,9 +13,11 @@
 #include <cerrno>
 #include <chrono>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <thread>
+#include <vector>
 
 namespace pearl {
 namespace {
@@ -32,6 +34,62 @@ std::string json_escape(const std::string& s) {
 
 void stratum_log(const std::string& msg) {
     std::cout << "pool: " << msg << std::endl;
+}
+
+bool stratum_verbose_recv() {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* e = std::getenv("PROPMINER_VERBOSE_STRATUM");
+        cached = (e && e[0] == '1') ? 1 : 0;
+    }
+    return cached != 0;
+}
+
+std::string truncate_line(const std::string& line, size_t max_len) {
+    if (line.size() <= max_len) return line;
+    return line.substr(0, max_len) + "…";
+}
+
+// JSON-RPC id may be number or string depending on pool.
+bool parse_request_id(const propminer::JsonValue& id_field, int* out) {
+    if (!out) return false;
+    if (id_field.is_number()) {
+        *out = static_cast<int>(id_field.to_int());
+        return true;
+    }
+    if (id_field.is_string()) {
+        const std::string& s = id_field.to_string();
+        if (s.empty()) return false;
+        char* end = nullptr;
+        const long v = std::strtol(s.c_str(), &end, 10);
+        if (end == s.c_str() || *end != '\0') return false;
+        *out = static_cast<int>(v);
+        return true;
+    }
+    return false;
+}
+
+bool share_result_accepted(const propminer::JsonValue& parsed, std::string* err_out) {
+    if (!parsed["error"].is_null()) {
+        if (err_out) *err_out = parsed["error"].serialize();
+        return false;
+    }
+    const auto& result = parsed["result"];
+    if (result.is_bool()) return result.to_bool();
+    if (result.is_null()) {
+        if (err_out) *err_out = "null result";
+        return false;
+    }
+    if (result.is_string()) {
+        const std::string r = result.to_string();
+        if (r == "false" || r == "0") {
+            if (err_out) *err_out = "rejected";
+            return false;
+        }
+        return true;
+    }
+    // Kryptex / pearl pools usually return true or an error object.
+    return true;
 }
 
 constexpr double kStratumDefaultShareDiff = 32768.0;
@@ -253,10 +311,37 @@ double PearlStratumClient::read_difficulty_param(const propminer::JsonValue& par
     return 0.0;
 }
 
+void PearlStratumClient::flush_stale_pending_submits() {
+    constexpr auto kAckTimeout = std::chrono::seconds(90);
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<std::pair<int, PendingSubmit>> stale;
+    {
+        std::lock_guard<std::mutex> lk(pending_submit_mtx_);
+        for (auto it = pending_submit_nonces_.begin(); it != pending_submit_nonces_.end();) {
+            if (now - it->second.sent_at >= kAckTimeout) {
+                stale.emplace_back(it->first, it->second);
+                it = pending_submit_nonces_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const auto& [id, pending] : stale) {
+        share_log("pool-no-response",
+                  "nonce=" + std::to_string(pending.nonce) +
+                  " stratum_id=" + std::to_string(id) +
+                  " waited_sec=90 (Kryptex may not send mining.submit acks)");
+        share_trace("pool-no-response",
+                    "id=" + std::to_string(id) +
+                    " nonce=" + std::to_string(pending.nonce));
+    }
+}
+
 void PearlStratumClient::receive_loop() {
     while (running_.load()) {
         std::string line;
         if (!read_line(line, 30000)) {
+            flush_stale_pending_submits();
             if (running_.load()) {
                 stratum_log("stratum connection lost");
                 connected_ = false;
@@ -264,12 +349,22 @@ void PearlStratumClient::receive_loop() {
             break;
         }
         if (!line.empty()) handle_message(line);
+        flush_stale_pending_submits();
     }
 }
 
 void PearlStratumClient::handle_message(const std::string& line) {
+    if (stratum_verbose_recv()) {
+        stratum_log("recv: " + truncate_line(line, 400));
+    }
+
     auto parsed = propminer::JsonValue::parse(line);
-    if (parsed.is_null()) return;
+    if (parsed.is_null()) {
+        if (stratum_verbose_recv()) {
+            stratum_log("recv: unparseable JSON");
+        }
+        return;
+    }
 
     if (parsed["method"].is_string()) {
         const std::string method = parsed["method"].to_string();
@@ -292,44 +387,49 @@ void PearlStratumClient::handle_message(const std::string& line) {
                 stratum_log(buf);
                 if (vardiff_cb_) vardiff_cb_(nbits);
             }
+        } else if (stratum_verbose_recv()) {
+            stratum_log("notify: method=" + method);
         }
         return;
     }
 
-    if (parsed["id"].is_number() && parsed["id"].to_int() > 2) {
-        bool accepted = true;
-        std::string err;
-        if (!parsed["error"].is_null()) {
-            accepted = false;
-            err = parsed["error"].serialize();
-        } else if (parsed["result"].is_bool() && !parsed["result"].to_bool()) {
-            accepted = false;
-            err = "rejected";
-        } else if (parsed["result"].is_null()) {
-            accepted = false;
-            err = "null result";
-        }
-        const int stratum_id = parsed["id"].to_int();
-        uint64_t nonce = 0;
-        {
-            std::lock_guard<std::mutex> lk(pending_submit_mtx_);
-            auto it = pending_submit_nonces_.find(stratum_id);
-            if (it != pending_submit_nonces_.end()) {
-                nonce = it->second;
-                pending_submit_nonces_.erase(it);
-            }
-        }
-        if (share_cb_) share_cb_(accepted, accepted ? "Accepted" : err);
-        share_trace("pool-response",
-                    std::string(accepted ? "accepted" : ("rejected err=" + err)) +
-                    " id=" + std::to_string(stratum_id) +
-                    (nonce ? (" nonce=" + std::to_string(nonce)) : ""));
-        share_log("pool-response",
-                  std::string(accepted ? "accepted" : "rejected") +
-                  " nonce=" + std::to_string(nonce) +
-                  " stratum_id=" + std::to_string(stratum_id) +
-                  (accepted ? "" : (" err=" + err)));
+    int msg_id = 0;
+    if (!parse_request_id(parsed["id"], &msg_id)) return;
+
+    // Share submit ack: JSON-RPC response with id, no method (ARC StratumSession).
+    bool is_share = msg_id > 2;
+    if (!is_share) {
+        std::lock_guard<std::mutex> lk(pending_submit_mtx_);
+        is_share = pending_submit_nonces_.count(msg_id) > 0;
     }
+    if (!is_share) {
+        if (stratum_verbose_recv()) {
+            stratum_log("rpc id=" + std::to_string(msg_id) + " ignored (not a share ack)");
+        }
+        return;
+    }
+
+    std::string err;
+    const bool accepted = share_result_accepted(parsed, &err);
+    uint64_t nonce = 0;
+    {
+        std::lock_guard<std::mutex> lk(pending_submit_mtx_);
+        auto it = pending_submit_nonces_.find(msg_id);
+        if (it != pending_submit_nonces_.end()) {
+            nonce = it->second.nonce;
+            pending_submit_nonces_.erase(it);
+        }
+    }
+    if (share_cb_) share_cb_(accepted, accepted ? "Accepted" : err);
+    share_trace("pool-response",
+                std::string(accepted ? "accepted" : ("rejected err=" + err)) +
+                " id=" + std::to_string(msg_id) +
+                (nonce ? (" nonce=" + std::to_string(nonce)) : ""));
+    share_log("pool-response",
+              std::string(accepted ? "accepted" : "rejected") +
+              " nonce=" + std::to_string(nonce) +
+              " stratum_id=" + std::to_string(msg_id) +
+              (accepted ? "" : (" err=" + err)));
 }
 
 bool PearlStratumClient::parse_notify_object(const std::string& params_json) {
@@ -452,7 +552,8 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
     const int id = ++request_id_;
     if (nonce != 0) {
         std::lock_guard<std::mutex> lk(pending_submit_mtx_);
-        pending_submit_nonces_[id] = nonce;
+        pending_submit_nonces_[id] = PendingSubmit{
+            nonce, std::chrono::steady_clock::now()};
     }
     const std::string user = opts_.wallet + "." + opts_.worker;
     // pearl/v1 pools (Kryptex :7048) require positional submit:

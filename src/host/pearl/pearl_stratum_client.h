@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -68,6 +69,7 @@ private:
     static std::array<uint8_t, 16> job_id_bytes(const std::string& job_id);
     static std::vector<uint8_t> hex_to_bytes(const std::string& hex);
     static double read_difficulty_param(const propminer::JsonValue& params);
+    void flush_stale_pending_submits();
     double effective_share_difficulty() const;
     uint32_t share_target_nbits() const;
 
@@ -82,7 +84,11 @@ private:
     std::mutex send_mtx_;
     mutable std::mutex job_map_mtx_;
     mutable std::mutex pending_submit_mtx_;
-    std::unordered_map<int, uint64_t> pending_submit_nonces_;
+    struct PendingSubmit {
+        uint64_t nonce = 0;
+        std::chrono::steady_clock::time_point sent_at{};
+    };
+    std::unordered_map<int, PendingSubmit> pending_submit_nonces_;
     std::unordered_map<std::string, std::string> sigma_hex_to_job_id_;
 
     JobCallback job_cb_;
