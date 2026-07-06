@@ -414,7 +414,7 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
                                        : (" min=" +
                                           std::to_string(share.b_col_indices.front()) +
                                           " max=" +
-                                          std::to_string(share.b_col_indices.back())));
+                                          std::to_string(share.b_col_indices.back()))));
         return false;
     }
 
