@@ -21,7 +21,8 @@ REPO="${PROPMINER_RELEASE_REPO:-ehab-moustafa/PropMiner}"
 ASSET="${PROPMINER_RELEASE_ASSET:-propminer-rtx5090-linux-amd64.tar.gz}"
 RELEASE_URL="${PROPMINER_RELEASE_URL:-https://github.com/${REPO}/releases/download/${TAG}/${ASSET}}"
 
-CUDA_DEST="/usr/local/cuda-12.8/targets/x86_64-linux/lib"
+CUDA_ROOT="/usr/local/cuda-12.8/targets/x86_64-linux"
+CUDA_LIB="${CUDA_ROOT}/lib"
 CUDA_LIB64="/usr/local/cuda/lib64"
 PM_DIR="/opt/propminer"
 NVIDIA_REDIST="https://developer.download.nvidia.com/compute/cuda/redist"
@@ -44,21 +45,27 @@ curl_pkg() {
     local url="${NVIDIA_REDIST}/${name}/linux-x86_64/${name}-linux-x86_64-${version}-archive.tar.xz"
     echo "[cuda] ${name}"
     curl -fsSL --retry 5 --retry-delay 3 -o "${out}" "${url}"
-    tar -xf "${out}" --strip-components=1 -C "${CUDA_DEST}"
+    tar -xf "${out}" --strip-components=1 -C "${CUDA_ROOT}"
     rm -f "${out}"
 }
 
 link_cuda_redist() {
-    cd "${CUDA_DEST}"
-    ln -sf libcudart.so.12.8.57 libcudart.so.12
-    ln -sf libcudart.so.12.8.57 libcudart.so
+    if [[ ! -d "${CUDA_LIB}" ]]; then
+        fail_keepalive "missing CUDA lib dir ${CUDA_LIB}"
+    fi
+    cd "${CUDA_LIB}"
+    if [[ ! -f libcudart.so.12.8.57 && ! -L libcudart.so.12 ]]; then
+        fail_keepalive "libcudart not found under ${CUDA_LIB}"
+    fi
+    [[ -f libcudart.so.12.8.57 ]] && ln -sf libcudart.so.12.8.57 libcudart.so.12
+    [[ -f libcudart.so.12.8.57 ]] && ln -sf libcudart.so.12.8.57 libcudart.so
 
     mkdir -p "${CUDA_LIB64}"
-    ln -sf "${CUDA_DEST}/libcudart.so.12" "${CUDA_LIB64}/libcudart.so.12"
-    ln -sf "${CUDA_DEST}/libcudart.so.12" "${CUDA_LIB64}/libcudart.so"
+    ln -sf "${CUDA_LIB}/libcudart.so.12" "${CUDA_LIB64}/libcudart.so.12"
+    ln -sf "${CUDA_LIB}/libcudart.so.12" "${CUDA_LIB64}/libcudart.so"
 
-    if [[ ! -f "$(readlink -f "${CUDA_DEST}/libcudart.so.12")" ]]; then
-        fail_keepalive "broken libcudart.so.12 symlink under ${CUDA_DEST}"
+    if [[ ! -f "$(readlink -f "${CUDA_LIB}/libcudart.so.12")" ]]; then
+        fail_keepalive "broken libcudart.so.12 symlink under ${CUDA_LIB}"
     fi
 }
 
@@ -69,11 +76,10 @@ setup_runtime_env() {
     export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
     export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-2}"
     export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
-    export LD_LIBRARY_PATH="${CUDA_DEST}:${CUDA_LIB64}:${PM_DIR}:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="${PM_DIR}:${CUDA_LIB}:${CUDA_LIB64}:${LD_LIBRARY_PATH:-}"
 
     if [[ -e /dev/dxg ]]; then
         echo "[env] WSL2 detected (/dev/dxg)"
-        export LD_LIBRARY_PATH="/usr/lib/wsl/drivers:${LD_LIBRARY_PATH}"
         local wsl_libs=()
         local so
         for so in \
@@ -92,10 +98,11 @@ setup_runtime_env() {
             LD_PRELOAD="$(IFS=:; echo "${wsl_libs[*]}")"
             echo "[env] LD_PRELOAD set for WSL2"
         fi
+        export LD_LIBRARY_PATH="${PM_DIR}:${CUDA_LIB}:${CUDA_LIB64}:/usr/lib/wsl/drivers:${LD_LIBRARY_PATH}"
     elif [[ -e /dev/nvidia0 ]]; then
-        echo "[env] Native Linux NVIDIA detected"
+        echo "[env] Native Linux NVIDIA detected (/dev/nvidia0)"
     else
-        echo "[env] No GPU device nodes; trying bundled CUDA runtime"
+        echo "[env] WARN: no /dev/dxg or /dev/nvidia0 — GPU may not work on Salad WSL2"
     fi
 }
 
@@ -117,7 +124,7 @@ resolve_wallet() {
 apt-get update
 apt-get install -y curl ca-certificates libssl3 xz-utils
 
-mkdir -p "${CUDA_DEST}" "${CUDA_LIB64}" "${PM_DIR}"
+mkdir -p "${CUDA_ROOT}" "${CUDA_LIB64}" "${PM_DIR}"
 
 curl_pkg cuda_cudart 12.8.57
 link_cuda_redist
