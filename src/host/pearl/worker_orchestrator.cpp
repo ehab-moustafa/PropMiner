@@ -328,7 +328,8 @@ bool WorkerOrchestrator::ensure_connected_and_registered() {
 void WorkerOrchestrator::publish_job_from_assignment(const proto::JobAssignment& ja) {
     const bool first_job = !jobs_received_.exchange(true);
     if (first_job) {
-        std::cerr << "[orchestrator] first pool job received (job_id=" << ja.job_id
+        std::cerr << "[orchestrator] first pool job received (job_id="
+                  << miner_id_hex(ja.job_id)
                   << ", block_height=" << ja.block_height << ")\n";
         set_pool_state(PoolState::Mining);
         start_watchdog_if_needed();
