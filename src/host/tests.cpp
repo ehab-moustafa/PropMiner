@@ -15,6 +15,8 @@
 #include "pearl/mine_batch_cache.h"
 #include "pearl/proto/mining_v2.h"
 #include "pearl/protobuf_encoder.h"
+#include "pearl/bincode_encoder.h"
+#include "pearl/pearl_mining_wrapper.h"
 
 #include "tests/ref_blake3.h"
 #include "tests/ref_pearl.h"
@@ -408,6 +410,66 @@ static void test_share_submission_encoding_sanity() {
     EXPECT(encoded.size() > 100);
 }
 
+static void test_bincode_plain_proof_header_and_roots() {
+    MiningConfig cfg;
+    cfg.m = 8192;
+    cfg.n = 262144;
+    cfg.k = 128;
+    cfg.r = 128;
+
+    OwnedProof a_proof;
+    a_proof.root.assign(32, 0x11);
+    a_proof.total_leaves = 4096;
+    a_proof.leaf_data.assign(2 * 1024, 0x22);
+    a_proof.leaf_indices = {0, 1};
+    a_proof.siblings.assign(9 * 32, 0x33);
+
+    OwnedProof b_proof;
+    b_proof.root.assign(32, 0x44);
+    b_proof.total_leaves = 32768;
+    b_proof.leaf_data.assign(32 * 1024, 0x55);
+    b_proof.leaf_indices.resize(32);
+    for (uint32_t i = 0; i < 32; ++i) {
+        b_proof.leaf_indices[i] = i;
+    }
+    b_proof.siblings.assign(10 * 32, 0x66);
+
+    std::array<uint8_t, 32> hashA{};
+    std::array<uint8_t, 32> hashB{};
+    std::memcpy(hashA.data(), a_proof.root.data(), 32);
+    std::memcpy(hashB.data(), b_proof.root.data(), 32);
+
+    const std::vector<uint32_t> a_rows = {0, 8};
+    std::vector<uint32_t> b_cols(64);
+    for (uint32_t i = 0; i < 64; ++i) {
+        b_cols[i] = i;
+    }
+
+    const auto proof = BincodeEncoder::encode_plain_proof(
+        cfg, a_proof, b_proof, a_rows, b_cols, hashA.data(), hashB.data());
+    EXPECT(proof.size() > 36000);
+    EXPECT(proof.size() < 38000);
+
+    uint64_t m = 0, n = 0, k = 0, r = 0;
+    std::memcpy(&m, proof.data(), 8);
+    std::memcpy(&n, proof.data() + 8, 8);
+    std::memcpy(&k, proof.data() + 16, 8);
+    std::memcpy(&r, proof.data() + 24, 8);
+    EXPECT(m == 8192);
+    EXPECT(n == 262144);
+    EXPECT(k == 128);
+    EXPECT(r == 128);
+
+    bool found_a = false;
+    bool found_b = false;
+    for (size_t i = 0; i + 32 <= proof.size(); ++i) {
+        if (std::memcmp(proof.data() + i, hashA.data(), 32) == 0) found_a = true;
+        if (std::memcmp(proof.data() + i, hashB.data(), 32) == 0) found_b = true;
+    }
+    EXPECT(found_a);
+    EXPECT(found_b);
+}
+
 #if !PROP_MINER_HOST_ONLY_TESTS
 static void test_share_claimed_hash_roundtrip() {
     MiningConfig cfg;
@@ -493,6 +555,7 @@ int main() {
 #endif
     test_protobuf_register_request_roundtrip();
     test_share_submission_encoding_sanity();
+    test_bincode_plain_proof_header_and_roots();
 #if !PROP_MINER_HOST_ONLY_TESTS
     test_share_claimed_hash_roundtrip();
 #endif

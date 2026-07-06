@@ -121,6 +121,43 @@ namespace {
         return false;
     }
 
+    // Pool verification uses merkle roots embedded in the bincode proof (ARC model).
+    // Never substitute GPU device hashes when they disagree with rebuilt proofs.
+    bool proof_roots_for_share(const OwnedProof& a_proof,
+                               const OwnedProof& b_proof,
+                               const ShareFound& share,
+                               std::array<uint8_t, 32>& hashA,
+                               std::array<uint8_t, 32>& hashB,
+                               const char* stage) {
+        if (a_proof.root.size() < 32 || b_proof.root.size() < 32) {
+            share_log(std::string(stage) + "-fail",
+                      "nonce=" + std::to_string(share.nonce) +
+                          " reason=missing_proof_root");
+            return false;
+        }
+        std::memcpy(hashA.data(), a_proof.root.data(), 32);
+        std::memcpy(hashB.data(), b_proof.root.data(), 32);
+        if (hash_bytes_set(share.hash_a) &&
+            std::memcmp(hashA.data(), share.hash_a.data(), 32) != 0) {
+            share_log(std::string(stage) + "-fail",
+                      "nonce=" + std::to_string(share.nonce) +
+                          " reason=hash_a_proof_mismatch proof=" +
+                          hex_prefix(hashA.data(), 32) +
+                          " gpu=" + hex_prefix(share.hash_a.data(), 32));
+            return false;
+        }
+        if (hash_bytes_set(share.hash_b) &&
+            std::memcmp(hashB.data(), share.hash_b.data(), 32) != 0) {
+            share_log(std::string(stage) + "-fail",
+                      "nonce=" + std::to_string(share.nonce) +
+                          " reason=hash_b_proof_mismatch proof=" +
+                          hex_prefix(hashB.data(), 32) +
+                          " gpu=" + hex_prefix(share.hash_b.data(), 32));
+            return false;
+        }
+        return true;
+    }
+
     std::string format_target_diag(const ShareTargetDiag& diag, uint32_t nbits) {
         return "nbits=" + nbits_hex(nbits) +
                " daf=" + std::to_string(diag.daf) +
@@ -269,21 +306,9 @@ std::vector<uint8_t> ShareBuilder::build(const ShareFound& share,
         *ctx.b_merkle_tree(), share.b_col_indices);
 
     std::array<uint8_t, 32> hashA{};
-    std::memcpy(hashA.data(), a_proof.root.data(), 32);
-    if (hash_bytes_set(share.hash_a) &&
-        std::memcmp(hashA.data(), share.hash_a.data(), 32) != 0) {
-        share_log("build-warn", "nonce=" + std::to_string(share.nonce) +
-                                  " reason=hash_a_proof_mismatch proof=" +
-                                  hex_prefix(hashA.data(), 32) +
-                                  " gpu=" + hex_prefix(share.hash_a.data(), 32));
-        std::memcpy(hashA.data(), share.hash_a.data(), 32);
-    }
-
     std::array<uint8_t, 32> hashB{};
-    if (hash_bytes_set(share.hash_b)) {
-        std::memcpy(hashB.data(), share.hash_b.data(), 32);
-    } else {
-        std::memcpy(hashB.data(), b_proof.root.data(), 32);
+    if (!proof_roots_for_share(a_proof, b_proof, share, hashA, hashB, "build")) {
+        return {};
     }
 
     // Compute claimed hash.
@@ -344,21 +369,9 @@ std::vector<uint8_t> ShareBuilder::build_stratum_plain_proof(
         *ctx.b_merkle_tree(), share.b_col_indices);
 
     std::array<uint8_t, 32> hashA{};
-    std::memcpy(hashA.data(), a_proof.root.data(), 32);
-    if (hash_bytes_set(share.hash_a) &&
-        std::memcmp(hashA.data(), share.hash_a.data(), 32) != 0) {
-        share_log("build-warn", "nonce=" + std::to_string(share.nonce) +
-                                  " reason=hash_a_proof_mismatch proof=" +
-                                  hex_prefix(hashA.data(), 32) +
-                                  " gpu=" + hex_prefix(share.hash_a.data(), 32));
-        std::memcpy(hashA.data(), share.hash_a.data(), 32);
-    }
-
     std::array<uint8_t, 32> hashB{};
-    if (hash_bytes_set(share.hash_b)) {
-        std::memcpy(hashB.data(), share.hash_b.data(), 32);
-    } else {
-        std::memcpy(hashB.data(), b_proof.root.data(), 32);
+    if (!proof_roots_for_share(a_proof, b_proof, share, hashA, hashB, "build")) {
+        return {};
     }
 
     auto claimed = compute_claimed_hash(share, ctx.job().job_key.data(),
@@ -384,7 +397,8 @@ std::vector<uint8_t> ShareBuilder::build_stratum_plain_proof(
     }
 
     const auto proof = BincodeEncoder::encode_plain_proof(
-        cfg_, a_proof, b_proof, share.a_row_indices, share.b_col_indices);
+        cfg_, a_proof, b_proof, share.a_row_indices, share.b_col_indices,
+        hashA.data(), hashB.data());
     share_trace("build-ok",
                 "nonce=" + std::to_string(share.nonce) +
                 " proof_bytes=" + std::to_string(proof.size()) +
@@ -482,22 +496,9 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
     }
 
     std::array<uint8_t, 32> hashA{};
-    std::memcpy(hashA.data(), a_proof.root.data(), 32);
-    if (hash_bytes_set(share.hash_a) &&
-        std::memcmp(hashA.data(), share.hash_a.data(), 32) != 0) {
-        share_trace("verify-warn",
-                    "nonce=" + std::to_string(share.nonce) +
-                    " reason=hash_a_proof_mismatch proof=" +
-                    hex_prefix(hashA.data(), 32) +
-                    " gpu=" + hex_prefix(share.hash_a.data(), 32));
-        std::memcpy(hashA.data(), share.hash_a.data(), 32);
-    }
-
     std::array<uint8_t, 32> hashB{};
-    if (hash_bytes_set(share.hash_b)) {
-        std::memcpy(hashB.data(), share.hash_b.data(), 32);
-    } else {
-        std::memcpy(hashB.data(), b_proof.root.data(), 32);
+    if (!proof_roots_for_share(a_proof, b_proof, share, hashA, hashB, "verify")) {
+        return false;
     }
 
     // Recompute claimed hash and compare when the GPU populated it.

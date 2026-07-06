@@ -74,7 +74,8 @@ fi
 
 GPUS="${PROPMINER_GPUS:-0}"
 RESTART_ON_EXIT="${PROPMINER_RESTART_ON_EXIT:-1}"
-export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048}"
+# Kryptex PRL stratum (direct mining guide): prl[-eu].kryptex.network:7048
+export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl-eu.kryptex.network:7048,prl.kryptex.network:7048}"
 
 setup_wsl2_env
 

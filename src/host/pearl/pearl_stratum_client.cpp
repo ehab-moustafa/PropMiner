@@ -33,6 +33,40 @@ std::string json_escape(const std::string& s) {
     return out;
 }
 
+std::string base64_encode(const std::vector<uint8_t>& in) {
+    static const char* tbl =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    size_t i = 0;
+    while (i + 3 <= in.size()) {
+        const uint32_t n = (static_cast<uint32_t>(in[i]) << 16) |
+                           (static_cast<uint32_t>(in[i + 1]) << 8) |
+                           static_cast<uint32_t>(in[i + 2]);
+        i += 3;
+        out.push_back(tbl[(n >> 18) & 0x3F]);
+        out.push_back(tbl[(n >> 12) & 0x3F]);
+        out.push_back(tbl[(n >> 6) & 0x3F]);
+        out.push_back(tbl[n & 0x3F]);
+    }
+    if (i < in.size()) {
+        uint32_t n = static_cast<uint32_t>(in[i]) << 16;
+        if (i + 1 < in.size()) {
+            n |= static_cast<uint32_t>(in[i + 1]) << 8;
+        }
+        out.push_back(tbl[(n >> 18) & 0x3F]);
+        out.push_back(tbl[(n >> 12) & 0x3F]);
+        if (i + 1 < in.size()) {
+            out.push_back(tbl[(n >> 6) & 0x3F]);
+            out.push_back('=');
+        } else {
+            out.push_back('=');
+            out.push_back('=');
+        }
+    }
+    return out;
+}
+
 void stratum_log(const std::string& msg) {
     std::cout << "pool: " << msg << std::endl;
 }
@@ -621,20 +655,7 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
                     " job=" + job_id.substr(0, std::min<size_t>(12, job_id.size())));
     }
 
-    std::string b64;
-    static const char* tbl =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    size_t i = 0;
-    while (i < proof_bytes.size()) {
-        uint32_t octet_a = i < proof_bytes.size() ? proof_bytes[i++] : 0;
-        uint32_t octet_b = i < proof_bytes.size() ? proof_bytes[i++] : 0;
-        uint32_t octet_c = i < proof_bytes.size() ? proof_bytes[i++] : 0;
-        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
-        b64.push_back(tbl[(triple >> 18) & 0x3F]);
-        b64.push_back(tbl[(triple >> 12) & 0x3F]);
-        b64.push_back(i > proof_bytes.size() + 1 ? '=' : tbl[(triple >> 6) & 0x3F]);
-        b64.push_back(i > proof_bytes.size() ? '=' : tbl[triple & 0x3F]);
-    }
+    const std::string b64 = base64_encode(proof_bytes);
     const int id = ++request_id_;
     if (nonce != 0) {
         std::lock_guard<std::mutex> lk(pending_submit_mtx_);

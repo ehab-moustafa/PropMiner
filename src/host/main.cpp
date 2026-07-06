@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <csignal>
 #include <cstdlib>
 #include <string>
@@ -302,6 +303,24 @@ static void split_wallet_worker(std::string& wallet, std::string& worker,
             wallet.c_str(), worker.c_str());
 }
 
+static void warn_kryptex_worker_name(const std::string& worker) {
+    if (worker.empty() || worker.size() > 32) {
+        fprintf(stderr,
+                "[main] WARNING: Kryptex worker name should be 1-32 chars "
+                "(current len=%zu). See https://www.kryptex.com/en/articles/kryptex-pools-direct-mining-en\n",
+                worker.size());
+    }
+    for (unsigned char c : worker) {
+        if (std::isalnum(c)) continue;
+        fprintf(stderr,
+                "[main] WARNING: Kryptex worker name should use only letters "
+                "and digits (no '%c' in \"%s\"). Dashboard may show the worker "
+                "online but not credit shares. Use e.g. propminerhigh.\n",
+                c, worker.c_str());
+        break;
+    }
+}
+
 static bool parse_pool_endpoint(const std::string& pool_str,
                                 pearl::WorkerOrchestrator::PoolEndpoint& out) {
     size_t colon = pool_str.rfind(':');
@@ -470,6 +489,7 @@ int main(int argc, char* argv[]) {
     }
 
     split_wallet_worker(cfg.wallet_address, cfg.worker_name, worker_set);
+    warn_kryptex_worker_name(cfg.worker_name);
 
     if (cfg.pool_endpoints.empty()) {
         if (const char* env = std::getenv("PROPMINER_POOL"); env && env[0]) {

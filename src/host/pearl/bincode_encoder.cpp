@@ -14,7 +14,9 @@ void BincodeEncoder::write_bytes(std::vector<uint8_t>& out, const uint8_t* data,
     out.insert(out.end(), data, data + len);
 }
 
-void BincodeEncoder::write_merkle_proof(std::vector<uint8_t>& out, const OwnedProof& proof) {
+void BincodeEncoder::write_merkle_proof(std::vector<uint8_t>& out,
+                                        const OwnedProof& proof,
+                                        const uint8_t root[32]) {
     const size_t leaf_count = proof.leaf_count();
     write_u64(out, leaf_count);
     for (size_t i = 0; i < leaf_count; ++i) {
@@ -29,13 +31,7 @@ void BincodeEncoder::write_merkle_proof(std::vector<uint8_t>& out, const OwnedPr
     }
 
     write_u64(out, proof.total_leaves);
-
-    if (proof.root.size() >= 32) {
-        write_bytes(out, proof.root.data(), 32);
-    } else {
-        uint8_t zero[32] = {};
-        write_bytes(out, zero, 32);
-    }
+    write_bytes(out, root, 32);
 
     const size_t sib_count = proof.sibling_count();
     write_u64(out, sib_count);
@@ -46,8 +42,9 @@ void BincodeEncoder::write_merkle_proof(std::vector<uint8_t>& out, const OwnedPr
 
 void BincodeEncoder::write_matrix_merkle_proof(std::vector<uint8_t>& out,
                                                const OwnedProof& proof,
+                                               const uint8_t root[32],
                                                const std::vector<uint32_t>& indices) {
-    write_merkle_proof(out, proof);
+    write_merkle_proof(out, proof, root);
     write_u64(out, indices.size());
     for (uint32_t idx : indices) {
         write_u64(out, idx);
@@ -59,7 +56,9 @@ std::vector<uint8_t> BincodeEncoder::encode_plain_proof(
     const OwnedProof& a_proof,
     const OwnedProof& b_proof,
     const std::vector<uint32_t>& a_row_indices,
-    const std::vector<uint32_t>& b_col_indices) {
+    const std::vector<uint32_t>& b_col_indices,
+    const uint8_t hash_a[32],
+    const uint8_t hash_b[32]) {
     std::vector<uint8_t> out;
     out.reserve(4096);
 
@@ -68,8 +67,9 @@ std::vector<uint8_t> BincodeEncoder::encode_plain_proof(
     write_u64(out, static_cast<uint64_t>(cfg.k));
     write_u64(out, static_cast<uint64_t>(cfg.r));
 
-    write_matrix_merkle_proof(out, a_proof, a_row_indices);
-    write_matrix_merkle_proof(out, b_proof, b_col_indices);
+    // ARC StratumSession.WriteMatrixMerkleProof uses share.HashA/HashB as wire roots.
+    write_matrix_merkle_proof(out, a_proof, hash_a, a_row_indices);
+    write_matrix_merkle_proof(out, b_proof, hash_b, b_col_indices);
     return out;
 }
 
