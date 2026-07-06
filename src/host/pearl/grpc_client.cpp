@@ -148,7 +148,13 @@ struct PearlGrpcClient::Impl {
                             return false;
                         continue;
                     }
-                    return set_error("SSL_read failed");
+                    unsigned long ssl_err = ERR_get_error();
+                    if (ssl_err != 0) {
+                        char buf[256];
+                        ERR_error_string_n(ssl_err, buf, sizeof(buf));
+                        return set_error(std::string("SSL_read failed: ") + buf);
+                    }
+                    return set_error("SSL_read failed (connection closed)");
                 }
             } else {
                 r = static_cast<int>(recv(sock_, out + got, n - got, 0));
@@ -232,9 +238,10 @@ struct PearlGrpcClient::Impl {
         const char* preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
         if (!write_exact(reinterpret_cast<const uint8_t*>(preface), std::strlen(preface)))
             return false;
-        if (!send_frame(FRAME_SETTINGS, 0, 0, nullptr, 0)) return false;
-        if (!send_window_update(0, 0x7FFFFFFFu)) return false;
-        return true;
+        // SETTINGS only — do NOT send a huge WINDOW_UPDATE here. Adding 0x7FFFFFFF
+        // to the default 65535 B connection window exceeds RFC 7540 max (2^31-1)
+        // and Kryptex returns GOAWAY FLOW_CONTROL_ERROR (0x3).
+        return send_frame(FRAME_SETTINGS, 0, 0, nullptr, 0);
     }
 
     bool connect_tcp() {
@@ -268,6 +275,11 @@ struct PearlGrpcClient::Impl {
         OpenSSL_add_all_algorithms();
         ctx_ = SSL_CTX_new(TLS_client_method());
         if (!ctx_) return set_error("SSL_CTX_new failed");
+        // gRPC requires HTTP/2 via ALPN; without "h2" many pools close the TLS
+        // session right after the client preface (SRBMiner on :7048 stratum is unrelated).
+        static const unsigned char kAlpnH2[] = {0x02, 'h', '2'};
+        if (SSL_CTX_set_alpn_protos(ctx_, kAlpnH2, sizeof(kAlpnH2)) != 0)
+            return set_error("SSL_CTX_set_alpn_protos(h2) failed");
         SSL_CTX_set_default_verify_paths(ctx_);
         ssl_ = SSL_new(ctx_);
         if (!ssl_) return set_error("SSL_new failed");
@@ -283,8 +295,20 @@ struct PearlGrpcClient::Impl {
             } else if (err == SSL_ERROR_WANT_WRITE) {
                 if (!poll_socket(POLLOUT, opts.connect_timeout_ms)) return false;
             } else {
+                unsigned long ssl_err = ERR_get_error();
+                if (ssl_err != 0) {
+                    char buf[256];
+                    ERR_error_string_n(ssl_err, buf, sizeof(buf));
+                    return set_error(std::string("TLS handshake failed: ") + buf);
+                }
                 return set_error("TLS handshake failed");
             }
+        }
+        const unsigned char* alpn = nullptr;
+        unsigned int alpn_len = 0;
+        SSL_get0_alpn_selected(ssl_, &alpn, &alpn_len);
+        if (alpn_len != 2 || alpn[0] != 'h' || alpn[1] != '2') {
+            return set_error("TLS ALPN did not negotiate h2 (required for gRPC)");
         }
         return true;
     }
@@ -325,7 +349,7 @@ struct PearlGrpcClient::Impl {
             opts.host + ":" + std::to_string(opts.port),
             path,
             opts.user_agent,
-            "application/grpc");
+            "application/grpc+proto");
         return send_frame(FRAME_HEADERS,
                           static_cast<uint8_t>(FLAG_END_HEADERS | (end_stream ? FLAG_END_STREAM : 0)),
                           stream_id, headers.data(), static_cast<uint32_t>(headers.size()));
@@ -437,11 +461,19 @@ bool PearlGrpcClient::register_miner(const proto::RegisterRequest& req, proto::R
     std::vector<uint8_t> response_body;
     while (std::chrono::steady_clock::now() < deadline) {
         uint8_t hdr[FRAME_HEADER_SIZE];
-        if (!impl_->read_exact(hdr, sizeof(hdr), 1000)) return false;
+        if (!impl_->read_exact(hdr, sizeof(hdr), 1000)) {
+            if (std::chrono::steady_clock::now() >= deadline)
+                return impl_->set_error("register response timeout");
+            continue;
+        }
         uint32_t len = read_u24_be(hdr);
         uint8_t type = hdr[3];
         uint8_t flags = hdr[4];
         uint32_t rsid = read_u32_be(hdr + 5) & 0x7FFFFFFFu;
+        // GOAWAY is always stream 0; must not be discarded with other streams.
+        if (type == FRAME_GOAWAY) {
+            return impl_->set_error("GOAWAY during register");
+        }
         if (rsid != sid) {
             std::vector<uint8_t> discard(len);
             if (len > 0 && !impl_->read_exact(discard.data(), len, 1000)) return false;
@@ -452,8 +484,6 @@ bool PearlGrpcClient::register_miner(const proto::RegisterRequest& req, proto::R
         if (type == FRAME_DATA) {
             response_body.insert(response_body.end(), payload.begin(), payload.end());
             if (flags & FLAG_END_STREAM) break;
-        } else if (type == FRAME_GOAWAY) {
-            return impl_->set_error("GOAWAY");
         }
     }
     if (response_body.size() < 5) return impl_->set_error("empty register response");

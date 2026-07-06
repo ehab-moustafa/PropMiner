@@ -330,7 +330,7 @@ for batch in "${BENCH_BATCHES[@]}"; do
     logfile="${RESULTS_DIR}/benchmark_batch${batch}.log"
     RATE=$(run_benchmark_attempt "${attempt}" "${batch}" on "${BENCH_SECONDS}" "${logfile}")
     RATE_INT=$(bench_rate_to_int "${RATE}")
-  if (( RATE_INT > BEST_RATE )); then
+    if (( RATE_INT > BEST_RATE )); then
         BEST_RATE=${RATE_INT}
         BEST_LABEL="batch=${batch} graph=on"
     fi

@@ -159,6 +159,10 @@ bool WorkerOrchestrator::ensure_connected_and_registered() {
     opts.host = cfg_.pool_host;
     opts.port = cfg_.pool_port;
     opts.use_tls = cfg_.use_tls;
+    opts.user_agent = cfg_.miner_version;
+    if (const char* t = std::getenv("PROPMINER_GRPC_TIMEOUT_MS"); t && t[0]) {
+        opts.connect_timeout_ms = std::max(5000, std::atoi(t));
+    }
     client_ = std::make_unique<PearlGrpcClient>(opts);
 
     if (!client_->connect()) {
@@ -253,6 +257,8 @@ void WorkerOrchestrator::handle_pool_event(const proto::PoolEvent& evt) {
 void WorkerOrchestrator::network_thread_func() {
     while (!stop_flag_) {
         if (!ensure_connected_and_registered()) {
+            std::cerr << "[orchestrator] pool connect/register failed; retry in 5s"
+                      << std::endl;
             std::this_thread::sleep_for(std::chrono::seconds(5));
             continue;
         }

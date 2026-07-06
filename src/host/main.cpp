@@ -291,6 +291,17 @@ static std::vector<int> parse_int_list(const std::string& s) {
     return out;
 }
 
+static void split_wallet_worker(std::string& wallet, std::string& worker,
+                                bool worker_set) {
+    if (worker_set || wallet.empty()) return;
+    const size_t dot = wallet.find('.');
+    if (dot == std::string::npos || dot == 0 || dot + 1 >= wallet.size()) return;
+    worker = wallet.substr(dot + 1);
+    wallet = wallet.substr(0, dot);
+    fprintf(stderr, "[main] Parsed wallet.worker -> wallet=%s worker=%s\n",
+            wallet.c_str(), worker.c_str());
+}
+
 int main(int argc, char* argv[]) {
     fprintf(stderr,
         "\n  ____ _   _ ____  ____  _       _    _ _ \n"
@@ -315,6 +326,11 @@ int main(int argc, char* argv[]) {
     int tune_cluster_repeats = 3;
     int tune_autotune_seconds = 0;
     int tune_autotune_repeats = 3;
+
+    bool worker_set = false;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--worker") == 0) { worker_set = true; break; }
+    }
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
@@ -392,6 +408,17 @@ int main(int argc, char* argv[]) {
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    split_wallet_worker(cfg.wallet_address, cfg.worker_name, worker_set);
+
+    if (cfg.pool_port == 7048) {
+        fprintf(stderr,
+            "[main] ERROR: port 7048 is Kryptex Stratum (SRBMiner/PeakMiner), not gRPC.\n"
+            "[main] PropMiner uses Pearl V2 gRPC on port 443: "
+            "PROPMINER_POOL=prl.kryptex.network:443\n"
+            "[main] Stratum :7048 support is planned; gRPC :443 is required today.\n");
+        return 1;
     }
 
     cfg.speed_test_seconds = bench_seconds;

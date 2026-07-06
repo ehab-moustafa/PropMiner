@@ -60,6 +60,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Split WALLET.worker (SRBMiner-style) when PROPMINER_WORKER is unset.
+if [[ -z "${WORKER}" && "${WALLET}" == *.* ]]; then
+    WORKER="${WALLET#*.}"
+    WALLET="${WALLET%%.*}"
+    echo "[mine] Parsed wallet.worker -> wallet=${WALLET} worker=${WORKER}" | propminer_log
+fi
+
 if [[ -z "${WALLET}" ]]; then
     echo "[mine] ERROR: wallet required. Set PROPMINER_WALLET or pass --wallet ADDRESS." >&2
     echo "[mine] Format: WALLET.worker or krxUSERNAME.worker (see Kryptex Pearl pool docs)" >&2
@@ -138,12 +145,14 @@ if [[ "${RESTART_ON_EXIT}" == "0" ]]; then
     exit $?
 fi
 
+# Production: keep container alive — retry on any exit (pool blips, Salad SIGTERM races).
 while true; do
-    if run_mine_loop; then
-        echo "[mine] propminer exited cleanly; stopping (no restart)." | propminer_log
+    run_mine_loop
+    rc=$?
+    if [[ "${rc}" -eq 0 && -n "${PROPMINER_ONCE:-}" ]]; then
+        echo "[mine] propminer exited cleanly (PROPMINER_ONCE=1); stopping." | propminer_log
         exit 0
     fi
-    rc=$?
     echo "[mine] propminer exited rc=${rc}; restarting in 10s..." | propminer_log
     sleep 10
 done
