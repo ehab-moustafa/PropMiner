@@ -1,6 +1,7 @@
 #include "sigma_context.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <stdexcept>
 
@@ -176,10 +177,27 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id,
 
     std::vector<uint8_t> leaf_cvs_host(resident_.leaf_cv_bytes());
 
-    // Build noise_B side: noise_gen(B-side only) + noise_B.
-    // Use the device-resident key copy (already uploaded above); like
-    // tensor_hash, the noise-generation kernel reads key data from GPU memory.
-    const uint8_t* dev_key = reinterpret_cast<const uint8_t*>(resident_.key());
+    // Build noise_B side: commitment_hash → noise_gen(B-side only) → noise_B.
+    // pearl_capi_install_B / ARC key EBR/EBL with CommitB = BLAKE3(job_key‖BHash),
+    // not the raw job_key. Using job_key for both keys was the root cause of
+    // gpu-hit + verify-fail (CPU jackpot uses CommitB as b_noise_seed).
+    CUdeviceptr a_hash_zeros = 0;
+    CUdeviceptr commit_a = 0;
+    CUdeviceptr commit_b = 0;
+    check_cuda(cuMemAlloc(&a_hash_zeros, K32), "install a_hash_zeros alloc");
+    check_cuda(cuMemAlloc(&commit_a, K32), "install commit_a alloc");
+    check_cuda(cuMemAlloc(&commit_b, K32), "install commit_b alloc");
+    check_cuda(cuMemsetD8Async(a_hash_zeros, 0, K32, stream), "install a_hash zero");
+
+    gemm_.commitment_hash_from_merkle_roots(
+        reinterpret_cast<const uint8_t*>(a_hash_zeros),
+        reinterpret_cast<const uint8_t*>(resident_.b_hash()),
+        reinterpret_cast<const uint8_t*>(resident_.key()),
+        reinterpret_cast<uint8_t*>(commit_a),
+        reinterpret_cast<uint8_t*>(commit_b),
+        device_id,
+        stream);
+
     int rc = pearl_capi_noise_gen(
         cfg_.r, 0, cfg_.n, cfg_.k,
         nullptr, nullptr,
@@ -188,8 +206,8 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id,
         reinterpret_cast<void*>(resident_.ebl_k()),
         reinterpret_cast<void*>(resident_.ebr()),
         reinterpret_cast<void*>(resident_.ebr_fp16()),
-        dev_key,
-        dev_key,
+        reinterpret_cast<const uint8_t*>(commit_a),
+        reinterpret_cast<const uint8_t*>(commit_b),
         stream);
     if (rc != 0) {
         cudaError_t last = cudaGetLastError();
@@ -247,6 +265,26 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id,
                 hex_prefix(b_tree_->root(), 32, 8).c_str(),
                 hex_prefix(gpu_b_hash.data(), 32, 8).c_str());
     }
+
+    std::array<uint8_t, 32> gpu_commit_b{};
+    check_cuda(cuMemcpyDtoH(gpu_commit_b.data(), commit_b, K32), "commit_b d2h");
+    std::array<uint8_t, 64> commit_b_input{};
+    std::memcpy(commit_b_input.data(), job_.job_key.data(), K32);
+    std::memcpy(commit_b_input.data() + K32, gpu_b_hash.data(), K32);
+    auto expected_commit_b = Blake3Helper::hash(commit_b_input.data(), commit_b_input.size());
+    if (std::memcmp(gpu_commit_b.data(), expected_commit_b.data(), K32) != 0) {
+        fprintf(stderr,
+                "[sigma] WARN: GPU CommitB != BLAKE3(job_key||BHash) (gpu=%s expected=%s)\n",
+                hex_prefix(gpu_commit_b.data(), 32, 8).c_str(),
+                hex_prefix(expected_commit_b.data(), 32, 8).c_str());
+    }
+    share_trace("sigma-install",
+                "commit_b=" + hex_prefix(gpu_commit_b.data(), 32) +
+                " b_hash=" + hex_prefix(gpu_b_hash.data(), 32));
+
+    cuMemFree(a_hash_zeros);
+    cuMemFree(commit_a);
+    cuMemFree(commit_b);
 
     installed_ = true;
 }
