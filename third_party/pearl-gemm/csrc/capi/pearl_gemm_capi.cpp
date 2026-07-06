@@ -41,6 +41,12 @@
 #endif
 #endif
 
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
+// Must be at file scope — including inside the anonymous namespace below
+// nests `namespace pearl` and makes `pearl::blackwell::` ambiguous.
+#include "blackwell/transcript_gemm_sm120_geforce.h"
+#endif
+
 // --- internal: cached per-device cudaDeviceProp ---------------------------
 namespace {
 
@@ -463,8 +469,6 @@ static int validate_geforce_kernel_selection() {
 #endif
 
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
-#include "blackwell/transcript_gemm_sm120_geforce.h"
-
 static bool use_geforce_experimental_kernel() {
   return pearl_kernel_env_requests_geforce();
 }
@@ -489,7 +493,7 @@ int warmup_kernels_before_graph_capture() {
   }
 #if defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
   if (use_geforce_experimental_kernel()) {
-    werr = pearl::blackwell::warmup_transcript_gemm_sm120_geforce_attrs();
+    werr = ::pearl::blackwell::warmup_transcript_gemm_sm120_geforce_attrs();
     if (werr != cudaSuccess) {
       fprintf(stderr,
               "[pearl-gemm] warmup_transcript_gemm_sm120_geforce_attrs failed: %s\n",
@@ -959,7 +963,7 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
     cudaError_t launch_err = cudaSuccess;
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
     if (use_geforce_experimental_kernel()) {
-      launch_err = pearl::blackwell::launch_transcript_gemm_sm120_geforce_headless(
+      launch_err = ::pearl::blackwell::launch_transcript_gemm_sm120_geforce_headless(
           static_cast<const int8_t*>(p->ApEA),
           static_cast<const int8_t*>(p->BpEB),
           /*C=*/nullptr,
