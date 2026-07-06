@@ -162,8 +162,8 @@ std::array<uint8_t, 32> ShareBuilder::compute_claimed_hash(
     uint8_t b_noise_seed[32]{};
     uint8_t a_noise_seed[32]{};
     derive_noise_seeds(job_key, hashA, hashB, b_noise_seed, a_noise_seed);
-    if (hash_bytes_set(share.gpu_commit_a.data()) &&
-        hash_bytes_set(share.gpu_commit_b.data())) {
+    if (hash_bytes_set(share.gpu_commit_a) &&
+        hash_bytes_set(share.gpu_commit_b)) {
         if (std::memcmp(a_noise_seed, share.gpu_commit_a.data(), 32) != 0 ||
             std::memcmp(b_noise_seed, share.gpu_commit_b.data(), 32) != 0) {
             share_trace("seed-warn",
