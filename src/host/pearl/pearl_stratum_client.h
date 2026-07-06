@@ -77,7 +77,7 @@ private:
     int request_id_ = 1;
     double last_difficulty_ = 0.0;
     std::mutex send_mtx_;
-    std::mutex job_map_mtx_;
+    mutable std::mutex job_map_mtx_;
     std::unordered_map<std::string, std::string> sigma_hex_to_job_id_;
 
     JobCallback job_cb_;
