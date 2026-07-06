@@ -17,6 +17,7 @@
 #include "pearl_capi_wrapper.h"
 #include "rtx5090_profile.h"
 #include "share_builder.h"
+#include "share_trace.h"
 #include "tune_cache.h"
 
 namespace pearl {
@@ -387,6 +388,11 @@ void WorkerOrchestrator::publish_job_from_assignment(const proto::JobAssignment&
         w->set_target_nbits(ja.target_nbits);
         w->set_sigma(ctx);
     }
+    share_trace("job-installed",
+                "job_id=" + miner_id_hex(ja.job_id) +
+                " height=" + std::to_string(ja.block_height) +
+                " share_target=" + nbits_hex(ja.target_nbits) +
+                " sigma=" + hex_prefix(ja.sigma.data(), ja.sigma.size(), 4));
 }
 
 void WorkerOrchestrator::handle_pool_event(const proto::PoolEvent& evt) {
@@ -406,11 +412,11 @@ void WorkerOrchestrator::handle_pool_event(const proto::PoolEvent& evt) {
         case proto::PoolEventType::ShareResult:
             if (evt.share_result.accepted) shares_accepted_.fetch_add(1);
             else shares_rejected_.fetch_add(1);
-            std::cout << "share: " << evt.share_result.outcome
-                      << (evt.share_result.is_block_find ? " BLOCK" : "")
-                      << " (totals " << shares_accepted_.load() << "a/"
-                      << shares_rejected_.load() << "r)"
-                      << std::endl;
+            share_log(evt.share_result.accepted ? "accepted" : "rejected",
+                      evt.share_result.outcome +
+                      (evt.share_result.is_block_find ? " BLOCK" : "") +
+                      " (totals " + std::to_string(shares_accepted_.load()) + "a/" +
+                      std::to_string(shares_rejected_.load()) + "r)");
             break;
         case proto::PoolEventType::Error:
             std::cerr << "pool error: " << evt.error.message << std::endl;
@@ -510,11 +516,10 @@ void WorkerOrchestrator::run_stratum_session() {
             [this](bool accepted, const std::string& msg) {
                 if (accepted) shares_accepted_.fetch_add(1);
                 else shares_rejected_.fetch_add(1);
-                std::cout << "share: " << (accepted ? "ACCEPTED" : ("REJECTED " + msg))
-                          << " (totals " << shares_accepted_.load() << "a/"
-                          << shares_rejected_.load() << "r/"
-                          << shares_dropped_.load() << "d)"
-                          << std::endl;
+                share_log(accepted ? "accepted" : "rejected",
+                          msg + " (totals " + std::to_string(shares_accepted_.load()) +
+                          "a/" + std::to_string(shares_rejected_.load()) + "r/" +
+                          std::to_string(shares_dropped_.load()) + "d)");
             });
 
         std::cerr << "[orchestrator] connecting Stratum " << ep.host << ":" << ep.port
@@ -606,14 +611,13 @@ void WorkerOrchestrator::share_sender_thread_func() {
         for (const ShareFound& raw : batch) {
             if (!raw.sigma_ctx) {
                 shares_dropped_.fetch_add(1);
-                pool_log("share DROPPED missing sigma context");
+                share_log("dropped", "reason=missing_sigma_context nonce=" +
+                                     std::to_string(raw.nonce));
                 continue;
             }
             ShareBuilder builder(raw.job.config);
             if (!ShareBuilder::VerifyShare(raw, *raw.sigma_ctx)) {
                 shares_dropped_.fetch_add(1);
-                pool_log("share DROPPED VerifyShare failed nonce=" +
-                         std::to_string(raw.nonce));
                 continue;
             }
             std::vector<uint8_t> proof;
@@ -624,8 +628,10 @@ void WorkerOrchestrator::share_sender_thread_func() {
             }
             if (proof.empty()) {
                 shares_dropped_.fetch_add(1);
-                pool_log("share DROPPED build failed (stale target) nonce=" +
-                         std::to_string(raw.nonce));
+                if (!share_trace_enabled()) {
+                    share_log("dropped", "reason=build_failed_stale_target nonce=" +
+                                         std::to_string(raw.nonce));
+                }
                 continue;
             }
             if (use_stratum_.load() && stratum_client_ && stratum_client_->connected()) {
@@ -633,15 +639,22 @@ void WorkerOrchestrator::share_sender_thread_func() {
                     stratum_client_->job_id_for_sigma(raw.job.sigma);
                 if (job_id.empty()) {
                     shares_dropped_.fetch_add(1);
-                    pool_log("share DROPPED no job_id for sigma nonce=" +
-                             std::to_string(raw.nonce));
+                    share_log("dropped", "reason=no_job_id_for_sigma nonce=" +
+                                         std::to_string(raw.nonce));
                     continue;
                 }
                 shares_submitted_.fetch_add(1);
+                share_log("submitting",
+                          "nonce=" + std::to_string(raw.nonce) +
+                          " job_id=" + job_id.substr(0, std::min<size_t>(16, job_id.size())) +
+                          " proof_bytes=" + std::to_string(proof.size()) +
+                          " target=" + nbits_hex(raw.installed_target_nbits
+                                                    ? raw.installed_target_nbits
+                                                    : raw.job.target_nbits));
                 if (!stratum_client_->submit_plain_proof(job_id, proof)) {
                     shares_dropped_.fetch_add(1);
-                    pool_log("share DROPPED send failed: " +
-                             stratum_client_->last_error());
+                    share_log("dropped", "reason=send_failed err=" +
+                                         stratum_client_->last_error());
                 }
                 continue;
             }
@@ -690,9 +703,14 @@ void WorkerOrchestrator::heartbeat_thread_func() {
 
 void WorkerOrchestrator::submit(const ShareFound& share) {
     shares_found_.fetch_add(1);
-    pool_log("share FOUND nonce=" + std::to_string(share.nonce) +
-             " rows=" + std::to_string(share.a_row_indices.size()) +
-             " cols=" + std::to_string(share.b_col_indices.size()));
+    share_log("found",
+              "nonce=" + std::to_string(share.nonce) +
+              " rows=" + std::to_string(share.a_row_indices.size()) +
+              " cols=" + std::to_string(share.b_col_indices.size()) +
+              " target=" + nbits_hex(share.installed_target_nbits
+                                        ? share.installed_target_nbits
+                                        : share.job.target_nbits) +
+              " sigma=" + hex_prefix(share.job.sigma.data(), share.job.sigma.size(), 4));
     std::lock_guard<std::mutex> lk(share_mtx_);
     pending_share_found_.push_back(share);
     share_cv_.notify_one();
@@ -716,6 +734,10 @@ int WorkerOrchestrator::run() {
     if (cfg_.disable_cpu_mining) {
         std::cerr << "[orchestrator] CPU mining disabled; CPU is used only for "
                      "host management, seed upload, and PCIe feeding.\n";
+    }
+    if (share_trace_enabled()) {
+        std::cerr << "[orchestrator] PROPMINER_VERBOSE_SHARES=1 — intensive share "
+                     "pipeline logging enabled\n";
     }
 
     MiningConfig tuned_config = cfg_.mining_config;

@@ -1,4 +1,5 @@
 #include "share_builder.h"
+#include "share_trace.h"
 
 #include <algorithm>
 #include <cstring>
@@ -267,6 +268,11 @@ std::vector<uint8_t> ShareBuilder::build(const ShareFound& share,
         : share.job.target_nbits;
     if (!claimed_hash_clears_target(claimed.data(), live_nbits,
                                     cfg_.difficulty_adjustment_factor())) {
+        share_log("build-fail", "nonce=" + std::to_string(share.nonce) +
+                                  " reason=below_share_target claimed=" +
+                                  hex_prefix(claimed.data(), 32) +
+                                  " target=" + nbits_hex(live_nbits) +
+                                  " format=grpc");
         return {};
     }
 
@@ -307,11 +313,20 @@ std::vector<uint8_t> ShareBuilder::build_stratum_plain_proof(
         : share.job.target_nbits;
     if (!claimed_hash_clears_target(claimed.data(), live_nbits,
                                     cfg_.difficulty_adjustment_factor())) {
+        share_log("build-fail", "nonce=" + std::to_string(share.nonce) +
+                                  " reason=below_share_target claimed=" +
+                                  hex_prefix(claimed.data(), 32) +
+                                  " target=" + nbits_hex(live_nbits));
         return {};
     }
 
-    return BincodeEncoder::encode_plain_proof(
+    const auto proof = BincodeEncoder::encode_plain_proof(
         cfg_, a_proof, b_proof, share.a_row_indices, share.b_col_indices);
+    share_trace("build-ok",
+                "nonce=" + std::to_string(share.nonce) +
+                " proof_bytes=" + std::to_string(proof.size()) +
+                " claimed=" + hex_prefix(claimed.data(), 32));
+    return proof;
 }
 
 std::vector<uint32_t> ShareBuilder::derive_audit_indices(
@@ -357,6 +372,8 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
     ShareBuilder builder(share.job.config);
 
     if (share.a_opened_leaf_data.empty()) {
+        share_log("verify-fail", "nonce=" + std::to_string(share.nonce) +
+                                  " reason=empty_a_opened_leaf_data");
         return false;
     }
     const std::vector<uint8_t>& a_leaf_data = share.a_opened_leaf_data;
@@ -371,6 +388,8 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
 
     if (!builder.mining_.verify_proof(a_proof, share.job.job_key.data(),
                                       a_proof.root.data())) {
+        share_log("verify-fail", "nonce=" + std::to_string(share.nonce) +
+                                  " reason=a_merkle_mismatch");
         return false;
     }
 
@@ -379,6 +398,8 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
         *ctx.b_merkle_tree(), share.b_col_indices);
     if (!builder.mining_.verify_proof(b_proof, share.job.job_key.data(),
                                       b_proof.root.data())) {
+        share_log("verify-fail", "nonce=" + std::to_string(share.nonce) +
+                                  " reason=b_merkle_mismatch");
         return false;
     }
 
@@ -395,8 +416,18 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
         if (b != 0) { has_claimed = true; break; }
     }
     if (has_claimed && claimed != share.claimed_hash) {
+        share_log("verify-fail", "nonce=" + std::to_string(share.nonce) +
+                                  " reason=claimed_hash_mismatch gpu=" +
+                                  hex_prefix(share.claimed_hash.data(), 32) +
+                                  " host=" + hex_prefix(claimed.data(), 32));
         return false;
     }
+    share_trace("verify-ok",
+                "nonce=" + std::to_string(share.nonce) +
+                " claimed=" + hex_prefix(claimed.data(), 32) +
+                " target=" + nbits_hex(share.installed_target_nbits
+                                          ? share.installed_target_nbits
+                                          : share.job.target_nbits));
     return true;
 }
 

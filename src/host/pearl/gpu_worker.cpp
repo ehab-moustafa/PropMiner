@@ -13,6 +13,7 @@
 #include "merkle_utils.h"
 #include "pearl_blake3.h"
 #include "pow_target_utils.h"
+#include "share_trace.h"
 #include "watchdog.h"
 
 // For cuda runtime helpers (events, graph).  CUstream and cudaStream_t are
@@ -368,10 +369,11 @@ void GpuWorker::upload_pow_target(HalfBuffers& half, uint32_t nbits) {
     auto words = target_le_to_pow_u32(adjusted_pow_target_le(nbits, daf));
     check_cuda(cuMemcpyHtoDAsync(half.pow_target, words.data(), 32, half.stream),
                "pow_target h2d");
-    if (std::getenv("PROPMINER_DEBUG_POW_TARGET")) {
+    if (share_trace_enabled() || std::getenv("PROPMINER_DEBUG_POW_TARGET")) {
         std::fprintf(stderr,
-                     "[gpu] pow_target upload nbits=0x%08x daf=%llu words[7..0]=%08x...%08x\n",
-                     nbits, static_cast<unsigned long long>(daf),
+                     "[gpu] pow_target upload nbits=%s daf=%llu words[7..0]=%08x...%08x\n",
+                     nbits_hex(nbits).c_str(),
+                     static_cast<unsigned long long>(daf),
                      words[7], words[0]);
     }
 }
@@ -408,6 +410,9 @@ void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
     // PoW target: nbits * DAF -> 32-byte LE uint32 array on device.
     upload_pow_target(half, nbits);
     check_cuda(cuStreamSynchronize(half.stream), "pow_target sync after upload");
+    share_trace("gpu-install",
+                "sigma=" + hex_prefix(ctx.job().sigma.data(), ctx.job().sigma.size(), 4) +
+                " target=" + nbits_hex(nbits) + " gpu=" + std::to_string(device_index_));
 
     PearlCapiWorkspaceParams p{};
     p.m = cfg_.m; p.n = cfg_.n; p.k = cfg_.k; p.r = cfg_.r;
@@ -570,6 +575,12 @@ std::vector<int> GpuWorker::scan_winners(HalfBuffers& half, int batch) {
             std::memcpy(half.host_header_storage[k].data(),
                         half.host_headers[k], half.header_size);
             winners.push_back(k);
+            share_trace("gpu-hit",
+                        "gpu=" + std::to_string(device_index_) +
+                        " batch_idx=" + std::to_string(k) +
+                        " tile_m=" + std::to_string(hdr.mma_tile_m()) +
+                        " tile_n=" + std::to_string(hdr.mma_tile_n()) +
+                        " target=" + nbits_hex(target_nbits_.load()));
         }
     }
     return winners;
@@ -614,11 +625,18 @@ bool GpuWorker::process_share_trigger(const ShareTriggerJob& job) {
     HalfBuffers& half = *job.half;
     const SigmaContext& ctx = *job.sigma_ctx;
 
+    share_trace("rebuild-start",
+                "nonce=" + std::to_string(job.nonce) +
+                " target=" + nbits_hex(job.target_nbits) +
+                " gpu=" + std::to_string(device_index_));
+
     HostSignalHeader hdr(job.header);
     std::vector<uint32_t> a_rows, b_cols;
     try {
         hdr.extract_indices(a_rows, b_cols);
     } catch (...) {
+        share_log("rebuild-fail", "nonce=" + std::to_string(job.nonce) +
+                                  " reason=extract_indices");
         return false;
     }
 
@@ -708,6 +726,12 @@ bool GpuWorker::process_share_trigger(const ShareTriggerJob& job) {
     share.a_opened_leaf_data = std::move(a_opened_leaf_data);
     share.a_leaf_cvs = std::move(a_leaf_cvs_host);
 
+    share_trace("rebuild-done",
+                "nonce=" + std::to_string(share.nonce) +
+                " rows=" + std::to_string(share.a_row_indices.size()) +
+                " cols=" + std::to_string(share.b_col_indices.size()) +
+                " hash_b=" + hex_prefix(share.hash_b.data(), 32));
+
     if (sink_) sink_->submit(share);
     return true;
 }
@@ -734,6 +758,8 @@ void GpuWorker::run() {
     int batch = matmuls_per_poll_.load();
     bool first = true;
     std::shared_ptr<SigmaContext> current_sigma;
+    auto last_mining_log = std::chrono::steady_clock::now();
+    uint64_t gpu_hits_since_log = 0;
 
     while (!stop_flag_) {
         std::shared_ptr<SigmaContext> new_sigma;
@@ -803,6 +829,7 @@ void GpuWorker::run() {
             check_cuda(cuStreamSynchronize(other->stream), "sync batch");
         }
         const auto winners = scan_winners(*other, batch);
+        gpu_hits_since_log += winners.size();
         const bool defer_share = defer_share_gpu_enabled();
         for (int winner : winners) {
             const uint64_t nonce =
@@ -815,6 +842,21 @@ void GpuWorker::run() {
             }
         }
         if (watchdog_) watchdog_->heartbeat();
+
+        if (share_trace_enabled()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_mining_log >= std::chrono::seconds(30)) {
+                share_trace("mining-heartbeat",
+                            "gpu=" + std::to_string(device_index_) +
+                            " iters=" + std::to_string(total_iters_.load()) +
+                            " batch=" + std::to_string(batch) +
+                            " target=" + nbits_hex(target_nbits_.load()) +
+                            " gpu_hits_30s=" + std::to_string(gpu_hits_since_log) +
+                            " hashrate_ths=" + std::to_string(hashrate_.load() / 1e12));
+                gpu_hits_since_log = 0;
+                last_mining_log = now;
+            }
+        }
 
         // GPU batch time via cudaEventElapsedTime (excludes host share work).
         double ms = 0.0;

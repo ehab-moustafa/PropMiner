@@ -1,6 +1,7 @@
 #include "pearl_stratum_client.h"
 
 #include "pow_target_utils.h"
+#include "share_trace.h"
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -309,6 +310,9 @@ void PearlStratumClient::handle_message(const std::string& line) {
             err = "null result";
         }
         if (share_cb_) share_cb_(accepted, accepted ? "Accepted" : err);
+        share_trace("pool-response",
+                    (accepted ? "accepted" : ("rejected err=" + err)) +
+                    " id=" + std::to_string(parsed["id"].to_int()));
     }
 }
 
@@ -436,6 +440,10 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
                        ",\"method\":\"mining.submit\",\"params\":[\"" +
                        json_escape(user) + "\",\"" + json_escape(job_id) + "\",\"" +
                        b64 + "\"]}";
+    share_trace("submit-wire",
+                "job=" + job_id.substr(0, std::min<size_t>(16, job_id.size())) +
+                " proof=" + std::to_string(proof_bytes.size()) + "B id=" +
+                std::to_string(id));
     stratum_log("share submitting job=" + job_id.substr(0, std::min<size_t>(12, job_id.size())) +
                 " proof=" + std::to_string(proof_bytes.size()) + "B id=" + std::to_string(id));
     return send_line(line);
