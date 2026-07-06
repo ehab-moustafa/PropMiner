@@ -44,6 +44,9 @@ case "${MODE}" in
     tune-prod|tune_prod|prod-tune)
         exec ./scripts/tune_prod_5090.sh "$@"
         ;;
+    salad-tune|salad_tune)
+        exec ./scripts/salad_tune_and_remaining.sh "$@"
+        ;;
     remaining|run-remaining|validate)
         exec ./scripts/run_remaining_5090.sh "$@"
         ;;
@@ -52,7 +55,7 @@ case "${MODE}" in
         ;;
     *)
         echo "[entrypoint] ERROR: unknown PROPMINER_MODE='${MODE_RAW}'." >&2
-        echo "[entrypoint] Valid values: full, test, mine, tune, batch-tune, cluster-tune, tune-prod." >&2
+        echo "[entrypoint] Valid values: full, test, mine, tune, batch-tune, cluster-tune, tune-prod, remaining, verify-geforce, salad-tune." >&2
         exit 1
         ;;
 esac

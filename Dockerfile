@@ -1,16 +1,12 @@
-# PropMiner RTX 5090 runtime image.
+# PropMiner RTX 5090 Docker images.
 #
-# Multi-stage build:
-#   1. Builder stage uses nvidia/cuda:12.8.0-devel to compile propminer.
-#   2. Runtime stage uses plain Ubuntu and embeds the CUDA 12.8 runtime libs
-#      extracted directly from the official runfile. We verified on a live Salad
-#      WSL2 host that these libraries can initialize the GPU through /dev/dxg
-#      when paired with the host driver store files.
+# Targets:
+#   runtime (default) — slim Salad deploy: prebuilt binaries + CUDA runtime for /dev/dxg.
+#   devel             — full source + nvcc/cmake/rust: on-box tune_prod, knob sweep, GeForce builds.
 #
 # Build:
-#   docker build -t propminer-rtx5090 .
-# Run:
-#   docker run --gpus all propminer-rtx5090
+#   docker build -t propminer-rtx5090 .                    # runtime
+#   docker build --target devel -t propminer-rtx5090:devel . # devel
 
 # ── Builder stage ───────────────────────────────────────────────────────────
 FROM nvidia/cuda:12.8.0-devel-ubuntu24.04 AS builder
@@ -121,8 +117,8 @@ RUN BASE="https://developer.download.nvidia.com/compute/cuda/redist" && \
     for f in *.tar.xz; do tar -xf "$f" --strip-components=1 -C "${DEST}"; done && \
     rm -f *.tar.xz
 
-# ── Runtime stage ───────────────────────────────────────────────────────────
-FROM ubuntu:24.04
+# ── Runtime stage (default) ─────────────────────────────────────────────────
+FROM ubuntu:24.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NVIDIA_VISIBLE_DEVICES=all
@@ -173,6 +169,8 @@ COPY --from=builder /root/PropMiner/scripts/tune_blackwell_knobs.sh ./scripts/tu
 COPY --from=builder /root/PropMiner/scripts/tune_kernel_knobs_common.sh ./scripts/tune_kernel_knobs_common.sh
 COPY --from=builder /root/PropMiner/scripts/tune_mine_batch.sh ./scripts/tune_mine_batch.sh
 COPY --from=builder /root/PropMiner/scripts/tune_cluster_sweep.sh ./scripts/tune_cluster_sweep.sh
+COPY --from=builder /root/PropMiner/scripts/tune_prod_5090.sh ./scripts/tune_prod_5090.sh
+COPY --from=builder /root/PropMiner/scripts/salad_tune_and_remaining.sh ./scripts/salad_tune_and_remaining.sh
 COPY --from=builder /root/PropMiner/scripts/run_remaining_5090.sh ./scripts/run_remaining_5090.sh
 COPY --from=builder /root/PropMiner/scripts/pre_deploy_gate.sh ./scripts/pre_deploy_gate.sh
 COPY --from=builder /root/PropMiner/scripts/verify_geforce_transcript.sh ./scripts/verify_geforce_transcript.sh
@@ -184,5 +182,47 @@ RUN mkdir -p ./results
 COPY results/baseline_5090_sm120.json ./results/baseline_5090_sm120.json
 
 RUN chmod +x ./scripts/*.sh
+
+ENTRYPOINT ["./scripts/docker_entrypoint.sh"]
+
+# ── Devel stage: nvcc + full tree for on-box rebuild / tune_prod / GeForce ──
+FROM builder AS devel
+
+ENV PROPMINER_DEVEL=1
+ENV PROPMINER_BUILD_DIR=/root/PropMiner/build_runtime
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV PEARL_GEMM_CONSUMER_CLUSTER_M=2
+ENV PROPMINER_USE_TUNE_CACHE=1
+ENV CUDA_MODULE_LOADING=EAGER
+ENV CUDA_DEVICE_MAX_CONNECTIONS=1
+ENV PROPMINER_MODE=full
+ENV PROPMINER_QUICK_EXIT=0
+ENV PROPMINER_SKIP_BENCH=0
+ENV PROPMINER_SKIP_SWEEP=1
+ENV PROPMINER_SKIP_NCU=1
+ENV PROPMINER_KEEP_ALIVE_SECONDS=3600
+ENV PROPMINER_BENCH_SECONDS=180
+ENV PROPMINER_BENCH_GRACE_SECONDS=60
+ENV PATH=/usr/local/cuda/bin:/root/.cargo/bin:${PATH}
+
+# Salad WSL2 uses /dev/dxg + host driver store — same redist libs as runtime image.
+COPY --from=cuda128-runtime /root/cuda128/usr/local/cuda-12.8 /usr/local/cuda-12.8
+RUN mkdir -p /usr/local/cuda/lib64 && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so.12 && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvrtc.so.12 /usr/local/cuda/lib64/libnvrtc.so.12 && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcublas.so.12 /usr/local/cuda/lib64/libcublas.so.12 && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcublasLt.so.12 /usr/local/cuda/lib64/libcublasLt.so.12 && \
+    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvJitLink.so.12 /usr/local/cuda/lib64/libnvJitLink.so.12
+
+RUN mkdir -p results && \
+    ln -sf build_runtime/propminer propminer && \
+    ln -sf build_runtime/libpearl_gemm_capi.so libpearl_gemm_capi.so && \
+    ln -sf build_runtime/libpearl_mining_capi.so libpearl_mining_capi.so && \
+    ln -sf build_runtime build && \
+    chmod +x scripts/*.sh
+
+COPY results/baseline_5090_sm120.json ./results/baseline_5090_sm120.json
 
 ENTRYPOINT ["./scripts/docker_entrypoint.sh"]
