@@ -115,7 +115,7 @@ resolve_wallet() {
 }
 
 apt-get update
-apt-get install -y curl ca-certificates libssl3
+apt-get install -y curl ca-certificates libssl3 xz-utils
 
 mkdir -p "${CUDA_DEST}" "${CUDA_LIB64}" "${PM_DIR}"
 
