@@ -24,6 +24,9 @@ uint32_t hex_target_to_nbits(const std::string& target_hex);
 // Expand compact nbits to 64-char big-endian target hex (ARC NbitsToTargetHex).
 std::string nbits_to_target_hex_be(uint32_t nbits);
 
+// Read compact network difficulty from Pearl sigma header bytes [72:76] (LE).
+uint32_t network_nbits_from_sigma(const std::array<uint8_t, kSigmaHeaderBytes>& sigma);
+
 // Multiply a 256-bit little-endian target by factor; clamp to 2^256-1 on overflow.
 std::array<uint8_t, 32> multiply_target_le_by_u64(const std::array<uint8_t, 32>& target_le,
                                                   uint64_t factor);

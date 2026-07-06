@@ -67,6 +67,8 @@ private:
     static std::array<uint8_t, 16> job_id_bytes(const std::string& job_id);
     static std::vector<uint8_t> hex_to_bytes(const std::string& hex);
     static double read_difficulty_param(const propminer::JsonValue& params);
+    double effective_share_difficulty() const;
+    uint32_t share_target_nbits() const;
 
     Options opts_;
     int sock_ = -1;

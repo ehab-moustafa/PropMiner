@@ -98,6 +98,12 @@ std::string nbits_to_target_hex_be(uint32_t nbits) {
     return hex;
 }
 
+uint32_t network_nbits_from_sigma(const std::array<uint8_t, kSigmaHeaderBytes>& sigma) {
+    uint32_t nbits = 0;
+    std::memcpy(&nbits, sigma.data() + 72, sizeof(nbits));
+    return nbits;
+}
+
 uint32_t hex_target_to_nbits(const std::string& target_hex) {
     std::string h = target_hex;
     if (h.size() >= 2 && (h.rfind("0x", 0) == 0 || h.rfind("0X", 0) == 0)) {

@@ -33,6 +33,8 @@ void stratum_log(const std::string& msg) {
     std::cout << "pool: " << msg << std::endl;
 }
 
+constexpr double kStratumDefaultShareDiff = 32768.0;
+
 double parse_password_difficulty(const std::string& password) {
     const std::string key = ";d=";
     size_t pos = password.find(key);
@@ -62,6 +64,19 @@ PearlStratumClient::PearlStratumClient(const Options& opts) : opts_(opts) {
 }
 
 PearlStratumClient::~PearlStratumClient() { disconnect(); }
+
+double PearlStratumClient::effective_share_difficulty() const {
+    if (last_difficulty_ > 0.0) return last_difficulty_;
+    if (const char* d = std::getenv("PROPMINER_STRATUM_DIFF"); d && d[0]) {
+        const double req = std::atof(d);
+        if (req > 0.0) return req;
+    }
+    return kStratumDefaultShareDiff;
+}
+
+uint32_t PearlStratumClient::share_target_nbits() const {
+    return difficulty_to_nbits_pdif(effective_share_difficulty());
+}
 
 bool PearlStratumClient::connect() {
     disconnect();
@@ -300,10 +315,11 @@ void PearlStratumClient::handle_message(const std::string& line) {
 bool PearlStratumClient::parse_notify_object(const std::string& params_json) {
     auto obj = propminer::JsonValue::parse(params_json);
     if (!obj["job_id"].is_string() || !obj["header"].is_string()) return false;
-    const std::string target = obj["target"].is_string() ? obj["target"].to_string() : "";
     const int64_t height = obj["height"].is_number() ? obj["height"].to_int() : 0;
     const std::string job_id = obj["job_id"].to_string();
-    auto ja = make_job(job_id, obj["header"].to_string(), target, height);
+    // Kryptex object notify carries the *network* target in `target` — never use
+    // it for share PoW (nbits ~0x1a07ffff). Share difficulty comes from d= / vardiff.
+    auto ja = make_job(job_id, obj["header"].to_string(), "", height);
     if (job_cb_) job_cb_(ja, job_id);
     return true;
 }
@@ -313,11 +329,7 @@ bool PearlStratumClient::parse_notify_array(const propminer::JsonValue& params) 
     const std::string job_id = params[0].to_string();
     const std::string header = params[2].to_string();
     const int64_t height = params[3].is_number() ? params[3].to_int() : 0;
-    const double diff = last_difficulty_ > 0 ? last_difficulty_ : 32.0;
-    const uint32_t nbits = difficulty_to_nbits_pdif(diff);
-    const std::string target_hex = nbits_to_target_hex_be(nbits);
-    auto ja = make_job(job_id, header, target_hex, height);
-    ja.target_nbits = nbits;
+    auto ja = make_job(job_id, header, "", height);
     if (job_cb_) job_cb_(ja, job_id);
     return true;
 }
@@ -333,14 +345,33 @@ proto::JobAssignment PearlStratumClient::make_job(const std::string& job_id,
     if (sigma.size() >= kSigmaHeaderBytes) {
         std::memcpy(ja.sigma.data(), sigma.data(), kSigmaHeaderBytes);
     }
-    if (!target_hex.empty()) {
-        ja.target_nbits = hex_target_to_nbits(target_hex);
-    } else if (last_difficulty_ > 0.0) {
-        ja.target_nbits = difficulty_to_nbits_pdif(last_difficulty_);
-    } else {
-        ja.target_nbits = 0x207fffff;
+    const uint32_t share_nbits = share_target_nbits();
+    ja.target_nbits = share_nbits;
+    ja.network_target_nbits = network_nbits_from_sigma(ja.sigma);
+    if (ja.network_target_nbits == 0) {
+        ja.network_target_nbits = share_nbits;
     }
-    ja.network_target_nbits = ja.target_nbits;
+    if (!target_hex.empty()) {
+        const uint32_t wire_nbits = hex_target_to_nbits(target_hex);
+        if (wire_nbits != share_nbits && wire_nbits == ja.network_target_nbits) {
+            static std::atomic<bool> warned{false};
+            if (!warned.exchange(true)) {
+                stratum_log("stratum: ignoring wire network target for share PoW "
+                            "(use PROPMINER_STRATUM_DIFF or mining.set_difficulty)");
+            }
+        }
+    }
+    if (last_difficulty_ <= 0.0) {
+        static std::atomic<bool> warned_default{false};
+        if (!warned_default.exchange(true)) {
+            char buf[128];
+            std::snprintf(buf, sizeof(buf),
+                          "stratum: no vardiff yet; using share diff=%.0f "
+                          "(set PROPMINER_STRATUM_DIFF to override)",
+                          effective_share_difficulty());
+            stratum_log(buf);
+        }
+    }
     ja.block_height = height;
     ja.protocol_version = 2;
     ja.audit_k = 0;
@@ -353,11 +384,13 @@ proto::JobAssignment PearlStratumClient::make_job(const std::string& job_id,
         std::lock_guard<std::mutex> lk(job_map_mtx_);
         sigma_hex_to_job_id_[sigma_key] = job_id;
     }
-    char buf[128];
+    char buf[160];
     std::snprintf(buf, sizeof(buf),
-                  "stratum new job %s height=%lld nbits=0x%08x diff=%.3f",
+                  "stratum new job %s height=%lld share_nbits=0x%08x "
+                  "network_nbits=0x%08x diff=%.3f",
                   job_id.substr(0, std::min<size_t>(12, job_id.size())).c_str(),
-                  static_cast<long long>(height), ja.target_nbits, last_difficulty_);
+                  static_cast<long long>(height), ja.target_nbits,
+                  ja.network_target_nbits, effective_share_difficulty());
     stratum_log(buf);
     return ja;
 }

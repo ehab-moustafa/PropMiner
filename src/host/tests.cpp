@@ -213,6 +213,18 @@ static void test_pow_target_stratum_nbits_roundtrip() {
     EXPECT(hex_target_to_nbits(reversed) != nbits);
 }
 
+static void test_stratum_share_vs_network_nbits() {
+    // Kryptex wire target often encodes network block difficulty (~0x1a07ffff).
+    const uint32_t share_nbits = difficulty_to_nbits_pdif(32768.0);
+    EXPECT(share_nbits == 0x1b01fffeu);
+
+    std::array<uint8_t, kSigmaHeaderBytes> sigma{};
+    const uint32_t network = 0x1a07ffffu;
+    std::memcpy(sigma.data() + 72, &network, sizeof(network));
+    EXPECT(network_nbits_from_sigma(sigma) == network);
+    EXPECT(network != share_nbits);
+}
+
 static void test_hashrate_metrics_math() {
     MiningConfig cfg;
     cfg.m = 8192;
@@ -464,6 +476,7 @@ int main() {
     test_reference_claimed_hash_deterministic();
     test_host_signal_header_index_extraction();
     test_pow_target_stratum_nbits_roundtrip();
+    test_stratum_share_vs_network_nbits();
     test_hashrate_metrics_math();
     test_mining_config_conservative();
     test_rtx5090_wave_alignment();
