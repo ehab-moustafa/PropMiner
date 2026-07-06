@@ -65,13 +65,12 @@ ARG CMAKE_BUILD_ARGS="\
   -DPEARL_GEMM_BLACKWELL_STAGES=2 \
   -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=3 \
   -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
-  -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
-  -DPEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=ON"
+  -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async"
 
 RUN --mount=type=cache,id=propminer-ccache,target=/ccache \
     --mount=type=cache,id=propminer-cargo-registry,target=/root/.cargo/registry \
     --mount=type=cache,id=propminer-cargo-git,target=/root/.cargo/git \
-    --mount=type=cache,id=propminer-gemm-build-geforce-v1,target=/root/PropMiner/third_party/pearl-gemm/csrc/capi/build \
+    --mount=type=cache,id=propminer-gemm-build,target=/root/PropMiner/third_party/pearl-gemm/csrc/capi/build \
     --mount=type=cache,id=propminer-rust-build,target=/root/PropMiner/build_runtime/pearl_mining_capi \
     cmake -S . -B build_runtime ${CMAKE_BUILD_ARGS} \
     && cmake --build build_runtime \
@@ -86,7 +85,7 @@ COPY scripts scripts
 RUN --mount=type=cache,id=propminer-ccache,target=/ccache \
     --mount=type=cache,id=propminer-cargo-registry,target=/root/.cargo/registry \
     --mount=type=cache,id=propminer-cargo-git,target=/root/.cargo/git \
-    --mount=type=cache,id=propminer-gemm-build-geforce-v1,target=/root/PropMiner/third_party/pearl-gemm/csrc/capi/build \
+    --mount=type=cache,id=propminer-gemm-build,target=/root/PropMiner/third_party/pearl-gemm/csrc/capi/build \
     --mount=type=cache,id=propminer-rust-build,target=/root/PropMiner/build_runtime/pearl_mining_capi \
     cmake -S . -B build_runtime ${CMAKE_BUILD_ARGS} -DPROPMINER_BUILD_HOST=ON \
     && cmake --build build_runtime --target propminer -j"$(nproc)" \
