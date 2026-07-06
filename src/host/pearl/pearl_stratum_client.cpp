@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <cstdio>
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
@@ -34,6 +35,11 @@ std::string json_escape(const std::string& s) {
 
 void stratum_log(const std::string& msg) {
     std::cout << "pool: " << msg << std::endl;
+}
+
+void pool_diag_log(const char* stage, const std::string& detail) {
+    stratum_log(std::string(stage) + ": " + detail);
+    share_log(stage, detail);
 }
 
 bool stratum_verbose_recv() {
@@ -120,6 +126,25 @@ PearlStratumClient::PearlStratumClient(const Options& opts) : opts_(opts) {
     if (const double pw_diff = parse_password_difficulty(opts_.password); pw_diff > 0.0) {
         last_difficulty_ = pw_diff;
     }
+    std::string build = "unknown";
+    if (const char* v = std::getenv("PROP_MINER_GIT_SHA"); v && v[0]) {
+        build = v;
+    } else {
+        FILE* vf = std::fopen("VERSION", "r");
+        if (vf) {
+            char buf[64] = {};
+            if (std::fgets(buf, sizeof(buf), vf)) {
+                size_t len = std::strlen(buf);
+                while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+                    buf[--len] = '\0';
+                }
+                if (len > 0) build.assign(buf, len);
+            }
+            std::fclose(vf);
+        }
+    }
+    stratum_log("propminer build=" + build +
+                " (stratum ack diagnostics enabled; need build>=9a03d9e)");
 }
 
 PearlStratumClient::~PearlStratumClient() { disconnect(); }
@@ -312,7 +337,7 @@ double PearlStratumClient::read_difficulty_param(const propminer::JsonValue& par
 }
 
 void PearlStratumClient::flush_stale_pending_submits() {
-    constexpr auto kAckTimeout = std::chrono::seconds(90);
+    constexpr auto kAckTimeout = std::chrono::seconds(45);
     const auto now = std::chrono::steady_clock::now();
     std::vector<std::pair<int, PendingSubmit>> stale;
     {
@@ -327,13 +352,13 @@ void PearlStratumClient::flush_stale_pending_submits() {
         }
     }
     for (const auto& [id, pending] : stale) {
-        share_log("pool-no-response",
-                  "nonce=" + std::to_string(pending.nonce) +
-                  " stratum_id=" + std::to_string(id) +
-                  " waited_sec=90 (Kryptex may not send mining.submit acks)");
-        share_trace("pool-no-response",
-                    "id=" + std::to_string(id) +
-                    " nonce=" + std::to_string(pending.nonce));
+        const auto waited = std::chrono::duration_cast<std::chrono::seconds>(
+            now - pending.sent_at).count();
+        pool_diag_log("pool-no-response",
+                      "nonce=" + std::to_string(pending.nonce) +
+                      " stratum_id=" + std::to_string(id) +
+                      " waited_sec=" + std::to_string(waited) +
+                      " (Kryptex :7048 often sends no mining.submit ack)");
     }
 }
 
@@ -403,9 +428,8 @@ void PearlStratumClient::handle_message(const std::string& line) {
         is_share = pending_submit_nonces_.count(msg_id) > 0;
     }
     if (!is_share) {
-        if (stratum_verbose_recv()) {
-            stratum_log("rpc id=" + std::to_string(msg_id) + " ignored (not a share ack)");
-        }
+        stratum_log("rpc id=" + std::to_string(msg_id) + " (not a share ack): " +
+                    truncate_line(line, 200));
         return;
     }
 
@@ -421,15 +445,15 @@ void PearlStratumClient::handle_message(const std::string& line) {
         }
     }
     if (share_cb_) share_cb_(accepted, accepted ? "Accepted" : err);
+    pool_diag_log("pool-response",
+                  std::string(accepted ? "accepted" : "rejected") +
+                  " nonce=" + std::to_string(nonce) +
+                  " stratum_id=" + std::to_string(msg_id) +
+                  (accepted ? "" : (" err=" + err)));
     share_trace("pool-response",
                 std::string(accepted ? "accepted" : ("rejected err=" + err)) +
                 " id=" + std::to_string(msg_id) +
                 (nonce ? (" nonce=" + std::to_string(nonce)) : ""));
-    share_log("pool-response",
-              std::string(accepted ? "accepted" : "rejected") +
-              " nonce=" + std::to_string(nonce) +
-              " stratum_id=" + std::to_string(msg_id) +
-              (accepted ? "" : (" err=" + err)));
 }
 
 bool PearlStratumClient::parse_notify_object(const std::string& params_json) {
@@ -503,6 +527,9 @@ proto::JobAssignment PearlStratumClient::make_job(const std::string& job_id,
     {
         std::lock_guard<std::mutex> lk(job_map_mtx_);
         sigma_hex_to_job_id_[sigma_key] = job_id;
+        job_received_at_[job_id] = std::chrono::steady_clock::now();
+        current_job_id_ = job_id;
+        current_job_at_ = job_received_at_[job_id];
     }
     char buf[160];
     std::snprintf(buf, sizeof(buf),
@@ -535,6 +562,30 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
                                              const std::vector<uint8_t>& proof_bytes,
                                              uint64_t nonce) {
     if (!connected_.load()) return false;
+
+    int64_t job_age_ms = -1;
+    bool superseded = false;
+    {
+        std::lock_guard<std::mutex> lk(job_map_mtx_);
+        auto it = job_received_at_.find(job_id);
+        if (it != job_received_at_.end()) {
+            job_age_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - it->second).count();
+        }
+        superseded = !current_job_id_.empty() && job_id != current_job_id_;
+    }
+    if (superseded) {
+        stratum_log("submit superseded job_id=" +
+                    job_id.substr(0, std::min<size_t>(12, job_id.size())) +
+                    " current=" +
+                    current_job_id_.substr(0, std::min<size_t>(12, current_job_id_.size())) +
+                    " age_ms=" + std::to_string(job_age_ms) +
+                    " (pool may ignore stale job_id)");
+    } else if (job_age_ms >= 0) {
+        stratum_log("submit job_age_ms=" + std::to_string(job_age_ms) +
+                    " job=" + job_id.substr(0, std::min<size_t>(12, job_id.size())));
+    }
+
     std::string b64;
     static const char* tbl =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -573,7 +624,8 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
               " proof_bytes=" + std::to_string(proof_bytes.size()) +
               " stratum_id=" + std::to_string(id));
     stratum_log("share submitting job=" + job_id.substr(0, std::min<size_t>(12, job_id.size())) +
-                " proof=" + std::to_string(proof_bytes.size()) + "B id=" + std::to_string(id));
+                " proof=" + std::to_string(proof_bytes.size()) + "B id=" + std::to_string(id) +
+                " nonce=" + std::to_string(nonce) + " awaiting_ack=45s");
     if (!send_line(line)) {
         share_log("submit-fail",
                   "nonce=" + std::to_string(nonce) +
@@ -608,6 +660,11 @@ std::vector<uint8_t> PearlStratumClient::hex_to_bytes(const std::string& hex) {
         out.push_back(static_cast<uint8_t>(std::strtoul(h.substr(i, 2).c_str(), nullptr, 16)));
     }
     return out;
+}
+
+size_t PearlStratumClient::pending_submit_count() const {
+    std::lock_guard<std::mutex> lk(pending_submit_mtx_);
+    return pending_submit_nonces_.size();
 }
 
 }  // namespace pearl

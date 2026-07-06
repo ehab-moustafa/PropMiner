@@ -164,6 +164,17 @@ if [[ "${RESTART_ON_EXIT}" == "0" ]]; then
 fi
 
 while true; do
+    if [[ "${PROPMINER_AUTO_UPDATE:-0}" == "1" ]]; then
+        echo "[release] checking ${RELEASE_URL}"
+        REMOTE_VER="$(curl -fsSL "${RELEASE_URL}" | tar -xOzf - VERSION 2>/dev/null || true)"
+        LOCAL_VER="$(cat "${PM_DIR}/VERSION" 2>/dev/null || true)"
+        if [[ -n "${REMOTE_VER}" && "${REMOTE_VER}" != "${LOCAL_VER}" ]]; then
+            echo "[release] auto-update ${LOCAL_VER:-none} -> ${REMOTE_VER}"
+            curl -fsSL --retry 3 -o /tmp/propminer-release.tar.gz "${RELEASE_URL}"
+            tar xzf /tmp/propminer-release.tar.gz -C "${PM_DIR}"
+            chmod +x "${PM_DIR}/propminer"
+        fi
+    fi
     set +e
     run_once
     rc=$?

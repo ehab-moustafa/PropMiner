@@ -51,6 +51,9 @@ public:
 
     std::string job_id_for_sigma(const std::array<uint8_t, kSigmaHeaderBytes>& sigma) const;
 
+    // Outstanding mining.submit RPCs awaiting a pool JSON-RPC ack.
+    size_t pending_submit_count() const;
+
     std::string last_error() const;
 
 private:
@@ -90,6 +93,9 @@ private:
     };
     std::unordered_map<int, PendingSubmit> pending_submit_nonces_;
     std::unordered_map<std::string, std::string> sigma_hex_to_job_id_;
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> job_received_at_;
+    std::string current_job_id_;
+    std::chrono::steady_clock::time_point current_job_at_{};
 
     JobCallback job_cb_;
     VardiffCallback vardiff_cb_;

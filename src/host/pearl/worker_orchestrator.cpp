@@ -1043,12 +1043,19 @@ int WorkerOrchestrator::run() {
 
         if (metrics.tmad_per_sec > 0.0 || metrics.protocol_hps > 0.0) {
             print_hashrate_metrics_line(stdout, "hashrate: ", metrics);
-            std::printf("shares: found=%llu submitted=%llu accepted=%llu rejected=%llu dropped=%llu\n",
+            const size_t pending_acks =
+                (use_stratum_.load() && stratum_client_ && stratum_client_->connected())
+                    ? stratum_client_->pending_submit_count()
+                    : 0;
+            std::printf("shares: build=%s found=%llu submitted=%llu accepted=%llu "
+                        "rejected=%llu dropped=%llu pending_acks=%zu\n",
+                        resolve_git_sha().c_str(),
                         static_cast<unsigned long long>(shares_found_.load()),
                         static_cast<unsigned long long>(shares_submitted_.load()),
                         static_cast<unsigned long long>(shares_accepted_.load()),
                         static_cast<unsigned long long>(shares_rejected_.load()),
-                        static_cast<unsigned long long>(shares_dropped_.load()));
+                        static_cast<unsigned long long>(shares_dropped_.load()),
+                        pending_acks);
         } else if (bench_mode) {
             std::cout << "hashrate: waiting for first batch..." << std::endl;
         } else {

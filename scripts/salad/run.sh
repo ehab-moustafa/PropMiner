@@ -100,6 +100,23 @@ if [[ "${RESTART_ON_EXIT}" == "0" ]]; then
 fi
 
 while true; do
+    if [[ "${PROPMINER_AUTO_UPDATE:-0}" == "1" && "${PROPMINER_USE_RELEASE:-0}" == "1" ]]; then
+        TAG="${PROPMINER_RELEASE_TAG:-continuous}"
+        REPO="${PROPMINER_RELEASE_REPO:-ehab-moustafa/PropMiner}"
+        ASSET="${PROPMINER_RELEASE_ASSET:-PropMiner-Salad-Linux.tar.gz}"
+        URL="${PROPMINER_RELEASE_URL:-https://github.com/${REPO}/releases/download/${TAG}/${ASSET}}"
+        REMOTE_VER="$(curl -fsSL "${URL}" | tar -xOzf - PropMiner-Salad/VERSION 2>/dev/null || true)"
+        LOCAL_VER="$(cat "${ROOT}/VERSION" 2>/dev/null || true)"
+        if [[ -n "${REMOTE_VER}" && "${REMOTE_VER}" != "${LOCAL_VER}" ]]; then
+            log "[release] auto-update ${LOCAL_VER:-none} -> ${REMOTE_VER}"
+            curl -fsSL --retry 3 -o /tmp/propminer-salad.tar.gz "${URL}"
+            tar xzf /tmp/propminer-salad.tar.gz -C /tmp
+            cp -f /tmp/PropMiner-Salad/propminer \
+                /tmp/PropMiner-Salad/libpearl_gemm_capi.so \
+                /tmp/PropMiner-Salad/libpearl_mining_capi.so "${ROOT}/"
+            cp -f /tmp/PropMiner-Salad/VERSION "${ROOT}/VERSION"
+        fi
+    fi
     set +e
     run_once
     rc=$?
