@@ -2,6 +2,8 @@
 
 #include <cmath>
 #include <cctype>
+#include <cstdlib>
+#include <string>
 #include <cstring>
 
 namespace pearl {
