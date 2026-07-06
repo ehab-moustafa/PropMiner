@@ -5,7 +5,8 @@
 #   PROPMINER_WALLET  — Pearl/Kryptex wallet (e.g. krxXXXX.worker or prl1p...worker)
 #
 # Optional env:
-#   PROPMINER_POOL              — default prl.kryptex.network:443 (gRPC/TLS)
+#   PROPMINER_POOL              — default prl.kryptex.network:443,prl-eu.kryptex.network:443
+#   PROPMINER_POOL_FALLBACK     — extra comma-separated pool(s) appended to PROPMINER_POOL
 #   PROPMINER_GPUS              — default 0
 #   PROPMINER_WORKER            — worker name if not embedded in wallet (max 32 alnum)
 #   PROPMINER_RESTART_ON_EXIT   — 1 (default) restart on crash; 0 exit container
@@ -25,7 +26,14 @@ export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
 export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-2}"
 
 WALLET="${PROPMINER_WALLET:-}"
-POOL="${PROPMINER_POOL:-prl.kryptex.network:443}"
+if [[ -n "${PROPMINER_POOL:-}" ]]; then
+    POOL="${PROPMINER_POOL}"
+    if [[ -n "${PROPMINER_POOL_FALLBACK:-}" ]]; then
+        POOL="${POOL},${PROPMINER_POOL_FALLBACK}"
+    fi
+else
+    POOL="${PROPMINER_POOL_FALLBACK:-prl.kryptex.network:443,prl-eu.kryptex.network:443}"
+fi
 GPUS="${PROPMINER_GPUS:-0}"
 WORKER="${PROPMINER_WORKER:-}"
 RESTART_ON_EXIT="${PROPMINER_RESTART_ON_EXIT:-1}"
@@ -115,7 +123,7 @@ echo "[mine] GPU info:" | propminer_log
 nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total \
     --format=csv,noheader | propminer_log || true
 
-echo "[mine] mode=production pool=${POOL} gpus=${GPUS}" | propminer_log
+echo "[mine] mode=production pools=${POOL} gpus=${GPUS}" | propminer_log
 echo "[mine] wallet=${WALLET} worker=${WORKER:-<from-wallet-or-default>}" | propminer_log
 echo "[mine] profile: --rtx5090 aggressive prod (N=max VRAM, cluster_m=${PEARL_GEMM_CONSUMER_CLUSTER_M})" \
     | propminer_log

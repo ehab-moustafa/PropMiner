@@ -164,6 +164,7 @@ RUN chmod +x ./scripts/link_cuda_redist_libs.sh \
 
 COPY --from=builder /root/PropMiner/scripts/setup_cuda_env.sh ./scripts/setup_cuda_env.sh
 COPY --from=builder /root/PropMiner/scripts/run_mining.sh ./scripts/run_mining.sh
+COPY --from=builder /root/PropMiner/scripts/test_pool_register.py ./scripts/test_pool_register.py
 COPY --from=builder /root/PropMiner/scripts/docker_entrypoint.sh ./scripts/docker_entrypoint.sh
 COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh
 COPY --from=builder /root/PropMiner/scripts/tune_blackwell_knobs.sh ./scripts/tune_blackwell_knobs.sh

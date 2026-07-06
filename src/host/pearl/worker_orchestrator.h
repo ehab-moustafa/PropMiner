@@ -20,10 +20,26 @@ namespace pearl {
 // High-level orchestrator: owns the gRPC session, JobBus, and GPU workers.
 class WorkerOrchestrator : public IShareSink {
 public:
+    struct PoolEndpoint {
+        std::string host;
+        int port = 443;
+        bool use_tls = true;
+    };
+
+    enum class PoolState {
+        Disconnected,
+        Connecting,
+        Registering,
+        Streaming,
+        AwaitingJob,
+        Mining,
+    };
+
     struct Config {
         std::string pool_host;
         int pool_port = 443;
         bool use_tls = true;
+        std::vector<PoolEndpoint> pool_endpoints;
         std::string wallet_address;
         std::string worker_name = "propminer";
         std::string miner_version = "propminer/1.0";
@@ -61,6 +77,13 @@ private:
     void submit_share(const ShareFound& share);
     bool ensure_connected_and_registered();
     std::vector<proto::GpuCard> enumerate_gpu_cards();
+    void reset_pool_session();
+    void start_watchdog_if_needed();
+    int backoff_ms(int attempt) const;
+    const PoolEndpoint& active_pool() const;
+    void set_pool_state(PoolState state);
+    std::string pool_status_line() const;
+    void ping_thread_func();
 
     static constexpr double kTmadsToHashesPerSec = 1e12;
 
@@ -74,8 +97,14 @@ private:
 
     std::atomic<bool> stop_flag_{false};
     std::atomic<bool> registered_{false};
+    std::atomic<bool> jobs_received_{false};
+    std::atomic<PoolState> pool_state_{PoolState::Disconnected};
+    std::atomic<size_t> active_pool_index_{0};
+    std::atomic<bool> pool_reconnect_requested_{false};
     std::atomic<uint32_t> pending_target_nbits_{0};
     std::atomic<double> total_hashrate_{0.0};
+    int reconnect_attempt_ = 0;
+    std::string last_pool_error_;
 
     // Session state.
     std::mutex session_mtx_;

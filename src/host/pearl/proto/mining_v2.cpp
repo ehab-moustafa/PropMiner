@@ -191,17 +191,29 @@ bool GpuCard::decode(const uint8_t* data, size_t len) {
 // RegisterRequest
 std::vector<uint8_t> RegisterRequest::encode() const {
     ProtoWriter w;
-    w.write_bytes(1, miner_id.data(), miner_id.size());
-    w.write_string(2, identity_key);
+    bool has_miner_id = false;
+    for (uint8_t b : miner_id) {
+        if (b != 0) { has_miner_id = true; break; }
+    }
+    if (has_miner_id) {
+        w.write_bytes(1, miner_id.data(), miner_id.size());
+    }
+    if (!identity_key.empty()) {
+        w.write_string(2, identity_key);
+    }
     w.write_string(3, wallet_address);
     w.write_string(4, worker_name);
     for (const auto& g : gpu_cards) {
         auto enc = g.encode();
         w.write_embedded(5, enc);
     }
-    w.write_double(6, claimed_total_hashrate);
+    if (claimed_total_hashrate > 0.0) {
+        w.write_double(6, claimed_total_hashrate);
+    }
     w.write_string(7, miner_version);
-    w.write_string(8, git_sha);
+    if (!git_sha.empty()) {
+        w.write_string(8, git_sha);
+    }
     w.write_uint32(9, protocol_version);
     w.write_uint32(10, k);
     return w.take();

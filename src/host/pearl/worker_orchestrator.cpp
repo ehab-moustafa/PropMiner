@@ -113,9 +113,30 @@ namespace {
         return "unknown";
 #endif
     }
+
+    double resolve_claimed_tmad_per_gpu() {
+        if (const char* env = std::getenv("PROPMINER_CLAIMED_TMAD"); env && env[0]) {
+            return std::max(0.0, std::atof(env));
+        }
+        // Conservative RTX 5090 estimate until live bench populates heartbeats.
+        return 15.0;
+    }
+
+    std::string miner_id_hex(const std::array<uint8_t, 16>& id) {
+        char hex[33] = {0};
+        for (int b = 0; b < 16; ++b) {
+            std::snprintf(hex + b * 2, 3, "%02x",
+                          static_cast<unsigned char>(id[b]));
+        }
+        return hex;
+    }
 }
 
-WorkerOrchestrator::WorkerOrchestrator(const Config& cfg) : cfg_(cfg) {}
+WorkerOrchestrator::WorkerOrchestrator(const Config& cfg) : cfg_(cfg) {
+    if (cfg_.pool_endpoints.empty()) {
+        cfg_.pool_endpoints.push_back({cfg_.pool_host, cfg_.pool_port, cfg_.use_tls});
+    }
+}
 
 WorkerOrchestrator::~WorkerOrchestrator() {
     stop();
@@ -152,39 +173,137 @@ std::vector<proto::GpuCard> WorkerOrchestrator::enumerate_gpu_cards() {
     return cards;
 }
 
-bool WorkerOrchestrator::ensure_connected_and_registered() {
-    if (client_ && client_->connected()) return true;
+const WorkerOrchestrator::PoolEndpoint& WorkerOrchestrator::active_pool() const {
+    const size_t idx = active_pool_index_.load() % cfg_.pool_endpoints.size();
+    return cfg_.pool_endpoints[idx];
+}
 
+void WorkerOrchestrator::set_pool_state(PoolState state) {
+    pool_state_.store(state);
+}
+
+std::string WorkerOrchestrator::pool_status_line() const {
+    switch (pool_state_.load()) {
+        case PoolState::Disconnected:
+            if (!last_pool_error_.empty()) {
+                return "hashrate: pool disconnected (" + last_pool_error_ + ")";
+            }
+            return "hashrate: pool disconnected (retrying)";
+        case PoolState::Connecting:
+            return "hashrate: connecting to pool " + active_pool().host + "...";
+        case PoolState::Registering:
+            return "hashrate: registering with pool " + active_pool().host + "...";
+        case PoolState::Streaming:
+        case PoolState::AwaitingJob:
+            return "hashrate: connected, awaiting first job from pool...";
+        case PoolState::Mining:
+            return "";
+    }
+    return "hashrate: pool status unknown";
+}
+
+int WorkerOrchestrator::backoff_ms(int attempt) const {
+    const int base_ms = 5000;
+    int max_ms = 120000;
+    if (const char* env = std::getenv("PROPMINER_POOL_BACKOFF_MAX_MS"); env && env[0]) {
+        max_ms = std::max(5000, std::atoi(env));
+    }
+    const int exp = std::min(attempt, 5);
+    int ms = std::min(base_ms * (1 << exp), max_ms);
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_int_distribution<int> jitter(0, std::max(1, ms / 4));
+    return ms + jitter(rng);
+}
+
+void WorkerOrchestrator::reset_pool_session() {
+    registered_ = false;
+    if (client_) {
+        client_->disconnect();
+        client_.reset();
+    }
+}
+
+void WorkerOrchestrator::start_watchdog_if_needed() {
+    if (!cfg_.enable_watchdog || watchdog_) return;
+    watchdog_ = std::make_unique<Watchdog>();
+    watchdog_->start([this]() {
+        std::cerr << "[watchdog] stall detected — republishing current job\n";
+        auto entry = bus_.drain_latest();
+        if (entry.ctx) {
+            for (auto& w : workers_) w->set_sigma(entry.ctx);
+        }
+    });
+    for (auto& w : workers_) {
+        w->set_watchdog(watchdog_.get());
+    }
+}
+
+bool WorkerOrchestrator::ensure_connected_and_registered() {
+    if (client_ && client_->connected() && registered_.load()) return true;
+
+    reset_pool_session();
+    set_pool_state(PoolState::Connecting);
+
+    const auto& ep = active_pool();
     PearlGrpcClient::Options opts;
-    opts.host = cfg_.pool_host;
-    opts.port = cfg_.pool_port;
-    opts.use_tls = cfg_.use_tls;
+    opts.host = ep.host;
+    opts.port = ep.port;
+    opts.use_tls = ep.use_tls;
     opts.user_agent = cfg_.miner_version;
     if (const char* t = std::getenv("PROPMINER_GRPC_TIMEOUT_MS"); t && t[0]) {
         opts.connect_timeout_ms = std::max(5000, std::atoi(t));
     }
     client_ = std::make_unique<PearlGrpcClient>(opts);
 
+    std::cerr << "[orchestrator] connecting to pool " << ep.host << ":" << ep.port
+              << " (endpoint " << (active_pool_index_.load() + 1) << "/"
+              << cfg_.pool_endpoints.size() << ")\n";
+
     if (!client_->connect()) {
-        std::cerr << "grpc connect failed: " << client_->last_error() << std::endl;
+        last_pool_error_ = client_->last_error();
+        std::cerr << "grpc connect failed: " << last_pool_error_ << std::endl;
+        reset_pool_session();
+        active_pool_index_ = (active_pool_index_.load() + 1) % cfg_.pool_endpoints.size();
         return false;
     }
+
+    set_pool_state(PoolState::Registering);
 
     proto::RegisterRequest req;
     req.wallet_address = cfg_.wallet_address;
     req.worker_name = cfg_.worker_name;
     req.miner_version = cfg_.miner_version;
+    req.git_sha = resolve_git_sha();
     req.protocol_version = 2;
     req.k = static_cast<uint32_t>(cfg_.mining_config.k);
     req.gpu_cards = enumerate_gpu_cards();
 
+    const double claimed_tmad = resolve_claimed_tmad_per_gpu();
+    const size_t n_gpus = std::max<size_t>(1, req.gpu_cards.size());
+    const double per_gpu_hr = claimed_tmad * kTmadsToHashesPerSec;
+    req.claimed_total_hashrate = per_gpu_hr * static_cast<double>(n_gpus);
+    for (auto& card : req.gpu_cards) {
+        card.hashrate = per_gpu_hr;
+    }
+
     proto::RegisterResponse resp;
     if (!client_->register_miner(req, resp)) {
-        std::cerr << "register failed: " << client_->last_error() << std::endl;
+        last_pool_error_ = client_->last_error();
+        std::cerr << "register failed: " << last_pool_error_ << std::endl;
+        reset_pool_session();
+        const size_t prev = active_pool_index_.load();
+        active_pool_index_ = (prev + 1) % cfg_.pool_endpoints.size();
+        if (cfg_.pool_endpoints.size() > 1) {
+            const auto& next = cfg_.pool_endpoints[active_pool_index_.load()];
+            std::cerr << "[orchestrator] failing over to " << next.host << ":"
+                      << next.port << "\n";
+        }
         return false;
     }
     if (!resp.success) {
-        std::cerr << "register rejected: " << resp.error_message << std::endl;
+        last_pool_error_ = resp.error_message.empty() ? "register rejected" : resp.error_message;
+        std::cerr << "register rejected: " << last_pool_error_ << std::endl;
+        reset_pool_session();
         return false;
     }
     {
@@ -199,10 +318,22 @@ bool WorkerOrchestrator::ensure_connected_and_registered() {
         }
     }
     registered_ = true;
+    reconnect_attempt_ = 0;
+    last_pool_error_.clear();
+    std::cerr << "[orchestrator] pool registered on " << ep.host << " (miner_id="
+              << miner_id_hex(miner_id_) << ")\n";
     return true;
 }
 
 void WorkerOrchestrator::publish_job_from_assignment(const proto::JobAssignment& ja) {
+    const bool first_job = !jobs_received_.exchange(true);
+    if (first_job) {
+        std::cerr << "[orchestrator] first pool job received (job_id=" << ja.job_id
+                  << ", block_height=" << ja.block_height << ")\n";
+        set_pool_state(PoolState::Mining);
+        start_watchdog_if_needed();
+    }
+
     Job job;
     job.sigma = ja.sigma;
     job.b_seed = ja.b_seed;
@@ -246,20 +377,34 @@ void WorkerOrchestrator::handle_pool_event(const proto::PoolEvent& evt) {
             std::cerr << "pool error: " << evt.error.message << std::endl;
             if (evt.error.fatal) stop();
             break;
-        case proto::PoolEventType::Reconnect:
-            std::cout << "pool reconnect in " << evt.reconnect.wait_seconds << "s" << std::endl;
+        case proto::PoolEventType::Reconnect: {
+            const uint32_t wait_s = evt.reconnect.wait_seconds;
+            std::cerr << "[orchestrator] pool requested reconnect in " << wait_s
+                      << "s\n";
+            if (wait_s > 0) {
+                std::this_thread::sleep_for(std::chrono::seconds(wait_s));
+            }
+            reset_pool_session();
+            set_pool_state(PoolState::Disconnected);
+            pool_reconnect_requested_.store(true);
             break;
+        }
         default:
             break;
     }
 }
 
 void WorkerOrchestrator::network_thread_func() {
+    int stream_idle_polls = 0;
     while (!stop_flag_) {
         if (!ensure_connected_and_registered()) {
-            std::cerr << "[orchestrator] pool connect/register failed; retry in 5s"
+            const int wait_ms = backoff_ms(reconnect_attempt_++);
+            std::cerr << "[orchestrator] pool connect/register failed; retry in "
+                      << (wait_ms / 1000) << "s"
+                      << (last_pool_error_.empty() ? "" : " (" + last_pool_error_ + ")")
                       << std::endl;
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            set_pool_state(PoolState::Disconnected);
+            std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
             continue;
         }
 
@@ -269,22 +414,60 @@ void WorkerOrchestrator::network_thread_func() {
             auth.miner_id = miner_id_;
             auth.session_token = session_token_;
         }
+        set_pool_state(PoolState::Streaming);
         if (!client_->start_mining_stream(auth)) {
-            std::cerr << "mining stream failed: " << client_->last_error() << std::endl;
-            client_->disconnect();
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            last_pool_error_ = client_->last_error();
+            std::cerr << "mining stream failed: " << last_pool_error_ << std::endl;
+            reset_pool_session();
+            const int wait_ms = backoff_ms(reconnect_attempt_++);
+            std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
             continue;
         }
+        std::cerr << "[orchestrator] mining stream open, awaiting JobAssignment\n";
+        set_pool_state(PoolState::AwaitingJob);
+        stream_idle_polls = 0;
 
         while (!stop_flag_ && client_->connected()) {
             proto::PoolEvent evt;
             if (client_->receive_event(evt)) {
+                stream_idle_polls = 0;
                 handle_pool_event(evt);
+                if (pool_reconnect_requested_.exchange(false)) break;
             } else if (!client_->connected()) {
                 break;
+            } else {
+                ++stream_idle_polls;
+                if (stream_idle_polls % 12 == 0) {
+                    std::cerr << "[orchestrator] streaming, no pool event yet ("
+                              << (stream_idle_polls * 5) << "s)\n";
+                }
             }
         }
-        client_->disconnect();
+        last_pool_error_ = client_ ? client_->last_error() : "stream closed";
+        reset_pool_session();
+        set_pool_state(PoolState::Disconnected);
+    }
+}
+
+void WorkerOrchestrator::ping_thread_func() {
+    while (!stop_flag_) {
+        std::this_thread::sleep_for(std::chrono::seconds(15));
+        if (stop_flag_) break;
+        if (!client_ || !client_->connected() || !registered_.load()) continue;
+
+        proto::MinerEvent evt;
+        evt.type = proto::MinerEventType::Ping;
+        proto::PingEvent ping;
+        ping.timestamp = now_unix_ms();
+        evt.payload = ping.encode();
+        {
+            std::lock_guard<std::mutex> lk(session_mtx_);
+            evt.seq = ++miner_event_seq_;
+        }
+        if (!client_->send_event(evt)) {
+            std::cerr << "[orchestrator] pool ping failed: " << client_->last_error()
+                      << std::endl;
+        }
     }
 }
 
@@ -560,25 +743,15 @@ int WorkerOrchestrator::run() {
     }
 
     if (!bench_mode) {
-        std::cerr << "[orchestrator] Production mine mode: pool "
-                  << cfg_.pool_host << ":" << cfg_.pool_port
+        std::cerr << "[orchestrator] Production mine mode: "
+                  << cfg_.pool_endpoints.size() << " pool endpoint(s), first="
+                  << cfg_.pool_endpoints[0].host << ":" << cfg_.pool_endpoints[0].port
                   << " (awaiting first job before GPU work begins)\n";
     }
 
     const auto gpu_cards = enumerate_gpu_cards();
     gpu_uuids_.clear();
     for (const auto& c : gpu_cards) gpu_uuids_.push_back(c.uuid);
-
-    if (cfg_.enable_watchdog && !bench_mode) {
-        watchdog_ = std::make_unique<Watchdog>();
-        watchdog_->start([this]() {
-            std::cerr << "[watchdog] stall detected — republishing current job\n";
-            auto entry = bus_.drain_latest();
-            if (entry.ctx) {
-                for (auto& w : workers_) w->set_sigma(entry.ctx);
-            }
-        });
-    }
 
     uint32_t bench_target_nbits = 0;
     std::shared_ptr<SigmaContext> bench_ctx;
@@ -614,7 +787,6 @@ int WorkerOrchestrator::run() {
         auto w = std::make_unique<GpuWorker>(idx, static_cast<int>(workers_.size()),
                                              tuned_config, this);
         w->set_matmuls_per_poll(tuned_batch);
-        if (watchdog_) w->set_watchdog(watchdog_.get());
         if (bench_ctx) {
             w->set_sigma(bench_ctx);
             w->set_target_nbits(bench_target_nbits);
@@ -630,6 +802,7 @@ int WorkerOrchestrator::run() {
         threads_.emplace_back(&WorkerOrchestrator::network_thread_func, this);
         threads_.emplace_back(&WorkerOrchestrator::share_sender_thread_func, this);
         threads_.emplace_back(&WorkerOrchestrator::heartbeat_thread_func, this);
+        threads_.emplace_back(&WorkerOrchestrator::ping_thread_func, this);
     }
 
     // Stats loop.
@@ -652,8 +825,13 @@ int WorkerOrchestrator::run() {
 
         if (metrics.tmad_per_sec > 0.0 || metrics.protocol_hps > 0.0) {
             print_hashrate_metrics_line(stdout, "hashrate: ", metrics);
-        } else {
+        } else if (bench_mode) {
             std::cout << "hashrate: waiting for first batch..." << std::endl;
+        } else {
+            const std::string status = pool_status_line();
+            if (!status.empty()) {
+                std::cout << status << std::endl;
+            }
         }
         if (cfg_.speed_test_seconds > 0) {
             static int elapsed = 0;

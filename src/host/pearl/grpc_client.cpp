@@ -11,9 +11,11 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <stdexcept>
+#include <thread>
 
 namespace pearl {
 
@@ -117,6 +119,21 @@ namespace {
         return false;
     }
 
+    std::string format_response_snippet(const std::vector<uint8_t>& body, size_t max_len = 120) {
+        if (body.empty()) return "";
+        size_t n = std::min(body.size(), max_len);
+        std::string out;
+        out.reserve(n + 16);
+        for (size_t i = 0; i < n; ++i) {
+            const unsigned char c = body[i];
+            if (c >= 32 && c < 127) out.push_back(static_cast<char>(c));
+            else if (c == '\n' || c == '\r' || c == '\t') out.push_back(' ');
+            else out.push_back('.');
+        }
+        if (body.size() > n) out += "...";
+        return out;
+    }
+
     bool extract_grpc_payload(const std::vector<uint8_t>& framed,
                               std::vector<uint8_t>& out,
                               std::string& err) {
@@ -170,6 +187,37 @@ struct PearlGrpcClient::Impl {
     std::queue<proto::PoolEvent> event_queue_;
     bool headers_received_ = false;
     bool stream_closed_ = false;
+    std::thread keepalive_thread_;
+    std::atomic<bool> keepalive_stop_{false};
+
+    void start_keepalive() {
+        keepalive_stop_ = false;
+        keepalive_thread_ = std::thread([this]() {
+            uint8_t payload[8] = {0};
+            while (!keepalive_stop_ && connected_) {
+                std::this_thread::sleep_for(std::chrono::seconds(10));
+                if (keepalive_stop_ || !connected_) break;
+                send_frame(FRAME_PING, 0, 0, payload, 8);
+            }
+        });
+    }
+
+    void stop_keepalive() {
+        keepalive_stop_ = true;
+        if (keepalive_thread_.joinable()) keepalive_thread_.join();
+    }
+
+    bool handle_connection_control_frame(uint8_t type, uint8_t flags,
+                                         const std::vector<uint8_t>& payload) {
+        if (type == FRAME_SETTINGS) {
+            if (!(flags & FLAG_ACK)) return send_settings_ack();
+            return true;
+        }
+        if (type == FRAME_PING && payload.size() == 8) {
+            return send_frame(FRAME_PING, FLAG_ACK, 0, payload.data(), 8);
+        }
+        return true;
+    }
 
     ~Impl() { disconnect(); }
 
@@ -464,6 +512,7 @@ struct PearlGrpcClient::Impl {
     }
 
     void disconnect() {
+        stop_keepalive();
         if (ssl_) { SSL_shutdown(ssl_); SSL_free(ssl_); ssl_ = nullptr; }
         if (ctx_) { SSL_CTX_free(ctx_); ctx_ = nullptr; }
         if (sock_ >= 0) { close(sock_); sock_ = -1; }
@@ -484,6 +533,7 @@ bool PearlGrpcClient::connect() {
     if (impl_->opts.use_tls && !impl_->connect_tls()) return false;
     if (!impl_->perform_http2_handshake()) return false;
     impl_->connected_ = true;
+    impl_->start_keepalive();
     return true;
 }
 
@@ -520,27 +570,33 @@ bool PearlGrpcClient::register_miner(const proto::RegisterRequest& req, proto::R
         uint8_t type = hdr[3];
         uint8_t flags = hdr[4];
         uint32_t rsid = read_u32_be(hdr + 5) & 0x7FFFFFFFu;
+        std::vector<uint8_t> payload(len);
+        if (len > 0 && !impl_->read_exact(payload.data(), len, 1000)) return false;
         // GOAWAY is always stream 0; must not be discarded with other streams.
         if (type == FRAME_GOAWAY) {
             return impl_->set_error("GOAWAY during register");
         }
-        if (rsid != sid) {
-            std::vector<uint8_t> discard(len);
-            if (len > 0 && !impl_->read_exact(discard.data(), len, 1000)) return false;
+        if (rsid == 0) {
+            if (!impl_->handle_connection_control_frame(type, flags, payload)) return false;
             continue;
         }
-        std::vector<uint8_t> payload(len);
-        if (len > 0 && !impl_->read_exact(payload.data(), len, 1000)) return false;
-        if (rsid == sid) {
-            if (type == FRAME_DATA) {
-                response_body.insert(response_body.end(), payload.begin(), payload.end());
-            }
-            if (flags & FLAG_END_STREAM) break;
+        if (rsid != sid) {
+            continue;
         }
+        if (type == FRAME_DATA) {
+            response_body.insert(response_body.end(), payload.begin(), payload.end());
+        }
+        if (flags & FLAG_END_STREAM) break;
     }
     std::vector<uint8_t> proto_body;
     std::string extract_err;
     if (!extract_grpc_payload(response_body, proto_body, extract_err)) {
+        const std::string snippet = format_response_snippet(response_body);
+        if (!snippet.empty()) {
+            extract_err += " body=" + snippet;
+        }
+        impl_->connected_ = false;
+        impl_->disconnect();
         return impl_->set_error(extract_err);
     }
     try {

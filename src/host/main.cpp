@@ -248,7 +248,7 @@ static void print_usage(const char* prog) {
         "\nPropMiner v2.0 — Pearl NoisyGEMM GPU Miner (0%% dev fee)\n"
         "\nUsage: %s [OPTIONS]\n"
         "\nOptions:\n"
-        "  --pool HOST:PORT     Pool address (default: prl.kryptex.network:443)\n"
+        "  --pool HOST:PORT[,HOST2:PORT2]  Pool address(es) with failover (default: prl.kryptex.network:443)\n"
         "  --wallet ADDRESS     Your Pearl wallet address (required)\n"
         "  --worker NAME        Worker name (default: propminer)\n"
         "  --gpus INDEXES       GPU indices, comma-separated (default: all)\n"
@@ -302,6 +302,52 @@ static void split_wallet_worker(std::string& wallet, std::string& worker,
             wallet.c_str(), worker.c_str());
 }
 
+static bool parse_pool_endpoint(const std::string& pool_str,
+                                pearl::WorkerOrchestrator::PoolEndpoint& out) {
+    size_t colon = pool_str.rfind(':');
+    if (colon == std::string::npos) {
+        out.host = pool_str;
+        out.port = 443;
+        out.use_tls = true;
+        return !out.host.empty();
+    }
+    out.host = pool_str.substr(0, colon);
+    try {
+        out.port = std::stoi(pool_str.substr(colon + 1));
+    } catch (...) {
+        return false;
+    }
+    out.use_tls = true;
+    return !out.host.empty();
+}
+
+static void append_pool_endpoint(pearl::WorkerOrchestrator::Config& cfg,
+                                 const std::string& pool_str) {
+    pearl::WorkerOrchestrator::PoolEndpoint ep;
+    if (!parse_pool_endpoint(pool_str, ep)) {
+        fprintf(stderr, "[main] Invalid pool endpoint: %s\n", pool_str.c_str());
+        std::exit(1);
+    }
+    cfg.pool_endpoints.push_back(ep);
+}
+
+static void parse_pool_list(const std::string& pool_str,
+                            pearl::WorkerOrchestrator::Config& cfg) {
+    size_t start = 0;
+    while (start < pool_str.size()) {
+        size_t comma = pool_str.find(',', start);
+        if (comma == std::string::npos) comma = pool_str.size();
+        const std::string part = pool_str.substr(start, comma - start);
+        if (!part.empty()) append_pool_endpoint(cfg, part);
+        start = comma + 1;
+    }
+    if (!cfg.pool_endpoints.empty()) {
+        cfg.pool_host = cfg.pool_endpoints[0].host;
+        cfg.pool_port = cfg.pool_endpoints[0].port;
+        cfg.use_tls = cfg.pool_endpoints[0].use_tls;
+    }
+}
+
 int main(int argc, char* argv[]) {
     fprintf(stderr,
         "\n  ____ _   _ ____  ____  _       _    _ _ \n"
@@ -316,7 +362,7 @@ int main(int argc, char* argv[]) {
     cfg.pool_port = 443;
     cfg.use_tls = true;
     cfg.worker_name = "propminer";
-    cfg.miner_version = "propminer/2.0";
+    cfg.miner_version = "propminer/2.1";
     int bench_seconds = 0;
     bool self_test = false;
     bool use_rtx5090_profile = false;
@@ -338,18 +384,7 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         else if (strcmp(argv[i], "--pool") == 0 && i + 1 < argc) {
-            std::string pool_str = argv[++i];
-            size_t colon = pool_str.rfind(':');
-            if (colon != std::string::npos) {
-                cfg.pool_host = pool_str.substr(0, colon);
-                try { cfg.pool_port = std::stoi(pool_str.substr(colon + 1)); }
-                catch (...) {
-                    fprintf(stderr, "[main] Invalid port\n");
-                    return 1;
-                }
-            } else {
-                cfg.pool_host = pool_str;
-            }
+            parse_pool_list(argv[++i], cfg);
         }
         else if (strcmp(argv[i], "--wallet") == 0 && i + 1 < argc) {
             cfg.wallet_address = argv[++i];
@@ -411,6 +446,18 @@ int main(int argc, char* argv[]) {
     }
 
     split_wallet_worker(cfg.wallet_address, cfg.worker_name, worker_set);
+
+    if (cfg.pool_endpoints.empty()) {
+        if (const char* env = std::getenv("PROPMINER_POOL"); env && env[0]) {
+            parse_pool_list(env, cfg);
+        }
+        if (const char* fb = std::getenv("PROPMINER_POOL_FALLBACK"); fb && fb[0]) {
+            append_pool_endpoint(cfg, fb);
+        }
+        if (cfg.pool_endpoints.empty()) {
+            cfg.pool_endpoints.push_back({cfg.pool_host, cfg.pool_port, cfg.use_tls});
+        }
+    }
 
     if (cfg.pool_port == 7048) {
         fprintf(stderr,
