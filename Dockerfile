@@ -181,7 +181,7 @@ COPY --from=builder /root/PropMiner/scripts/compare_bench.sh ./scripts/compare_b
 COPY --from=builder /root/PropMiner/scripts/profile_gemm_ncu.sh ./scripts/profile_gemm_ncu.sh
 COPY --from=builder /root/PropMiner/scripts/build_and_benchmark.sh ./scripts/build_and_benchmark.sh
 RUN mkdir -p ./results
-COPY --from=builder /root/PropMiner/results/baseline_5090_sm120.json ./results/baseline_5090_sm120.json
+COPY results/baseline_5090_sm120.json ./results/baseline_5090_sm120.json
 
 RUN chmod +x ./scripts/*.sh
 

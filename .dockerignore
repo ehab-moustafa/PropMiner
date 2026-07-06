@@ -2,6 +2,7 @@
 build/
 build_remote_test/
 results/
+!results/baseline_5090_sm120.json
 *.log
 
 # Git and IDE metadata.
