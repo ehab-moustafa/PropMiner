@@ -38,7 +38,7 @@ echo ""
 echo "== run_remaining tail: bench + compare (skip rebuild/tune/geforce) =="
 STAMP="$(date +%Y%m%d_%H%M%S)"
 BENCH_LOG="${ROOT}/results/benchmark_prod_${STAMP}.log"
-PROPMINER_BENCH_JSON=1 PROPMINER_BENCH_BATCH=1 "${PM}" --bench 180 --rtx5090 --gpus 0 \
+PROPMINER_BENCH_JSON=1 PROPMINER_BENCH_BATCH=1 "${PM}" --bench 300 --rtx5090 --gpus 0 \
     | tee "${BENCH_LOG}"
 
 JSON_LINE="$(grep '"tmad_per_sec"' "${BENCH_LOG}" | tail -1 || true)"

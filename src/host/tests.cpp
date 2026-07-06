@@ -242,12 +242,12 @@ static void test_rtx5090_wave_alignment() {
     EXPECT(cfg.m == 8192);
     EXPECT(cfg.n >= 32768);
     EXPECT(Rtx5090Profile::tiles(cfg.m, cfg.n) >= Rtx5090Profile::kSMCount * 2);
-    auto bench_cfg = rtx5090_mining_config(0, Rtx5090Profile::kBenchMaxN);
-    EXPECT(bench_cfg.n == Rtx5090Profile::kBenchMaxN);
-    EXPECT(Rtx5090Profile::kDefaultMineBatch == 4);
-    EXPECT(Rtx5090Profile::kMaxMineBatch == 20);
-    EXPECT(Rtx5090Profile::kBenchDefaultSeconds == 180);
-    EXPECT(Rtx5090Profile::kBenchGraceSeconds == 60);
+    auto bench_cfg = rtx5090_mining_config(k32GbMinusReserve, 0);
+    EXPECT(bench_cfg.n == 262144);
+    auto capped = rtx5090_mining_config(k32GbMinusReserve, 32768);
+    EXPECT(capped.n == 32768);
+    EXPECT(Rtx5090Profile::kBenchDefaultSeconds == 300);
+    EXPECT(Rtx5090Profile::kBenchGraceSeconds == 120);
 }
 
 static void test_mine_batch_manifest_matches() {

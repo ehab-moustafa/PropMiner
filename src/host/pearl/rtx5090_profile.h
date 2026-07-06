@@ -48,11 +48,10 @@ struct Rtx5090Profile {
         1, 2, 4, 6, 8, 10, 12, 16, 20,
     };
 
-    // Bench cap: large-N GEMMs may not finish one batch inside the Salad/WSL2
-    // bench window.  Production mining uses pick_n_for_vram() without cap.
-    static constexpr int kBenchMaxN = 32768;
-    static constexpr int kBenchDefaultSeconds = 180;
-    static constexpr int kBenchGraceSeconds = 60;
+    // Bench/tune/mine share production N (pick_n_for_vram). Override only via PROPMINER_N_CAP.
+    static constexpr int kLegacySmallN = 32768;
+    static constexpr int kBenchDefaultSeconds = 300;
+    static constexpr int kBenchGraceSeconds = 120;
 
     // Number of CTAs launched per GEMM = (M/kTileM) * (N/kTileN).
     static constexpr int tiles(int M, int N) {
@@ -128,7 +127,7 @@ static_assert(Rtx5090Profile::full_occupancy(Rtx5090Profile::kDefaultM,
 // Return a MiningConfig pre-tuned for RTX 5090.
 //
 // vram_budget_bytes: free VRAM after driver reserve (0 = pick largest candidate).
-// cap_n: when >0, limit N (bench mode uses kBenchMaxN for short windows).
+// cap_n: when >0, limit N (debug only — set PROPMINER_N_CAP; default is production N).
 inline MiningConfig rtx5090_mining_config(size_t vram_budget_bytes = 0,
                                           int cap_n = 0) {
     MiningConfig cfg;

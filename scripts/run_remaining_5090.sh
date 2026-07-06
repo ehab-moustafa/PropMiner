@@ -16,7 +16,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT}"
 
-BENCH_SECONDS="${PROPMINER_BENCH_SECONDS:-180}"
+BENCH_SECONDS="${PROPMINER_BENCH_SECONDS:-300}"
 BUILD_GEFORCE="${PROPMINER_BUILD_GEFORCE:-1}"
 RESULTS_DIR="${ROOT}/results"
 mkdir -p "${RESULTS_DIR}"

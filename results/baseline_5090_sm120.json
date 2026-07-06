@@ -1,1 +1,1 @@
-{"tmad_per_sec":300.0,"pool_th_per_sec":300.0,"m":8192,"n":32768,"k":128,"graph_batch":1,"note":"Replace after first real 5090 bench; N=32768 is bench cap"}
+{"tmad_per_sec":300.0,"pool_th_per_sec":300.0,"m":8192,"n":262144,"k":128,"graph_batch":1,"note":"Replace after first real 5090 prod-N bench; target ~300 TMAD/s"}

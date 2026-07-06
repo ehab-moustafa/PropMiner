@@ -85,7 +85,7 @@ namespace {
         if (env && env[0] != '\0') {
             return std::max(0, std::atoi(env));
         }
-        return 60;
+        return Rtx5090Profile::kBenchGraceSeconds;
     }
 
     std::string resolve_git_sha() {

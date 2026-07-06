@@ -14,7 +14,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${ROOT}/build"
-BENCH_SECONDS="${1:-180}"
+BENCH_SECONDS="${1:-300}"
 
 mkdir -p "${BUILD_DIR}"
 

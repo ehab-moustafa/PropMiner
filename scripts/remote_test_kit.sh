@@ -34,8 +34,8 @@ source "${ROOT}/scripts/setup_cuda_env.sh"
 # shellcheck disable=SC1091
 source "${ROOT}/scripts/tune_kernel_knobs_common.sh"
 
-BENCH_SECONDS="${PROPMINER_BENCH_SECONDS:-180}"
-BENCH_GRACE_SECONDS="${PROPMINER_BENCH_GRACE_SECONDS:-60}"
+BENCH_SECONDS="${PROPMINER_BENCH_SECONDS:-300}"
+BENCH_GRACE_SECONDS="${PROPMINER_BENCH_GRACE_SECONDS:-120}"
 export PROPMINER_BENCH_GRACE_SECONDS="${BENCH_GRACE_SECONDS}"
 SWEEP_SECONDS=15
 # Quick Salad loop: self-test only unless explicitly enabled.

@@ -263,7 +263,9 @@ static void print_usage(const char* prog) {
         "  --disable-cpu        Explicitly disable CPU mining (default; no-op)\n"
         "  --tls 0/1            Use TLS (default: 1)\n"
         "  Env: PROPMINER_AUTOTUNE=0|1|2|force  Runtime autotune + knob cache (5090)\n"
+        "  Env: PROPMINER_N_CAP=N          Debug: cap N (default: production VRAM pick)\n"
         "  Env: PROPMINER_BATCH=N            Override mine batch (default: cache or 4)\n"
+        "  Env: PROPMINER_BENCH_BATCH=N      Override bench graph batch\n"
         "  Env: PROPMINER_BATCH_TUNE=1       Run mine batch sweep at startup (slow)\n"
         "  --help               Show this help\n"
         "\nExamples:\n"
@@ -422,14 +424,25 @@ int main(int argc, char* argv[]) {
             cudaMemGetInfo(&vram_free, &total);
             if (vram_free > (512ULL << 20)) vram_free -= (512ULL << 20);
         }
-        const int n_cap = (bench_seconds > 0) ? pearl::Rtx5090Profile::kBenchMaxN : 0;
+        int n_cap = 0;
+        if (const char* cap_env = std::getenv("PROPMINER_N_CAP");
+            cap_env && cap_env[0] != '\0') {
+            n_cap = std::atoi(cap_env);
+        }
         cfg.mining_config = pearl::rtx5090_mining_config(vram_free, n_cap);
         if (bench_seconds == 0 && !user_overrode_config) {
             cfg.batch_size = pearl::MineBatchCache::resolve(
                 cfg.gpu_indices[0], cfg.mining_config.m, cfg.mining_config.n,
                 pearl::Rtx5090Profile::kDefaultMineBatch);
         } else if (bench_seconds > 0) {
-            cfg.batch_size = pearl::Rtx5090Profile::kDefaultMineBatch;
+            const char* bb = std::getenv("PROPMINER_BENCH_BATCH");
+            if (bb && bb[0] != '\0') {
+                cfg.batch_size = std::atoi(bb);
+            } else {
+                cfg.batch_size = pearl::MineBatchCache::resolve(
+                    cfg.gpu_indices[0], cfg.mining_config.m, cfg.mining_config.n,
+                    pearl::Rtx5090Profile::kDefaultMineBatch);
+            }
         }
         const int ctas = pearl::Rtx5090Profile::tiles(cfg.mining_config.m,
                                                       cfg.mining_config.n);
@@ -441,7 +454,7 @@ int main(int argc, char* argv[]) {
                 ctas, (ctas + pearl::Rtx5090Profile::kSMCount - 1)
                           / pearl::Rtx5090Profile::kSMCount,
                 tail,
-                n_cap > 0 ? " (bench N cap)" : "");
+                n_cap > 0 ? " (PROPMINER_N_CAP)" : "");
 
         pearl::GemmCapi capi;
         if (const int kv = capi.validate_kernel_selection(); kv != 0) {
