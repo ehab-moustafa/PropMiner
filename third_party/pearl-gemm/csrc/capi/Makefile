@@ -257,7 +257,6 @@ ifeq ($(PEARL_GEMM_ARCH),blackwell)
   # external_repos/README.md). Default OFF; production stays consumer::.
   PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL ?=
   ifeq ($(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL),1)
-    SRCS_BLACKWELL += $(SRC)/blackwell/transcript_gemm_sm120_geforce.cu
     DEFINES += -DPEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1
     PEARL_GEMM_BUILD_KNOBS_STR := $(PEARL_GEMM_BUILD_KNOBS_STR)+geforce
     PEARL_SM120_GEFORCE_VERIFY_MAIN ?=
@@ -355,6 +354,12 @@ SRCS_BLACKWELL := \
   $(SRC)/blackwell/transcript_gemm_sm120.cu \
   $(SRC)/portable/portable_int8_gemm.cu \
   $(SRC)/capi/portable_int8_helpers.cu
+
+ifeq ($(PEARL_GEMM_ARCH),blackwell)
+ifeq ($(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL),1)
+  SRCS_BLACKWELL += $(SRC)/blackwell/transcript_gemm_sm120_geforce.cu
+endif
+endif
 
 # B200 path: same portable helpers, but the sm_100a tcgen05/TMEM transcript
 # GEMM replaces the per-warp mma.sync/consumer transcript GEMM.
