@@ -789,8 +789,7 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
     share.a_opened_leaf_data = std::move(a_opened_leaf_data);
     share.a_leaf_cvs = std::move(a_leaf_cvs_host);
 
-    ShareBuilder builder(cfg_);
-    auto claimed = builder.compute_claimed_hash(
+    auto claimed = ShareBuilder::ComputeClaimedHash(
         share, share.job.job_key.data(), hash_a.data(), hash_b.data());
     share.claimed_hash = claimed;
 
