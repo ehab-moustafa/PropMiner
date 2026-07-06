@@ -161,7 +161,27 @@ std::array<uint8_t, 32> ShareBuilder::compute_claimed_hash(
     const uint8_t hashB[32]) const {
     uint8_t b_noise_seed[32]{};
     uint8_t a_noise_seed[32]{};
-    derive_noise_seeds(job_key, hashA, hashB, b_noise_seed, a_noise_seed);
+    const bool have_gpu_commits =
+        hash_bytes_set(share.gpu_commit_a) && hash_bytes_set(share.gpu_commit_b);
+    if (have_gpu_commits) {
+        std::memcpy(b_noise_seed, share.gpu_commit_b.data(), 32);
+        std::memcpy(a_noise_seed, share.gpu_commit_a.data(), 32);
+        uint8_t derived_b[32]{};
+        uint8_t derived_a[32]{};
+        derive_noise_seeds(job_key, hashA, hashB, derived_b, derived_a);
+        if (std::memcmp(derived_a, a_noise_seed, 32) != 0 ||
+            std::memcmp(derived_b, b_noise_seed, 32) != 0) {
+            share_trace("seed-warn",
+                        "nonce=" + std::to_string(share.nonce) +
+                        " reason=derived_commit_mismatch" +
+                        " derived_a=" + hex_prefix(derived_a, 32) +
+                        " gpu_a=" + hex_prefix(a_noise_seed, 32) +
+                        " derived_b=" + hex_prefix(derived_b, 32) +
+                        " gpu_b=" + hex_prefix(b_noise_seed, 32));
+        }
+    } else {
+        derive_noise_seeds(job_key, hashA, hashB, b_noise_seed, a_noise_seed);
+    }
 
     const int h = static_cast<int>(share.a_row_indices.size());
     const int w = static_cast<int>(share.b_col_indices.size());

@@ -103,6 +103,8 @@ private:
         uint8_t* pinned_opened_leaves = nullptr;
         uint8_t* pinned_hash_a = nullptr;
         uint8_t* pinned_hash_b = nullptr;
+        uint8_t* pinned_commit_a = nullptr;
+        uint8_t* pinned_commit_b = nullptr;
         size_t pinned_a_slice_bytes = 0;
         size_t pinned_opened_leaves_bytes = 0;
 

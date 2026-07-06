@@ -146,6 +146,12 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
     check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_hash_b), 32,
                            cudaHostAllocDefault),
              "pinned_hash_b");
+    check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_commit_a), 32,
+                           cudaHostAllocDefault),
+             "pinned_commit_a");
+    check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_commit_b), 32,
+                           cudaHostAllocDefault),
+             "pinned_commit_b");
 
     (void)device_id;
 }
@@ -183,6 +189,8 @@ void GpuWorker::HalfBuffers::free() {
     }
     if (pinned_hash_a) { cudaFreeHost(pinned_hash_a); pinned_hash_a = nullptr; }
     if (pinned_hash_b) { cudaFreeHost(pinned_hash_b); pinned_hash_b = nullptr; }
+    if (pinned_commit_a) { cudaFreeHost(pinned_commit_a); pinned_commit_a = nullptr; }
+    if (pinned_commit_b) { cudaFreeHost(pinned_commit_b); pinned_commit_b = nullptr; }
 }
 
 GpuWorker::GpuWorker(int device_index, int gpu_index,
@@ -670,11 +678,12 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
 
     // Recompute A's leaf-CV table on the GPU so ShareBuilder can use the fast
     // a_proof_from_leaf_cvs path instead of D2H'ing the full A matrix.
+    const auto& bs = ctx.resident();
     gemm_.tensor_hash_leaf_cvs(
         reinterpret_cast<const uint8_t*>(half.a),
         static_cast<uint32_t>(a_bytes),
         reinterpret_cast<uint8_t*>(half.a_hash),
-        ctx.job().job_key.data(),
+        reinterpret_cast<const uint8_t*>(bs.key()),
         cfg_.tensor_hash_num_blocks(a_bytes),
         cfg_.tensor_hash_threads,
         cfg_.tensor_hash_stages,
@@ -684,18 +693,28 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
         device_index_,
         half.stream);
 
-    // a_hash is the Merkle root used for noise seeds; D2H for share_builder.
-    // Do NOT call commitment_hash_from_merkle_roots here — that kernel reads
-    // key/AHash/BHash from device memory only (see pearl_capi_iter). Passing
-    // job_key.data() (host) caused illegal memory access on share rebuild.
+    // Commitment chain on device only (Key/AHash/BHash are all device ptrs).
+    // This matches pearl_capi_iter and is the pow_key the GEMM kernel keyed on.
+    gemm_.commitment_hash_from_merkle_roots(
+        reinterpret_cast<const uint8_t*>(half.a_hash),
+        reinterpret_cast<const uint8_t*>(bs.b_hash()),
+        reinterpret_cast<const uint8_t*>(bs.key()),
+        reinterpret_cast<uint8_t*>(half.commit_a),
+        reinterpret_cast<uint8_t*>(half.commit_b),
+        device_index_,
+        half.stream);
 
-    if (!half.pinned_hash_a) {
+    if (!half.pinned_hash_a || !half.pinned_commit_a || !half.pinned_commit_b) {
         share_log("rebuild-fail", "nonce=" + std::to_string(job.nonce) +
-                                  " reason=missing_pinned_hash_a");
+                                  " reason=missing_pinned_share_buffers");
         return false;
     }
     check_cuda(cuMemcpyDtoHAsync(half.pinned_hash_a, half.a_hash, 32,
                                  half.stream), "a_hash d2h");
+    check_cuda(cuMemcpyDtoHAsync(half.pinned_commit_a, half.commit_a, 32,
+                                 half.stream), "commit_a d2h");
+    check_cuda(cuMemcpyDtoHAsync(half.pinned_commit_b, half.commit_b, 32,
+                                 half.stream), "commit_b d2h");
     // D2H compact proof inputs into pinned staging (single PCIe sync below).
     if (!half.pinned_leaf_cvs || half.a_leaf_cv_bytes == 0) return false;
     check_cuda(cuMemcpyDtoHAsync(half.pinned_leaf_cvs, half.a_leaf_cvs,
@@ -737,8 +756,12 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
     std::memcpy(a_opened_leaf_data.data(), half.pinned_opened_leaves, opened_bytes);
     std::array<uint8_t, 32> hash_b{};
     std::array<uint8_t, 32> hash_a{};
+    std::array<uint8_t, 32> commit_a{};
+    std::array<uint8_t, 32> commit_b{};
     std::memcpy(hash_b.data(), half.pinned_hash_b, 32);
     std::memcpy(hash_a.data(), half.pinned_hash_a, 32);
+    std::memcpy(commit_a.data(), half.pinned_commit_a, 32);
+    std::memcpy(commit_b.data(), half.pinned_commit_b, 32);
 
     ShareFound share;
     share.job = ctx.job();
@@ -754,6 +777,8 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
     share.b_col_indices = std::move(b_cols);
     share.hash_b = hash_b;
     share.hash_a = hash_a;
+    share.gpu_commit_a = commit_a;
+    share.gpu_commit_b = commit_b;
     share.a_slice = std::move(a_slice);
     share.a_opened_leaf_data = std::move(a_opened_leaf_data);
     share.a_leaf_cvs = std::move(a_leaf_cvs_host);
@@ -763,7 +788,8 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
                 " rows=" + std::to_string(share.a_row_indices.size()) +
                 " cols=" + std::to_string(share.b_col_indices.size()) +
                 " hash_a=" + hex_prefix(share.hash_a.data(), 32) +
-                " hash_b=" + hex_prefix(share.hash_b.data(), 32));
+                " hash_b=" + hex_prefix(share.hash_b.data(), 32) +
+                " commit_a=" + hex_prefix(share.gpu_commit_a.data(), 32));
 
     if (sink_) sink_->submit(share);
     return true;
