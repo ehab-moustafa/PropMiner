@@ -99,7 +99,8 @@ void MineBatchCache::save(int device_index, const MineBatchResult& result) {
     const std::string key_str = key.to_string();
 
     std::vector<std::string> lines;
-    if (std::ifstream in(cache_path())) {
+    std::ifstream in(cache_path());
+    if (in) {
         std::string line;
         while (std::getline(in, line)) {
             if (line.empty() || line[0] == '#') {
