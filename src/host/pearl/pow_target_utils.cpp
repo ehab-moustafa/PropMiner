@@ -85,6 +85,19 @@ uint32_t difficulty_to_nbits_pdif(double difficulty) {
     return target_be_to_nbits(be);
 }
 
+std::string nbits_to_target_hex_be(uint32_t nbits) {
+    const auto target = nbits_to_target_le(nbits);
+    std::string hex;
+    hex.reserve(64);
+    for (size_t i = 0; i < target.size(); ++i) {
+        char buf[3];
+        std::snprintf(buf, sizeof(buf), "%02x",
+                      static_cast<unsigned char>(target[i]));
+        hex += buf;
+    }
+    return hex;
+}
+
 uint32_t hex_target_to_nbits(const std::string& target_hex) {
     std::string h = target_hex;
     if (h.size() >= 2 && (h.rfind("0x", 0) == 0 || h.rfind("0X", 0) == 0)) {

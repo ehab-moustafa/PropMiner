@@ -33,12 +33,31 @@ void stratum_log(const std::string& msg) {
     std::cout << "pool: " << msg << std::endl;
 }
 
+double parse_password_difficulty(const std::string& password) {
+    const std::string key = ";d=";
+    size_t pos = password.find(key);
+    if (pos == std::string::npos) {
+        if (password.rfind("d=", 0) == 0) {
+            pos = 0;
+        } else {
+            return 0.0;
+        }
+    } else {
+        pos += 1;  // skip ';' so we land on "d="
+    }
+    const double diff = std::atof(password.c_str() + pos + 2);
+    return diff > 0.0 ? diff : 0.0;
+}
+
 }  // namespace
 
 PearlStratumClient::PearlStratumClient(const Options& opts) : opts_(opts) {
     if (const char* d = std::getenv("PROPMINER_STRATUM_DIFF"); d && d[0]) {
         const double req = std::atof(d);
         if (req > 0.0) last_difficulty_ = req;
+    }
+    if (const double pw_diff = parse_password_difficulty(opts_.password); pw_diff > 0.0) {
+        last_difficulty_ = pw_diff;
     }
 }
 
@@ -74,9 +93,7 @@ bool PearlStratumClient::connect() {
 
     stratum_log("stratum connected " + opts_.host + ":" + std::to_string(opts_.port));
 
-    if (!subscribe()) {
-        stratum_log("stratum subscribe skipped/failed; continuing to authorize");
-    }
+    // Pearl/Kryptex :7048 does not require mining.subscribe (ARC skips it too).
     if (!authorize()) {
         disconnect();
         return false;
@@ -296,17 +313,11 @@ bool PearlStratumClient::parse_notify_array(const propminer::JsonValue& params) 
     const std::string job_id = params[0].to_string();
     const std::string header = params[2].to_string();
     const int64_t height = params[3].is_number() ? params[3].to_int() : 0;
-    double diff = last_difficulty_ > 0 ? last_difficulty_ : 32.0;
+    const double diff = last_difficulty_ > 0 ? last_difficulty_ : 32.0;
     const uint32_t nbits = difficulty_to_nbits_pdif(diff);
-    std::array<uint8_t, 32> target_le = nbits_to_target_le(nbits);
-    std::string target_hex;
-    target_hex.reserve(64);
-    for (int i = 31; i >= 0; --i) {
-        char buf[3];
-        std::snprintf(buf, sizeof(buf), "%02x", target_le[static_cast<size_t>(i)]);
-        target_hex += buf;
-    }
+    const std::string target_hex = nbits_to_target_hex_be(nbits);
     auto ja = make_job(job_id, header, target_hex, height);
+    ja.target_nbits = nbits;
     if (job_cb_) job_cb_(ja, job_id);
     return true;
 }
@@ -385,9 +396,13 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
         b64.push_back(i > proof_bytes.size() ? '=' : tbl[triple & 0x3F]);
     }
     const int id = ++request_id_;
+    const std::string user = opts_.wallet + "." + opts_.worker;
+    // pearl/v1 pools (Kryptex :7048) require positional submit:
+    // [worker, job_id, plain_proof_b64]
     std::string line = "{\"id\":" + std::to_string(id) +
-                       ",\"method\":\"mining.submit\",\"params\":{\"job_id\":\"" +
-                       json_escape(job_id) + "\",\"plain_proof\":\"" + b64 + "\"}}";
+                       ",\"method\":\"mining.submit\",\"params\":[\"" +
+                       json_escape(user) + "\",\"" + json_escape(job_id) + "\",\"" +
+                       b64 + "\"]}";
     stratum_log("share submitting job=" + job_id.substr(0, std::min<size_t>(12, job_id.size())) +
                 " proof=" + std::to_string(proof_bytes.size()) + "B id=" + std::to_string(id));
     return send_line(line);

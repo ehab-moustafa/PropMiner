@@ -8,6 +8,7 @@
 #include "pearl/hashrate_metrics.h"
 #include "pearl/host_signal_header.h"
 #include "pearl/job_key.h"
+#include "pearl/pow_target_utils.h"
 #include "pearl/pearl_types.h"
 #include "pearl/rtx5090_profile.h"
 #include "pearl/kernel_knob_cache.h"
@@ -189,6 +190,27 @@ static void test_host_signal_header_index_extraction() {
     EXPECT(rows[15] == 128 + 60);
     EXPECT(cols[0] == 512);
     EXPECT(cols[15] == 512 + 15);
+}
+
+static void test_pow_target_stratum_nbits_roundtrip() {
+    const uint32_t nbits = difficulty_to_nbits_pdif(32768.0);
+    EXPECT(nbits == 0x1b01fffeu);
+
+    const std::string target_hex = nbits_to_target_hex_be(nbits);
+    EXPECT(target_hex.size() == 64u);
+    EXPECT(hex_target_to_nbits(target_hex) == nbits);
+
+    // Legacy bug: reversed byte order corrupted nbits to an impossibly hard target.
+    std::string reversed;
+    reversed.reserve(64);
+    for (int i = 31; i >= 0; --i) {
+        const auto target = nbits_to_target_le(nbits);
+        char buf[3];
+        std::snprintf(buf, sizeof(buf), "%02x",
+                      static_cast<unsigned char>(target[static_cast<size_t>(i)]));
+        reversed += buf;
+    }
+    EXPECT(hex_target_to_nbits(reversed) != nbits);
 }
 
 static void test_hashrate_metrics_math() {
@@ -441,6 +463,7 @@ int main() {
     test_reference_audit_index_derive();
     test_reference_claimed_hash_deterministic();
     test_host_signal_header_index_extraction();
+    test_pow_target_stratum_nbits_roundtrip();
     test_hashrate_metrics_math();
     test_mining_config_conservative();
     test_rtx5090_wave_alignment();
