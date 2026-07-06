@@ -24,19 +24,15 @@ link_soname() {
 
 link_soname libcudart.so.12.8.57 libcudart.so.12
 link_soname libcudart.so.12.8.57 libcudart.so
-link_soname libnvrtc.so.12.8.61 libnvrtc.so.12
-link_soname libcublas.so.12.8.3.14 libcublas.so.12
-link_soname libcublasLt.so.12.8.3.14 libcublasLt.so.12
-link_soname libnvJitLink.so.12.8.61 libnvJitLink.so.12
 
 cuda_lib_real="$(readlink -f "${CUDA_LIB}")"
 lib64_real="$(readlink -f "${LIB64}" 2>/dev/null || true)"
 if [[ -z "${lib64_real}" || "${lib64_real}" != "${cuda_lib_real}" ]]; then
     mkdir -p "${LIB64}"
-    for lib in libcudart libnvrtc libcublas libcublasLt libnvJitLink; do
-        ln -sf "${CUDA_LIB}/${lib}.so.12" "${LIB64}/${lib}.so.12"
-    done
-    ln -sf "${CUDA_LIB}/libcudart.so.12" "${LIB64}/libcudart.so"
+    if [[ -f "${CUDA_LIB}/libcudart.so.12" ]]; then
+        ln -sf "${CUDA_LIB}/libcudart.so.12" "${LIB64}/libcudart.so.12"
+        ln -sf "${CUDA_LIB}/libcudart.so.12" "${LIB64}/libcudart.so"
+    fi
 fi
 
 resolved="$(readlink -f "${CUDA_LIB}/libcudart.so.12")"

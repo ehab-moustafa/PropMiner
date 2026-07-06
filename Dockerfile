@@ -126,11 +126,8 @@ RUN BASE="https://developer.download.nvidia.com/compute/cuda/redist" && \
     mkdir -p "${DEST}" && \
     cd /tmp && \
     curl -fsSL -o cuda_cudart.tar.xz "${BASE}/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.8.57-archive.tar.xz" && \
-    curl -fsSL -o cuda_nvrtc.tar.xz "${BASE}/cuda_nvrtc/linux-x86_64/cuda_nvrtc-linux-x86_64-12.8.61-archive.tar.xz" && \
-    curl -fsSL -o libcublas.tar.xz "${BASE}/libcublas/linux-x86_64/libcublas-linux-x86_64-12.8.3.14-archive.tar.xz" && \
-    curl -fsSL -o libnvjitlink.tar.xz "${BASE}/libnvjitlink/linux-x86_64/libnvjitlink-linux-x86_64-12.8.61-archive.tar.xz" && \
-    for f in *.tar.xz; do tar -xf "$f" --strip-components=1 -C "${DEST}"; done && \
-    rm -f *.tar.xz
+    tar -xf cuda_cudart.tar.xz --strip-components=1 -C "${DEST}" && \
+    rm -f cuda_cudart.tar.xz
 
 COPY scripts/link_cuda_redist_libs.sh /tmp/link_cuda_redist_libs.sh
 RUN chmod +x /tmp/link_cuda_redist_libs.sh \

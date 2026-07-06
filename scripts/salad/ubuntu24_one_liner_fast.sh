@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Recommended SRBMiner-style Salad bootstrap: ubuntu:24.04 only.
 #
-# Downloads CUDA 12.8 redist from NVIDIA (~1 GB, mostly libcublas) plus the
-# small GitHub release tarball (~1.2 MB). Avoids PropMiner-Salad-Linux.tar.gz
-# (~1.55 GB from GitHub), which often stalls on rental hosts.
+# Downloads CUDA 12.8 cudart from NVIDIA (~1.3 MB) plus the small GitHub
+# release tarball (~1.2 MB). PropMiner uses custom GEMM cubins — not libcublas.
+# libcuda.so.1 comes from the Salad host driver (WSL /dev/dxg).
 #
 # Salad setup:
 #   Image: ubuntu:24.04
@@ -52,16 +52,9 @@ link_cuda_redist() {
     cd "${CUDA_DEST}"
     ln -sf libcudart.so.12.8.57 libcudart.so.12
     ln -sf libcudart.so.12.8.57 libcudart.so
-    ln -sf libnvrtc.so.12.8.61 libnvrtc.so.12
-    ln -sf libcublas.so.12.8.3.14 libcublas.so.12
-    ln -sf libcublasLt.so.12.8.3.14 libcublasLt.so.12
-    ln -sf libnvJitLink.so.12.8.61 libnvJitLink.so.12
 
     mkdir -p "${CUDA_LIB64}"
-    local lib
-    for lib in libcudart libnvrtc libcublas libcublasLt libnvJitLink; do
-        ln -sf "${CUDA_DEST}/${lib}.so.12" "${CUDA_LIB64}/${lib}.so.12"
-    done
+    ln -sf "${CUDA_DEST}/libcudart.so.12" "${CUDA_LIB64}/libcudart.so.12"
     ln -sf "${CUDA_DEST}/libcudart.so.12" "${CUDA_LIB64}/libcudart.so"
 
     if [[ ! -f "$(readlink -f "${CUDA_DEST}/libcudart.so.12")" ]]; then
@@ -127,9 +120,6 @@ apt-get install -y curl ca-certificates libssl3
 mkdir -p "${CUDA_DEST}" "${CUDA_LIB64}" "${PM_DIR}"
 
 curl_pkg cuda_cudart 12.8.57
-curl_pkg cuda_nvrtc 12.8.61
-curl_pkg libcublas 12.8.3.14
-curl_pkg libnvjitlink 12.8.61
 link_cuda_redist
 
 echo "[release] downloading ${ASSET}"
