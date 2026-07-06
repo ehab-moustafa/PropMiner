@@ -130,7 +130,8 @@ namespace {
                                std::array<uint8_t, 32>& hashB,
                                const char* stage) {
         if (a_proof.root.size() < 32 || b_proof.root.size() < 32) {
-            share_log(std::string(stage) + "-fail",
+            const std::string tag = std::string(stage) + "-fail";
+            share_log(tag.c_str(),
                       "nonce=" + std::to_string(share.nonce) +
                           " reason=missing_proof_root");
             return false;
@@ -139,7 +140,8 @@ namespace {
         std::memcpy(hashB.data(), b_proof.root.data(), 32);
         if (hash_bytes_set(share.hash_a) &&
             std::memcmp(hashA.data(), share.hash_a.data(), 32) != 0) {
-            share_log(std::string(stage) + "-fail",
+            const std::string tag = std::string(stage) + "-fail";
+            share_log(tag.c_str(),
                       "nonce=" + std::to_string(share.nonce) +
                           " reason=hash_a_proof_mismatch proof=" +
                           hex_prefix(hashA.data(), 32) +
@@ -148,7 +150,8 @@ namespace {
         }
         if (hash_bytes_set(share.hash_b) &&
             std::memcmp(hashB.data(), share.hash_b.data(), 32) != 0) {
-            share_log(std::string(stage) + "-fail",
+            const std::string tag = std::string(stage) + "-fail";
+            share_log(tag.c_str(),
                       "nonce=" + std::to_string(share.nonce) +
                           " reason=hash_b_proof_mismatch proof=" +
                           hex_prefix(hashB.data(), 32) +
