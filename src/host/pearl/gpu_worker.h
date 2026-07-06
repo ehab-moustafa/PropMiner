@@ -142,6 +142,7 @@ private:
                                const std::vector<uint8_t>& header,
                                const std::shared_ptr<SigmaContext>& ctx);
     bool process_share_trigger(const ShareTriggerJob& job);
+    bool process_share_trigger_impl(const ShareTriggerJob& job);
     void share_gpu_loop();
     void wait_until_half_free(HalfBuffers& half);
     void start_share_gpu_thread();

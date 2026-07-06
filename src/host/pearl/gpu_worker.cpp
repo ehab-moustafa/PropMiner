@@ -629,6 +629,16 @@ bool GpuWorker::wait_for_batch(HalfBuffers& half, int timeout_ms) {
 }
 
 bool GpuWorker::process_share_trigger(const ShareTriggerJob& job) {
+    try {
+        return process_share_trigger_impl(job);
+    } catch (const std::exception& ex) {
+        share_log("rebuild-fail", "nonce=" + std::to_string(job.nonce) +
+                                  " reason=cuda_error err=" + ex.what());
+        return false;
+    }
+}
+
+bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
     HalfBuffers& half = *job.half;
     const SigmaContext& ctx = *job.sigma_ctx;
 
@@ -674,15 +684,16 @@ bool GpuWorker::process_share_trigger(const ShareTriggerJob& job) {
         device_index_,
         half.stream);
 
-    gemm_.commitment_hash_from_merkle_roots(
-        reinterpret_cast<const uint8_t*>(half.a_hash),
-        reinterpret_cast<const uint8_t*>(ctx.resident().b_hash()),
-        ctx.job().job_key.data(),
-        reinterpret_cast<uint8_t*>(half.commit_a),
-        reinterpret_cast<uint8_t*>(half.commit_b),
-        device_index_,
-        half.stream);
+    // a_hash is the Merkle root used for noise seeds; D2H for share_builder.
+    // Do NOT call commitment_hash_from_merkle_roots here — that kernel reads
+    // key/AHash/BHash from device memory only (see pearl_capi_iter). Passing
+    // job_key.data() (host) caused illegal memory access on share rebuild.
 
+    if (!half.pinned_hash_a) {
+        share_log("rebuild-fail", "nonce=" + std::to_string(job.nonce) +
+                                  " reason=missing_pinned_hash_a");
+        return false;
+    }
     check_cuda(cuMemcpyDtoHAsync(half.pinned_hash_a, half.a_hash, 32,
                                  half.stream), "a_hash d2h");
     // D2H compact proof inputs into pinned staging (single PCIe sync below).
