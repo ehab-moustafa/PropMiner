@@ -7,9 +7,13 @@
 #include <iostream>
 #include <random>
 #include <cstdio>
+#include <string>
 
 #include "gpu_tuner.h"
+#include "hashrate_metrics.h"
 #include "job_key.h"
+#include "kernel_knob_cache.h"
+#include "mine_batch_cache.h"
 #include "pearl_capi_wrapper.h"
 #include "rtx5090_profile.h"
 #include "share_builder.h"
@@ -21,6 +25,93 @@ namespace {
     int64_t now_unix_ms() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+
+    HashrateMetrics aggregate_worker_metrics(const std::vector<std::unique_ptr<GpuWorker>>& workers,
+                                             const MiningConfig& cfg) {
+        HashrateMetrics total{};
+        total.m = cfg.m;
+        total.n = cfg.n;
+        total.k = cfg.k;
+        double batch_ms_sum = 0.0;
+        int batch_ms_count = 0;
+        for (const auto& w : workers) {
+            total.tmad_per_sec += w->tmads_per_sec();
+            total.protocol_hps += w->hashrate();
+            const double batch_ms = w->last_iter_ms();
+            if (batch_ms > 0.0) {
+                batch_ms_sum += batch_ms;
+                ++batch_ms_count;
+            }
+            if (total.batch == 0) {
+                total.batch = w->matmuls_per_poll();
+            }
+        }
+        if (batch_ms_count > 0) {
+            total.batch_ms = batch_ms_sum / static_cast<double>(batch_ms_count);
+        }
+        if (total.tmad_per_sec > 0.0) {
+            total.tops_pct =
+                (total.tmad_per_sec * 1e12 / kRtx5090RatedInt8Tops) * 100.0;
+        }
+        const double daf = static_cast<double>(cfg.difficulty_adjustment_factor());
+        if (daf > 0.0 && total.protocol_hps > 0.0) {
+            total.tiles_per_sec = total.protocol_hps / daf;
+        }
+        if (total.batch_ms > 0.0 && total.batch > 0) {
+            total.iters_per_sec =
+                (static_cast<double>(total.batch) * 1000.0) / total.batch_ms;
+        }
+        return total;
+    }
+
+    int normalize_cluster_m(int cluster_m) {
+        if (cluster_m == 2 || cluster_m == 4) return cluster_m;
+        if (cluster_m == 3) {
+            std::fprintf(stderr,
+                "[orchestrator] WARN: cluster_m=3 unsupported; using 1\n");
+            return 1;
+        }
+        return 1;
+    }
+
+    bool bench_json_enabled() {
+        const char* env = std::getenv("PROPMINER_BENCH_JSON");
+        return env && env[0] != '\0' && std::strcmp(env, "0") != 0;
+    }
+
+    int bench_grace_seconds() {
+        const char* env = std::getenv("PROPMINER_BENCH_GRACE_SECONDS");
+        if (env && env[0] != '\0') {
+            return std::max(0, std::atoi(env));
+        }
+        return 60;
+    }
+
+    std::string resolve_git_sha() {
+        if (const char* env = std::getenv("PROP_MINER_GIT_SHA");
+            env && env[0] != '\0') {
+            return env;
+        }
+        std::string sha;
+        FILE* pipe = popen("git rev-parse --short HEAD 2>/dev/null", "r");
+        if (pipe) {
+            char buf[64] = {};
+            if (std::fgets(buf, sizeof(buf), pipe)) {
+                size_t len = std::strlen(buf);
+                while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+                    buf[--len] = '\0';
+                }
+                if (len > 0) sha.assign(buf, len);
+            }
+            pclose(pipe);
+        }
+        if (!sha.empty()) return sha;
+#ifdef PROP_MINER_GIT_SHA
+        return PROP_MINER_GIT_SHA;
+#else
+        return "unknown";
+#endif
     }
 }
 
@@ -206,6 +297,10 @@ void WorkerOrchestrator::share_sender_thread_func() {
                 continue;
             }
             ShareBuilder builder(raw.job.config);
+            if (!ShareBuilder::VerifyShare(raw, *raw.sigma_ctx)) {
+                std::cerr << "share dropped: VerifyShare failed\n";
+                continue;
+            }
             auto proof = builder.build(raw, *raw.sigma_ctx);
             if (proof.empty()) {
                 std::cerr << "share dropped: stale target or build failed\n";
@@ -281,35 +376,90 @@ int WorkerOrchestrator::run() {
     }
 
     MiningConfig tuned_config = cfg_.mining_config;
+    const int profile_n = cfg_.mining_config.n;
     int tuned_batch = cfg_.batch_size;
-    int tuned_cluster_m = 1;
+    int tuned_cluster_m = Rtx5090Profile::kProdDefaultClusterM;
     int tuned_carveout = -1;
 
     const char* cluster_env = std::getenv("PEARL_GEMM_CONSUMER_CLUSTER_M");
     if (cluster_env && cluster_env[0]) {
-        tuned_cluster_m = std::max(1, std::atoi(cluster_env));
+        tuned_cluster_m = normalize_cluster_m(std::max(1, std::atoi(cluster_env)));
     }
-    MiningConfig::warn_if_cluster_m_mismatch(tuned_cluster_m);
+
+    GemmCapi capi;
+    if (const int kv = capi.validate_kernel_selection(); kv != 0) {
+        return 1;
+    }
+    const char* built_knobs = capi.build_knobs();
+    std::cerr << "[orchestrator] Active transcript kernel: "
+              << (capi.active_kernel_name() ? capi.active_kernel_name()
+                                            : "unknown")
+              << "\n";
+    KernelKnobCache knob_cache;
+    for (int idx : indices) {
+        if (auto cached = knob_cache.load(idx)) {
+            if (auto err = KernelKnobCache::strict_validate(built_knobs, *cached)) {
+                std::cerr << "[orchestrator] ERROR: PROPMINER_STRICT_KNOB_CACHE=1: "
+                          << *err << " (GPU " << idx << ")\n";
+                return 1;
+            }
+            if (built_knobs &&
+                !KernelKnobCache::manifest_matches(built_knobs,
+                                                   cached->manifest.c_str())) {
+                std::cerr << "[orchestrator] WARN: built kernel knobs ("
+                          << built_knobs << ") != cached sweep winner ("
+                          << cached->manifest << ")\n";
+            } else if (cached->self_test_ok) {
+                std::cerr << "[orchestrator] Kernel knob cache GPU " << idx
+                          << ": " << cached->manifest << " ("
+                          << cached->hashrate << " H/s)\n";
+            }
+        }
+    }
+
+    const char* autotune_env = std::getenv("PROPMINER_AUTOTUNE");
+    const bool force_autotune =
+        autotune_env && std::strcmp(autotune_env, "force") == 0;
+
+    // Offline tune cache: cluster/carveout only (N and batch stay on production path).
+    if (cfg_.use_tune_cache && !cfg_.autotune && cfg_.speed_test_seconds == 0) {
+        TuneCache tune_cache;
+        for (int idx : indices) {
+            if (auto cached = tune_cache.load(idx)) {
+                tuned_cluster_m = normalize_cluster_m(cached->cluster_m);
+                tuned_carveout = cached->carveout_percent;
+                std::cerr << "[orchestrator] Tune cache GPU " << idx
+                          << ": cluster_m=" << tuned_cluster_m
+                          << " carveout=" << tuned_carveout
+                          << " (N=" << tuned_config.n
+                          << ", batch via mine_batch cache)\n";
+            }
+        }
+    }
+
+    MiningConfig::warn_if_cluster_mismatch(tuned_cluster_m);
 
     TuneCache tune_cache;
     if (cfg_.autotune && cfg_.speed_test_seconds == 0) {
         // Try the persistent cache first so reconnects pick up the last good
         // config without re-benchmarking.
         bool cache_hit = false;
-        for (int idx : indices) {
-            if (auto cached = tune_cache.load(idx)) {
-                tuned_config = cached->config;
-                tuned_batch = cached->batch_size;
-                tuned_cluster_m = cached->cluster_m;
-                tuned_carveout = cached->carveout_percent;
-                cache_hit = true;
-                std::cerr << "[orchestrator] Using cached autotune for GPU "
-                          << idx << " (M=" << tuned_config.m
-                          << " N=" << tuned_config.n
-                          << " batch=" << tuned_batch
-                          << " graph=" << (cached->use_graph ? "yes" : "no")
-                          << ")" << std::endl;
+        if (!force_autotune) {
+            for (int idx : indices) {
+                if (auto cached = tune_cache.load(idx)) {
+                    tuned_cluster_m = normalize_cluster_m(cached->cluster_m);
+                    tuned_carveout = cached->carveout_percent;
+                    cache_hit = true;
+                    std::cerr << "[orchestrator] Using cached autotune dispatch for GPU "
+                              << idx << " (cluster_m=" << tuned_cluster_m
+                              << " carveout=" << tuned_carveout
+                              << "; N/batch unchanged from production path)"
+                              << std::endl;
+                }
             }
+        } else {
+            std::cerr << "[orchestrator] PROPMINER_AUTOTUNE=force: "
+                         "ignoring runtime autotune cache\n";
         }
 
         if (!cache_hit) {
@@ -320,20 +470,68 @@ int WorkerOrchestrator::run() {
                 if (result.hashrate > 0.0) {
                     tuned_config = result.config;
                     tuned_batch = result.batch_size;
-                    tuned_cluster_m = result.cluster_m;
+                    tuned_cluster_m = normalize_cluster_m(result.cluster_m);
                     tuned_carveout = result.carveout_percent;
                     tune_cache.save(idx, result);
                 }
             }
-            if (tuned_cluster_m > 1) {
-                setenv("PEARL_GEMM_CONSUMER_CLUSTER_M",
-                       std::to_string(tuned_cluster_m).c_str(), 1);
-            }
-            if (tuned_carveout >= 0) {
-                setenv("PEARL_GEMM_CONSUMER_CARVEOUT",
-                       std::to_string(tuned_carveout).c_str(), 1);
+        }
+
+        if (tuned_config.m == Rtx5090Profile::kDefaultM &&
+            tuned_config.n < profile_n) {
+            std::cerr << "[orchestrator] RTX 5090: clamping autotune N "
+                      << tuned_config.n << " -> " << profile_n << "\n";
+            tuned_config.n = profile_n;
+        }
+        if (tuned_config.m == Rtx5090Profile::kDefaultM &&
+            tuned_batch > Rtx5090Profile::kMaxMineBatch) {
+            std::cerr << "[orchestrator] RTX 5090: clamping autotune batch "
+                      << tuned_batch << " -> " << Rtx5090Profile::kMaxMineBatch
+                      << "\n";
+            tuned_batch = Rtx5090Profile::kMaxMineBatch;
+        }
+    } else if (cfg_.speed_test_seconds == 0 &&
+               tuned_config.m == Rtx5090Profile::kDefaultM) {
+        tuned_batch = MineBatchCache::resolve(
+            indices.empty() ? 0 : indices[0],
+            tuned_config.m, tuned_config.n,
+            cfg_.batch_size > 0 ? cfg_.batch_size : Rtx5090Profile::kDefaultMineBatch);
+
+        const char* batch_tune_env = std::getenv("PROPMINER_BATCH_TUNE");
+        if (batch_tune_env && batch_tune_env[0] == '1' && !std::getenv("PROPMINER_BATCH")) {
+            std::cerr << "[orchestrator] Running mine batch autotune..." << std::endl;
+            for (int idx : indices) {
+                GpuTuner tuner(idx);
+                auto result = tuner.tune_mine_batch(tuned_config, 12.0, 2);
+                if (result.hashrate > 0.0) {
+                    tuned_batch = result.batch_size;
+                    MineBatchResult cached;
+                    cached.m = tuned_config.m;
+                    cached.n = tuned_config.n;
+                    cached.batch = tuned_batch;
+                    cached.hashrate = result.hashrate;
+                    cached.use_graph = result.use_graph;
+                    MineBatchCache cache;
+                    cache.save(idx, cached);
+                }
             }
         }
+    }
+
+    const bool bench_mode = cfg_.speed_test_seconds > 0;
+    if (!bench_mode && tuned_config.m == Rtx5090Profile::kDefaultM) {
+        setenv("PEARL_GEMM_CONSUMER_CLUSTER_M",
+               std::to_string(tuned_cluster_m).c_str(), 1);
+        if (tuned_carveout >= 0) {
+            setenv("PEARL_GEMM_CONSUMER_CARVEOUT",
+                   std::to_string(tuned_carveout).c_str(), 1);
+        }
+        std::cerr << "[orchestrator] RTX 5090 prod: cluster_m=" << tuned_cluster_m;
+        if (tuned_carveout >= 0) {
+            std::cerr << " carveout=" << tuned_carveout << "%";
+        }
+        std::cerr << " (tune cache "
+                  << (cfg_.use_tune_cache ? "on" : "off") << ")\n";
     }
 
     const bool rtx5090_shape =
@@ -355,7 +553,6 @@ int WorkerOrchestrator::run() {
                   << " batch=" << tuned_batch << "\n";
     }
 
-    const bool bench_mode = cfg_.speed_test_seconds > 0;
     if (!bench_mode) {
         std::cerr << "[orchestrator] Production mine mode: pool "
                   << cfg_.pool_host << ":" << cfg_.pool_port
@@ -379,7 +576,9 @@ int WorkerOrchestrator::run() {
 
     uint32_t bench_target_nbits = 0;
     std::shared_ptr<SigmaContext> bench_ctx;
+    std::string bench_git_sha;
     if (bench_mode) {
+        bench_git_sha = resolve_git_sha();
         Job job;
         job.sigma.fill(0xab);
         job.b_seed.fill(0xcd);
@@ -389,9 +588,8 @@ int WorkerOrchestrator::run() {
         job.target_nbits = 0x01111111;
         bench_target_nbits = job.target_nbits;
         bench_ctx = std::make_shared<SigmaContext>(job, tuned_config);
-        // Full production batch (20) can take >2 min per graph launch on WSL2.
-        // Use a smaller batch so at least one completes inside the bench window.
-        int bench_batch = 4;
+        // WSL2/Salad: batch=1 finishes inside the 180s bench window; batch=4 may not.
+        int bench_batch = 1;
         if (const char* bb = std::getenv("PROPMINER_BENCH_BATCH")) {
             bench_batch = std::max(1, std::atoi(bb));
         }
@@ -400,6 +598,10 @@ int WorkerOrchestrator::run() {
         std::cerr << "[orchestrator] Benchmark mode: local job, no pool connection"
                   << " (batch=" << tuned_batch
                   << " graph=" << (bench_graph ? "on" : "off") << ")\n";
+        std::cerr << "[orchestrator] Bench reports TMAD/s (= pool/community TH/s) "
+                     "and protocol H/s (DAF-normalized; ~1000x smaller label)\n";
+        std::cerr << "[orchestrator] Set PROPMINER_BENCH_JSON=1 for one-line JSON "
+                     "at bench end (track optimizations over time)\n";
     }
 
     for (int idx : indices) {
@@ -425,25 +627,82 @@ int WorkerOrchestrator::run() {
     }
 
     // Stats loop.
+    const int bench_grace_sec =
+        cfg_.speed_test_seconds > 0 ? bench_grace_seconds() : 0;
+    const int bench_max_seconds =
+        cfg_.speed_test_seconds > 0
+            ? cfg_.speed_test_seconds + bench_grace_sec
+            : 0;
+
     while (!stop_flag_) {
         std::this_thread::sleep_for(std::chrono::seconds(5));
-        double h = 0.0;
-        for (auto& w : workers_) h += w->hashrate();
-        total_hashrate_ = h;
-        std::cout << "hashrate: " << h << " H/s" << std::endl;
+        const HashrateMetrics metrics =
+            aggregate_worker_metrics(workers_, tuned_config);
+        total_hashrate_ = metrics.protocol_hps;
+        uint64_t bench_iters = 0;
+        for (auto& w : workers_) {
+            bench_iters += w->total_iters();
+        }
+
+        if (metrics.tmad_per_sec > 0.0 || metrics.protocol_hps > 0.0) {
+            print_hashrate_metrics_line(stdout, "hashrate: ", metrics);
+        } else {
+            std::cout << "hashrate: waiting for first batch..." << std::endl;
+        }
         if (cfg_.speed_test_seconds > 0) {
             static int elapsed = 0;
             elapsed += 5;
-            if (h == 0.0 && elapsed >= 30 && (elapsed % 30 == 0)) {
+            if (metrics.protocol_hps == 0.0 && metrics.tmad_per_sec == 0.0 &&
+                elapsed >= 30 && (elapsed % 30 == 0)) {
                 std::cerr << "[bench] " << elapsed << "s elapsed, still awaiting first "
-                          << "batch completion (check nvidia-smi for GPU util)\n";
+                          << "batch completion (iters=" << bench_iters
+                          << "; check nvidia-smi for GPU util)\n";
             }
             if (elapsed >= cfg_.speed_test_seconds) {
-                std::cout << "benchmark complete: " << h << " H/s" << std::endl;
-                std::cerr << "[bench] finished after " << elapsed << "s, final "
-                          << h << " H/s\n";
-                stop();
-                break;
+                bool finish = false;
+                HashrateMetrics final_metrics = metrics;
+                if (bench_iters > 0) {
+                    final_metrics = hashrate_metrics_from_iters(
+                        tuned_config, bench_iters, elapsed, tuned_batch);
+                    total_hashrate_ = final_metrics.protocol_hps;
+                }
+                if (final_metrics.protocol_hps > 0.0 ||
+                    final_metrics.tmad_per_sec > 0.0) {
+                    finish = true;
+                } else if (elapsed >= bench_max_seconds) {
+                    finish = true;
+                    std::cerr << "[bench] no completed batch after " << elapsed
+                              << "s (iters=" << bench_iters << ")\n";
+                } else if (elapsed == cfg_.speed_test_seconds) {
+                    std::cerr << "[bench] extending up to " << bench_max_seconds
+                              << "s grace for first batch (iters="
+                              << bench_iters << ")\n";
+                }
+
+                if (finish) {
+                    if (final_metrics.protocol_hps > 0.0 ||
+                        final_metrics.tmad_per_sec > 0.0) {
+                        std::cout << "benchmark complete" << std::endl;
+                        print_hashrate_metrics_line(stdout, "benchmark: ", final_metrics);
+                        std::cerr << "[bench] finished after " << elapsed << "s\n";
+                        print_hashrate_metrics_line(stderr, "[bench] ", final_metrics);
+                        if (bench_json_enabled()) {
+                            print_hashrate_metrics_json(
+                                stdout, final_metrics, tuned_config,
+                                elapsed, bench_iters, cfg_.speed_test_seconds,
+                                bench_git_sha.c_str(),
+                                cfg_.miner_version.c_str());
+                        }
+                    } else {
+                        std::cout << "benchmark incomplete: no completed batch"
+                                  << std::endl;
+                        std::cerr << "[bench] finished after " << elapsed
+                                  << "s with no completed batch (iters="
+                                  << bench_iters << ")\n";
+                    }
+                    stop();
+                    break;
+                }
             }
         }
     }

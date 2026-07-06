@@ -14,7 +14,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${ROOT}/build"
-BENCH_SECONDS="${1:-60}"
+BENCH_SECONDS="${1:-180}"
 
 mkdir -p "${BUILD_DIR}"
 
@@ -54,7 +54,18 @@ ls -lh "${BUILD_DIR}/propminer" "${BUILD_DIR}/libpearl_gemm_capi.so" "${BUILD_DI
 
 # Run the built-in benchmark on GPU 0 with the RTX 5090 hard-coded profile.
 echo "[bench] Running ${BENCH_SECONDS}s benchmark with --rtx5090 profile..."
+RESULTS_DIR="${ROOT}/results"
+mkdir -p "${RESULTS_DIR}"
+LOG="${RESULTS_DIR}/benchmark_$(date +%Y%m%d_%H%M%S).log"
 cd "${BUILD_DIR}"
-./propminer --bench "${BENCH_SECONDS}" --rtx5090 --gpus 0
+PROPMINER_BENCH_JSON=1 ./propminer --bench "${BENCH_SECONDS}" --rtx5090 --gpus 0 \
+    2>&1 | tee "${LOG}"
 
+JSON_LINE="$(grep '"tmad_per_sec"' "${LOG}" | tail -1 || true)"
+if [[ -n "${JSON_LINE}" ]]; then
+    echo "${JSON_LINE}" >> "${RESULTS_DIR}/bench_history.jsonl"
+    echo "[bench] Appended to ${RESULTS_DIR}/bench_history.jsonl"
+fi
+
+echo "[bench] Log: ${LOG}"
 echo "[bench] Done."

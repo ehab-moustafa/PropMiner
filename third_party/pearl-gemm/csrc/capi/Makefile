@@ -242,11 +242,37 @@ ifeq ($(PEARL_GEMM_ARCH),blackwell)
   ifneq ($(PEARL_GEMM_BLACKWELL_BN),)
     DEFINES += -DPEARL_CONSUMER_BN=$(PEARL_GEMM_BLACKWELL_BN)
   endif
+  PEARL_GEMM_BLACKWELL_KBLOCK_VAL := $(if $(PEARL_GEMM_BLACKWELL_KBLOCK),$(PEARL_GEMM_BLACKWELL_KBLOCK),128)
+  PEARL_GEMM_BLACKWELL_STAGES_VAL := $(if $(PEARL_GEMM_BLACKWELL_STAGES),$(PEARL_GEMM_BLACKWELL_STAGES),2)
+  PEARL_GEMM_BLACKWELL_SWIZZLE_VAL := $(if $(PEARL_GEMM_BLACKWELL_SWIZZLE_BITS),$(PEARL_GEMM_BLACKWELL_SWIZZLE_BITS),3)
+  PEARL_GEMM_BLACKWELL_MIN_BLOCKS_VAL := $(if $(PEARL_GEMM_BLACKWELL_MIN_BLOCKS),$(PEARL_GEMM_BLACKWELL_MIN_BLOCKS),1)
+  PEARL_GEMM_BLACKWELL_LOAD_POLICY_VAL := $(if $(PEARL_GEMM_BLACKWELL_LOAD_POLICY),$(PEARL_GEMM_BLACKWELL_LOAD_POLICY),cp_async)
+  PEARL_GEMM_BUILD_KNOBS_STR := k$(PEARL_GEMM_BLACKWELL_KBLOCK_VAL)-s$(PEARL_GEMM_BLACKWELL_STAGES_VAL)-sw$(PEARL_GEMM_BLACKWELL_SWIZZLE_VAL)-mb$(PEARL_GEMM_BLACKWELL_MIN_BLOCKS_VAL)-$(PEARL_GEMM_BLACKWELL_LOAD_POLICY_VAL)
   ifeq ($(PEARL_GEMM_BLACKWELL_LOAD_POLICY),tma)
     DEFINES += -DPEARL_CONSUMER_USE_TMA_EXPERIMENT=1
   else ifneq ($(PEARL_GEMM_BLACKWELL_LOAD_POLICY),cp_async)
     $(error PEARL_GEMM_BLACKWELL_LOAD_POLICY=$(PEARL_GEMM_BLACKWELL_LOAD_POLICY) not recognised. Supported: cp_async, tma)
   endif
+  # Optional RTX 5090 warp-specialized TMA+IMMA kernel (NOT tcgen05 — see
+  # external_repos/README.md). Default OFF; production stays consumer::.
+  PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL ?=
+  ifeq ($(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL),1)
+    SRCS_BLACKWELL += $(SRC)/blackwell/transcript_gemm_sm120_geforce.cu
+    DEFINES += -DPEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1
+    PEARL_GEMM_BUILD_KNOBS_STR := $(PEARL_GEMM_BUILD_KNOBS_STR)+geforce
+    PEARL_SM120_GEFORCE_VERIFY_MAIN ?=
+    ifeq ($(PEARL_SM120_GEFORCE_VERIFY_MAIN),1)
+      VERIFY_GEFORCE_BUILD := $(BUILD)/verify_geforce
+      VERIFY_GEFORCE_TARGET := $(BUILD)/verify_transcript_sm120_geforce
+      VERIFY_GEFORCE_DEFINES := -DPEARL_SM120_GEFORCE_VERIFY_MAIN
+      VERIFY_GEFORCE_SRCS := \
+        $(SRC)/blackwell/transcript_gemm_sm120_geforce.cu \
+        $(SRC)/consumer/transcript_gemm_kernel.cu \
+        $(SRC)/portable/transcript_kernel.cu
+      VERIFY_GEFORCE_OBJS := $(patsubst $(SRC)/%, $(VERIFY_GEFORCE_BUILD)/%.o, $(VERIFY_GEFORCE_SRCS))
+    endif
+  endif
+  DEFINES += -DPEARL_GEMM_BUILD_KNOBS=\"$(PEARL_GEMM_BUILD_KNOBS_STR)\"
 endif
 
 # Base flags common to every COMPILE. $(ARCH) is intentionally left out here so
@@ -373,8 +399,12 @@ OBJS := $(patsubst $(SRC)/%, $(BUILD)/%.o, $(SRCS))
 
 LDLIBS := -lcuda -lcudart -lstdc++ $(EXTRA_LDLIBS)
 
-.PHONY: all clean generate-static-switches
+.PHONY: all clean generate-static-switches verify-geforce-transcript
+ifneq ($(VERIFY_GEFORCE_TARGET),)
+all: $(TARGET) $(VERIFY_GEFORCE_TARGET)
+else
 all: $(TARGET)
+endif
 	@echo "==> built libpearl_gemm_capi.so for PEARL_GEMM_ARCH=$(PEARL_GEMM_ARCH)"
 
 $(TARGET): $(STATIC_SWITCH_HEADERS) $(OBJS) | $(BUILD)
@@ -400,6 +430,23 @@ generate-static-switches:
 
 $(BUILD):
 	@mkdir -p $(BUILD)
+
+ifneq ($(VERIFY_GEFORCE_TARGET),)
+VERIFY_GEFORCE_NVCC_FLAGS := $(NVCC_FLAGS_BASE) $(LINK_ARCH) $(INCLUDES) $(DEFINES) $(VERIFY_GEFORCE_DEFINES)
+
+$(VERIFY_GEFORCE_TARGET): $(VERIFY_GEFORCE_OBJS) | $(BUILD) $(VERIFY_GEFORCE_BUILD)
+	$(NVCC) $(LINK_ARCH) -o $@ $(VERIFY_GEFORCE_OBJS) -lcuda -lcudart -lstdc++
+	@echo "==> $@"
+
+$(VERIFY_GEFORCE_BUILD)/%.cu.o: $(SRC)/%.cu | $(VERIFY_GEFORCE_BUILD)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(VERIFY_GEFORCE_NVCC_FLAGS) -c $< -o $@
+
+$(VERIFY_GEFORCE_BUILD):
+	@mkdir -p $(VERIFY_GEFORCE_BUILD)
+
+verify-geforce-transcript: $(VERIFY_GEFORCE_TARGET)
+endif
 
 clean:
 	rm -rf $(BUILD)

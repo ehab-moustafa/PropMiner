@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Route container start by PROPMINER_MODE:
-#   full      — self-test + 120s benchmark (default for zero-config Salad validation)
+#   full      — self-test + 180s benchmark (default for zero-config Salad validation)
 #   test      — quick self-test only
 #   mine      — connect to pool and mine until stopped (requires PROPMINER_WALLET)
+#   tune      — offline kernel-knob sweep (KBLOCK/STAGES/SWIZZLE/MIN_BLOCKS)
+#   batch-tune — offline mine batch sweep at production N
+#   cluster-tune — cluster_m {1,2,4} sweep + full runtime autotune
+#   tune-prod    — full 5090 prod tune (knobs + cluster + batch)
 set -euo pipefail
 
 MODE_RAW="${PROPMINER_MODE:-full}"
@@ -28,9 +32,27 @@ case "${MODE}" in
         export PROPMINER_SKIP_NCU=1
         exec ./scripts/remote_test_kit.sh
         ;;
+    tune|knob-tune|knobs)
+        exec ./scripts/tune_blackwell_knobs.sh "$@"
+        ;;
+    batch-tune|batch_tune)
+        exec ./scripts/tune_mine_batch.sh "$@"
+        ;;
+    cluster-tune|cluster_tune)
+        exec ./scripts/tune_cluster_sweep.sh "$@"
+        ;;
+    tune-prod|tune_prod|prod-tune)
+        exec ./scripts/tune_prod_5090.sh "$@"
+        ;;
+    remaining|run-remaining|validate)
+        exec ./scripts/run_remaining_5090.sh "$@"
+        ;;
+    verify-geforce|geforce-verify)
+        exec ./scripts/verify_geforce_transcript.sh
+        ;;
     *)
         echo "[entrypoint] ERROR: unknown PROPMINER_MODE='${MODE_RAW}'." >&2
-        echo "[entrypoint] Valid values: full, test, mine (or mining)." >&2
+        echo "[entrypoint] Valid values: full, test, mine, tune, batch-tune, cluster-tune, tune-prod." >&2
         exit 1
         ;;
 esac

@@ -6,7 +6,7 @@
 #   - Installs build deps if they are missing.
 #   - Builds PropMiner targeting sm_120a (Blackwell consumer, RTX 5090).
 #   - Runs correctness self-test (no pool connection).
-#   - Runs a 60-second hashrate benchmark.
+#   - Runs a 180-second hashrate benchmark (60s grace if first batch is slow).
 #   - Profiles the GEMM kernel with ncu if available.
 #   - Sweeps a small, high-value set of Blackwell kernel knobs.
 #   - Writes all logs and numbers to results/ for easy upload.
@@ -31,8 +31,12 @@ RESULTS_DIR="${ROOT}/results"
 mkdir -p "${RESULTS_DIR}"
 PROPMINER_LOG_DIR="${RESULTS_DIR}"
 source "${ROOT}/scripts/setup_cuda_env.sh"
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/tune_kernel_knobs_common.sh"
 
-BENCH_SECONDS="${PROPMINER_BENCH_SECONDS:-60}"
+BENCH_SECONDS="${PROPMINER_BENCH_SECONDS:-180}"
+BENCH_GRACE_SECONDS="${PROPMINER_BENCH_GRACE_SECONDS:-60}"
+export PROPMINER_BENCH_GRACE_SECONDS="${BENCH_GRACE_SECONDS}"
 SWEEP_SECONDS=15
 # Quick Salad loop: self-test only unless explicitly enabled.
 SKIP_SWEEP="${PROPMINER_SKIP_SWEEP:-1}"
@@ -247,6 +251,10 @@ fi
 
 ls -lh "${BUILD_DIR}/propminer" "${BUILD_DIR}/libpearl_gemm_capi.so" "${BUILD_DIR}/libpearl_mining_capi.so" | tee "${RESULTS_DIR}/binaries.txt"
 
+BUILT_KNOBS="$(strings "${BUILD_DIR}/libpearl_gemm_capi.so" 2>/dev/null \
+    | grep -E '^k[0-9]+-s[0-9]+-sw[0-9]+-mb[0-9]+-' | head -1 || true)"
+echo "[build] Kernel knob manifest: ${BUILT_KNOBS:-unknown}" | tee -a "${RESULTS_DIR}/summary.txt"
+
 # ── 5. Correctness self-test (no pool, no real mining) ─────────────────────
 echo "[test] Running self-test..." | tee -a "${RESULTS_DIR}/summary.txt"
 set +o pipefail
@@ -274,9 +282,7 @@ bench_log() {
 }
 
 extract_bench_rate() {
-    local logfile="${1}"
-    grep 'benchmark complete:' "${logfile}" 2>/dev/null | tail -1 \
-        | sed -E 's/.*benchmark complete:[[:space:]]*([0-9.eE+-]+).*/\1/' || echo "0"
+    tune_knob_extract_bench_rate "${1}"
 }
 
 run_benchmark_attempt() {
@@ -287,10 +293,10 @@ run_benchmark_attempt() {
     else
         unset PROPMINER_BENCH_NO_GRAPH || true
     fi
-    bench_log "[bench] attempt ${attempt}: batch=${batch} graph=${graph} duration=${seconds}s"
+    bench_log "[bench] attempt ${attempt}: batch=${batch} graph=${graph} duration=${seconds}s (grace=${BENCH_GRACE_SECONDS}s)"
     set +o pipefail
     run_propminer "${BUILD_DIR}/propminer" --bench "${seconds}" --rtx5090 --gpus 0 \
-        | tee "${logfile}" >&2
+        2>&1 | tee "${logfile}" >&2
     local rc=${PIPESTATUS[0]}
     set -o pipefail
     local rate
@@ -301,36 +307,51 @@ run_benchmark_attempt() {
 }
 
 bench_rate_to_int() {
-    awk -v r="${1:-0}" 'BEGIN { printf "%.0f", r + 0 }'
+    tune_knob_rate_to_int "${1}"
 }
 
 if [[ "${SKIP_BENCH}" == "1" ]]; then
     echo "[bench] Skipped (PROPMINER_SKIP_BENCH=1)." | tee -a "${RESULTS_DIR}/summary.txt"
 else
-echo "[bench] Running hashrate benchmark (up to 3 attempts)..." | tee -a "${RESULTS_DIR}/summary.txt"
+echo "[bench] Running hashrate benchmark (${BENCH_SECONDS}s + ${BENCH_GRACE_SECONDS}s grace, up to 4 attempts)..." \
+    | tee -a "${RESULTS_DIR}/summary.txt"
 
 BEST_RATE=0
 BEST_LABEL=""
 
-RATE=$(run_benchmark_attempt 1 4 on "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark.log")
+# v1.38: batch=1 beat batch=4 on Salad/WSL2 — try smallest batches first.
+RATE=$(run_benchmark_attempt 1 1 on "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark.log")
 RATE_INT=$(bench_rate_to_int "${RATE}")
 if (( RATE_INT > 0 )); then
     BEST_RATE=${RATE_INT}
-    BEST_LABEL="batch=4 graph=on"
-else
-    echo "[bench] attempt 1 yielded 0 — trying batch=1..." | tee -a "${RESULTS_DIR}/summary.txt" >&2
-    RATE=$(run_benchmark_attempt 2 1 on 60 "${RESULTS_DIR}/benchmark_try2.log")
+    BEST_LABEL="batch=1 graph=on"
+fi
+
+if (( BEST_RATE == 0 )); then
+    echo "[bench] attempt 1 yielded 0 — trying batch=4..." | tee -a "${RESULTS_DIR}/summary.txt" >&2
+    RATE=$(run_benchmark_attempt 2 4 on "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark_try2.log")
     RATE_INT=$(bench_rate_to_int "${RATE}")
     if (( RATE_INT > BEST_RATE )); then
         BEST_RATE=${RATE_INT}
-        BEST_LABEL="batch=1 graph=on"
+        BEST_LABEL="batch=4 graph=on"
     fi
 fi
 
 if (( BEST_RATE == 0 )); then
-    echo "[bench] attempts 1-2 yielded 0 — trying batch=4 graph=off..." \
+    echo "[bench] attempts 1-2 yielded 0 — trying batch=1 graph=off..." \
         | tee -a "${RESULTS_DIR}/summary.txt"
-    RATE=$(run_benchmark_attempt 3 4 off 60 "${RESULTS_DIR}/benchmark_try3.log")
+    RATE=$(run_benchmark_attempt 3 1 off "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark_try3.log")
+    RATE_INT=$(bench_rate_to_int "${RATE}")
+    if (( RATE_INT > BEST_RATE )); then
+        BEST_RATE=${RATE_INT}
+        BEST_LABEL="batch=1 graph=off"
+    fi
+fi
+
+if (( BEST_RATE == 0 )); then
+    echo "[bench] attempts 1-3 yielded 0 — trying batch=4 graph=off..." \
+        | tee -a "${RESULTS_DIR}/summary.txt"
+    RATE=$(run_benchmark_attempt 4 4 off "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark_try4.log")
     RATE_INT=$(bench_rate_to_int "${RATE}")
     if (( RATE_INT > BEST_RATE )); then
         BEST_RATE=${RATE_INT}
@@ -338,8 +359,13 @@ if (( BEST_RATE == 0 )); then
     fi
 fi
 
-echo "[bench] best: ${BEST_LABEL} (${BEST_RATE} H/s)" | tee -a "${RESULTS_DIR}/summary.txt"
-grep -iE 'hash|benchmark complete|first batch' "${RESULTS_DIR}"/benchmark*.log 2>/dev/null \
+if (( BEST_RATE > 0 )); then
+    echo "[bench] best: ${BEST_LABEL} (${BEST_RATE} H/s)" | tee -a "${RESULTS_DIR}/summary.txt"
+else
+    echo "[bench] INCOMPLETE: no attempt recorded a completed batch (check GPU util + logs)" \
+        | tee -a "${RESULTS_DIR}/summary.txt"
+fi
+grep -iE 'TMAD/s|benchmark:|"tmad_per_sec"|benchmark complete|benchmark incomplete' "${RESULTS_DIR}"/benchmark*.log 2>/dev/null \
     | tail -30 | tee "${RESULTS_DIR}/benchmark_hashrate.txt" || true
 fi
 
@@ -371,25 +397,35 @@ fi
 if [[ "${SKIP_SWEEP}" == "1" ]]; then
     echo "[sweep] Skipped (PROPMINER_SKIP_SWEEP=1)." | tee -a "${RESULTS_DIR}/summary.txt"
 else
-echo "[sweep] Running shortened Blackwell knob sweep..." | tee -a "${RESULTS_DIR}/summary.txt"
+echo "[sweep] Running shortened Blackwell knob sweep (${SWEEP_SECONDS}s x 3, self-test gate)..." \
+    | tee -a "${RESULTS_DIR}/summary.txt"
 
-BMS=(128)
-BNS=(256)
+unset PROPMINER_AUTOTUNE || true
+SWEEP_REPEATS=3
+SWEEP_BATCH="${PROPMINER_BENCH_BATCH:-4}"
+LOAD_POLICY="cp_async"
+
 KBLOCKS=(64 128)
 STAGES_LIST=(2 3)
 SWIZZLES=(2 3)
 MIN_BLOCKS_LIST=(1 2)
-LOAD_POLICIES=(cp_async)
 
 BEST_LABEL=""
+BEST_MANIFEST=""
 BEST_RATE=0
+BEST_SO=""
 
 for KBLOCK in "${KBLOCKS[@]}"; do
 for STAGES in "${STAGES_LIST[@]}"; do
+    if ! tune_knob_smem_ok "${KBLOCK}" "${STAGES}"; then
+        echo "[sweep] skip k${KBLOCK}-s${STAGES}: smem over budget" \
+            | tee -a "${RESULTS_DIR}/summary.txt"
+        continue
+    fi
 for SWIZZLE in "${SWIZZLES[@]}"; do
 for MIN_BLOCKS in "${MIN_BLOCKS_LIST[@]}"; do
-for LOAD_POLICY in "${LOAD_POLICIES[@]}"; do
     LABEL="bw-128x256-k${KBLOCK}-s${STAGES}-sw${SWIZZLE}-mb${MIN_BLOCKS}-${LOAD_POLICY}"
+    MANIFEST="$(tune_knob_manifest "${KBLOCK}" "${STAGES}" "${SWIZZLE}" "${MIN_BLOCKS}" "${LOAD_POLICY}")"
     echo "[sweep] Building ${LABEL}..." | tee -a "${RESULTS_DIR}/summary.txt"
 
     cmake -S "${ROOT}" -B "${BUILD_DIR}" \
@@ -411,28 +447,51 @@ for LOAD_POLICY in "${LOAD_POLICIES[@]}"; do
         continue
     fi
 
-    RATE=$(run_propminer "${BUILD_DIR}/propminer" --bench "${SWEEP_SECONDS}" --rtx5090 --gpus 0 2>/dev/null \
-        | grep -iE "hash|th/s|gh/s|mh/s|h/s" | tail -1 | grep -oE '[0-9.]+' | head -1 || true)
+    MEAN_RATE="$(tune_knob_bench_variant "${BUILD_DIR}/propminer" \
+        "${SWEEP_SECONDS}" "${SWEEP_REPEATS}" "${SWEEP_BATCH}" \
+        "${RESULTS_DIR}" "${LABEL}")"
+    RATE_INT="$(tune_knob_rate_to_int "${MEAN_RATE}")"
+    echo "[sweep] ${LABEL}: mean=${MEAN_RATE} H/s (${SWEEP_REPEATS} repeats)" \
+        | tee -a "${RESULTS_DIR}/summary.txt"
 
-    if [[ -z "${RATE}" || "${RATE}" == "0" ]]; then
-        echo "[sweep] ${LABEL}: no rate" | tee -a "${RESULTS_DIR}/summary.txt"
+    if (( RATE_INT <= BEST_RATE )); then
         continue
     fi
 
-    RATE_INT=$(printf '%.0f' "${RATE}")
-    echo "[sweep] ${LABEL}: ${RATE} H/s" | tee -a "${RESULTS_DIR}/summary.txt"
-    if (( RATE_INT > BEST_RATE )); then
-        BEST_RATE=${RATE_INT}
-        BEST_LABEL="${LABEL}"
-        cp "${BUILD_DIR}/libpearl_gemm_capi.so" "${RESULTS_DIR}/libpearl_gemm_capi_${LABEL}.so"
+    if ! tune_knob_self_test "${BUILD_DIR}/propminer" "${RESULTS_DIR}" "${LABEL}"; then
+        echo "[sweep] ${LABEL}: self-test FAILED (discarded)" | tee -a "${RESULTS_DIR}/summary.txt"
+        continue
     fi
-done
+
+    BEST_RATE=${RATE_INT}
+    BEST_LABEL="${LABEL}"
+    BEST_MANIFEST="${MANIFEST}"
+    BEST_SO="${RESULTS_DIR}/libpearl_gemm_capi_${LABEL}.so"
+    cp "${BUILD_DIR}/libpearl_gemm_capi.so" "${BEST_SO}"
+    echo "[sweep] ${LABEL}: new best (${MEAN_RATE} H/s, self-test OK)" \
+        | tee -a "${RESULTS_DIR}/summary.txt"
 done
 done
 done
 done
 
-echo "[sweep] Best variant: ${BEST_LABEL} (${BEST_RATE} H/s)" | tee -a "${RESULTS_DIR}/summary.txt"
+if [[ -n "${BEST_SO}" ]]; then
+    cp "${BEST_SO}" "${BUILD_DIR}/libpearl_gemm_capi.so"
+    KBEST="$(echo "${BEST_LABEL}" | sed -E 's/.*-k([0-9]+)-.*/\1/')"
+    SBEST="$(echo "${BEST_LABEL}" | sed -E 's/.*-s([0-9]+)-.*/\1/')"
+    SWBEST="$(echo "${BEST_LABEL}" | sed -E 's/.*-sw([0-9]+)-.*/\1/')"
+    MBBEST="$(echo "${BEST_LABEL}" | sed -E 's/.*-mb([0-9]+)-.*/\1/')"
+    KEY="$(tune_knob_gpu_cache_key)"
+    tune_knob_write_cache "${KEY}" "${KBEST}" "${SBEST}" "${SWBEST}" "${MBBEST}" \
+        "${LOAD_POLICY}" "${BEST_MANIFEST}" "${BEST_RATE}" "1"
+    echo "[sweep] Best variant: ${BEST_LABEL} (${BEST_RATE} H/s)" \
+        | tee -a "${RESULTS_DIR}/summary.txt"
+    echo "[sweep] Staged winner -> ${BUILD_DIR}/libpearl_gemm_capi.so" \
+        | tee -a "${RESULTS_DIR}/summary.txt"
+    echo "[sweep] Cached to $(tune_knob_cache_path)" | tee -a "${RESULTS_DIR}/summary.txt"
+else
+    echo "[sweep] No variant passed build+bench+self-test" | tee -a "${RESULTS_DIR}/summary.txt"
+fi
 fi
 
 # ── 9. Final summary ───────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 # 04 — Defer Share GPU Work Off the Mining Hot Path
 
-**Status:** Proposal  
+**Status:** Implemented behind `PROPMINER_DEFER_SHARE_GPU` (default **off**)  
 **Target:** PropMiner GPU worker (`GpuWorker`)  
 **Scope:** Move rare share-trigger D2H and proof-input preparation from the mining loop to a dedicated side thread.  
 **Expected steady-state gain:** +0–2% hashrate (pipeline bubbles eliminated only on share hits; shares are rare).

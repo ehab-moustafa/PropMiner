@@ -757,7 +757,7 @@ flowchart TB
   subgraph Host
     A[ApEA int8 M×K]
     B[BpEB int8 N×K]
-    Seeds[SeedGenerator / cudaMemcpyAsync]
+    Seeds[pinned async seed H2D / cudaMemcpyAsync]
   end
 
   subgraph GpuWorker

@@ -1,0 +1,19 @@
+# PropMiner research/01-git-repos-mining — shallow clones (--depth 1)
+# Generated: 2026-07-06
+# Clone root: research/01-git-repos-mining/repos/
+# Count: 10 directories
+
+cutlass	https://github.com/NVIDIA/cutlass	e8ecfad75b44d1ad56264f5001d877e9e47fe080
+akoya-miner	https://github.com/akoyapool/akoya-miner	0e42b2a50b4cb62cb8995b77420226c2182137ce
+ethminer	https://github.com/ethereum-mining/ethminer	8eaf50ab3baad9a1747e04dc295793d46740dcae
+alpha-miner	https://github.com/AlphaMine-Tech/alpha-miner	f731b2af1aeec255587fe4e4dee393d7fc02fd27
+pearl	https://github.com/pearl-research-labs/pearl	f00a8112abdd347eef1ee91adb30d9b3dfc1c8e7
+cccl	https://github.com/NVIDIA/cccl	55f0de953f9f06822840c1136a51cbcf032d5857
+blackwell-geforce-nvfp4-gemm	https://github.com/lna-lab/blackwell-geforce-nvfp4-gemm	acabe06f6eea9e11dfb58dd43e400782752835a5
+triton	https://github.com/triton-lang/triton	8929ee538d7c8737ae6d6aaba6183eefd7d4def3
+BLAKE3	https://github.com/BLAKE3-team/BLAKE3	8aa5145039b972ba30e98e788752d37d14568824
+pearl-miner-docker	https://github.com/terrapin88/pearl-miner-docker	37ead3e8434843cab8ce618b90536c62e4e899c0
+
+# NOT CLONED (documented in REPORT.md):
+# cuda-samples — clone/checkout failed: "No space left on device" (~460GB disk ~100% full).
+#   Substitute: NVIDIA/cccl (CUDA C++ primitives + device-side patterns).

@@ -1,9 +1,9 @@
 # 08 — SeedGenerator Re-enable Evaluation
 
-**Status:** Decision document — do not implement  
+**Status:** Implemented — dead code removed (2026-07-06)  
 **Date:** 2026-07-05  
 **Scope:** `SeedGenerator` (dead code) vs current pinned async seed path in `GpuWorker`  
-**Recommendation:** **Do not re-enable `SeedGenerator`.** Remove dead code from the build.
+**Recommendation:** **Do not re-enable `SeedGenerator`.** Dead code removed; live `GpuWorker` seed conveyor unchanged.
 
 ---
 
@@ -431,4 +431,6 @@ Expected hashrate delta: **0% ± noise**, likely **slightly negative**.
 
 ---
 
-**Decision:** Do not re-enable `SeedGenerator`. Remove dead code. The pinned async linear-counter path is simpler, semantically correct, and already fully overlaps seed I/O with GPU compute.
+**Decision:** Do not re-enable `SeedGenerator`. Dead code removed 2026-07-06. The pinned async linear-counter path is simpler, semantically correct, and already fully overlaps seed I/O with GPU compute.
+
+**Validation:** `./scripts/validate_seed_path.sh` (Mac: grep + host tests; 5090: add `--self-test --rtx5090`).

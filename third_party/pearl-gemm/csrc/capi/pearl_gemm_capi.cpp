@@ -109,6 +109,14 @@ PEARL_CAPI_EXPORT const char* pearl_capi_build_profile(void) {
 #endif
 }
 
+PEARL_CAPI_EXPORT const char* pearl_capi_build_knobs(void) {
+#if defined(PEARL_GEMM_BUILD_KNOBS)
+  return PEARL_GEMM_BUILD_KNOBS;
+#else
+  return "unknown";
+#endif
+}
+
 PEARL_CAPI_EXPORT int pearl_capi_supports_sm(int major, int minor) {
 #if defined(PEARL_GEMM_VOLTA)
   return major == 7 && minor == 0;
@@ -429,7 +437,46 @@ bool pearl_gemm_debug_enabled() {
   return cached == 1;
 }
 
+#if defined(PEARL_GEMM_BLACKWELL)
+static bool pearl_kernel_env_requests_geforce() {
+  const char* env = std::getenv("PEARL_GEMM_KERNEL");
+  if (!env || !*env) return false;
+  return strcmp(env, "geforce") == 0 || strcmp(env, "tcgen05") == 0 ||
+         strcmp(env, "sm120_tcgen05") == 0 || strcmp(env, "sm120_geforce") == 0;
+}
+
+static int validate_geforce_kernel_selection() {
+#if !defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
+  if (pearl_kernel_env_requests_geforce()) {
+    const char* env = std::getenv("PEARL_GEMM_KERNEL");
+    fprintf(stderr,
+            "[pearl-gemm] ERROR: PEARL_GEMM_KERNEL=%s requests the experimental "
+            "GeForce transcript kernel, but this build was compiled without "
+            "PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1 (rebuild or unset "
+            "PEARL_GEMM_KERNEL)\n",
+            env ? env : "");
+    return -53;
+  }
+#endif
+  return 0;
+}
+#endif
+
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
+#include "blackwell/transcript_gemm_sm120_geforce.h"
+
+static bool use_geforce_experimental_kernel() {
+  return pearl_kernel_env_requests_geforce();
+}
+#endif
+
 int warmup_kernels_before_graph_capture() {
+#if defined(PEARL_GEMM_BLACKWELL)
+  {
+    int vrc = validate_geforce_kernel_selection();
+    if (vrc != 0) return vrc;
+  }
+#endif
 #if defined(PEARL_GEMM_PORTABLE) && \
     (defined(PEARL_GEMM_BLACKWELL) || defined(PEARL_GEMM_AMPERE) || \
      defined(PEARL_GEMM_ADA))
@@ -440,6 +487,17 @@ int warmup_kernels_before_graph_capture() {
             cudaGetErrorString(werr));
     return -51;
   }
+#if defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
+  if (use_geforce_experimental_kernel()) {
+    werr = pearl::blackwell::warmup_transcript_gemm_sm120_geforce_attrs();
+    if (werr != cudaSuccess) {
+      fprintf(stderr,
+              "[pearl-gemm] warmup_transcript_gemm_sm120_geforce_attrs failed: %s\n",
+              cudaGetErrorString(werr));
+      return -52;
+    }
+  }
+#endif
   if (pearl_gemm_debug_enabled()) {
     fprintf(stderr,
             "[pearl-gemm] warmup OK (transcript consumer kernel attrs)\n");
@@ -451,6 +509,24 @@ int warmup_kernels_before_graph_capture() {
 }  // namespace
 
 extern "C" {
+
+PEARL_CAPI_EXPORT const char* pearl_capi_active_kernel_name(void) {
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
+  return use_geforce_experimental_kernel() ? "geforce" : "consumer";
+#elif defined(PEARL_GEMM_BLACKWELL)
+  return pearl_kernel_env_requests_geforce() ? "geforce" : "consumer";
+#else
+  return "consumer";
+#endif
+}
+
+PEARL_CAPI_EXPORT int pearl_capi_validate_kernel_selection(void) {
+#if defined(PEARL_GEMM_BLACKWELL)
+  return validate_geforce_kernel_selection();
+#else
+  return 0;
+#endif
+}
 
 PEARL_CAPI_EXPORT int pearl_capi_workspace_alloc(int32_t m, int32_t n,
                                                   int32_t k, int32_t r,
@@ -870,20 +946,43 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
     (void)p->EAR_K_major; (void)p->EBL_R_major; (void)p->EAL_fp16;
     return 0;
 #elif defined(PEARL_GEMM_BLACKWELL) || defined(PEARL_GEMM_ADA) || defined(PEARL_GEMM_AMPERE)
+#if defined(PEARL_GEMM_BLACKWELL)
+    {
+      int vrc = validate_geforce_kernel_selection();
+      if (vrc != 0) return vrc;
+    }
+#endif
     // Production consumer mining is headless: keep the XOR transcript
     // in registers, emit only a winning host signal, and never spill the
     // transcript buffer to global memory. If PoW pointers are null this
     // intentionally emits nothing.
-    cudaError_t launch_err = pearl::consumer::launch_transcript_gemm_headless(
-        static_cast<const int8_t*>(p->ApEA),
-        static_cast<const int8_t*>(p->BpEB),
-        /*C=*/nullptr,
-        m, n, k, r, batch,
-        static_cast<const uint32_t*>(p->pow_target),
-        static_cast<const uint32_t*>(p->pow_key),
-        static_cast<HostSignalSync*>(p->host_signal_sync),
-        static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
-        stream);
+    cudaError_t launch_err = cudaSuccess;
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
+    if (use_geforce_experimental_kernel()) {
+      launch_err = pearl::blackwell::launch_transcript_gemm_sm120_geforce_headless(
+          static_cast<const int8_t*>(p->ApEA),
+          static_cast<const int8_t*>(p->BpEB),
+          /*C=*/nullptr,
+          m, n, k, r, batch,
+          static_cast<const uint32_t*>(p->pow_target),
+          static_cast<const uint32_t*>(p->pow_key),
+          static_cast<HostSignalSync*>(p->host_signal_sync),
+          static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
+          stream);
+    } else
+#endif
+    {
+      launch_err = pearl::consumer::launch_transcript_gemm_headless(
+          static_cast<const int8_t*>(p->ApEA),
+          static_cast<const int8_t*>(p->BpEB),
+          /*C=*/nullptr,
+          m, n, k, r, batch,
+          static_cast<const uint32_t*>(p->pow_target),
+          static_cast<const uint32_t*>(p->pow_key),
+          static_cast<HostSignalSync*>(p->host_signal_sync),
+          static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
+          stream);
+    }
     if (launch_err != cudaSuccess) return transcript_launch_rc(launch_err);
 
     (void)p->C; (void)p->A_scales; (void)p->B_scales;

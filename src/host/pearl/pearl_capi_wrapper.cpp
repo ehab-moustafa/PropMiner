@@ -51,6 +51,13 @@ GemmCapi::GemmCapi() {
 
 int GemmCapi::abi_version() const { return pearl_capi_abi_version(); }
 const char* GemmCapi::build_profile() const { return pearl_capi_build_profile(); }
+const char* GemmCapi::build_knobs() const { return pearl_capi_build_knobs(); }
+const char* GemmCapi::active_kernel_name() const {
+    return pearl_capi_active_kernel_name();
+}
+int GemmCapi::validate_kernel_selection() const {
+    return pearl_capi_validate_kernel_selection();
+}
 bool GemmCapi::supports_sm(int major, int minor) const {
     return pearl_capi_supports_sm(major, minor);
 }

@@ -75,6 +75,8 @@ set(PEARL_GEMM_BLACKWELL_SWIZZLE_BITS "3" CACHE STRING "Blackwell swizzle bits")
 set(PEARL_GEMM_BLACKWELL_MIN_BLOCKS "1" CACHE STRING "Blackwell min blocks per SM")
 set(PEARL_GEMM_BLACKWELL_LOAD_POLICY "cp_async" CACHE STRING
     "Blackwell load policy: cp_async|tma")
+set(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL OFF CACHE BOOL
+    "Compile RTX 5090 warp-specialized TMA+IMMA experimental kernel (NOT tcgen05; default OFF)")
 
 # ── Fetch CUTLASS if missing ───────────────────────────────────────────
 include(ExternalProject)
@@ -136,6 +138,7 @@ add_custom_command(
             "PEARL_GEMM_BLACKWELL_SWIZZLE_BITS=${PEARL_GEMM_BLACKWELL_SWIZZLE_BITS}"
             "PEARL_GEMM_BLACKWELL_MIN_BLOCKS=${PEARL_GEMM_BLACKWELL_MIN_BLOCKS}"
             "PEARL_GEMM_BLACKWELL_LOAD_POLICY=${PEARL_GEMM_BLACKWELL_LOAD_POLICY}"
+            "PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=$<IF:$<BOOL:${PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL}>,1,>"
             "NVCC_THREADS=4"
     WORKING_DIRECTORY "${PEARL_GEMM_ROOT}"
     COMMENT "Building libpearl_gemm_capi.so for ${PEARL_GEMM_ARCH}"
@@ -179,10 +182,11 @@ add_executable(propminer
     src/host/pearl/gpu_worker.cpp
     src/host/pearl/gpu_tuner.cpp
     src/host/pearl/tune_cache.cpp
+    src/host/pearl/kernel_knob_cache.cpp
+    src/host/pearl/mine_batch_cache.cpp
     src/host/pearl/share_builder.cpp
     src/host/pearl/watchdog.cpp
     src/host/pearl/async_b_stream.cpp
-    src/host/pearl/seed_generator.cpp
     src/host/pearl/protobuf_encoder.cpp
     src/host/pearl/host_signal_header.cpp
     src/host/pearl/job_bus.cpp

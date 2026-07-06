@@ -32,6 +32,7 @@ public:
         int batch_size = 8;           // matmuls per poll
         int speed_test_seconds = 0;   // >0 => benchmark and exit
         bool autotune = true;         // run per-GPU autotune at startup
+        bool use_tune_cache = false;  // apply autotune.json cluster/carveout without live sweep
         bool enable_watchdog = true;  // reset GPU context on TDR/timeout
         bool disable_cpu_mining = true; // PropMiner has no CPU mining path
     };

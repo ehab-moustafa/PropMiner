@@ -93,5 +93,7 @@ This config fits in ~12-14 GB of VRAM, leaving headroom for noise buffers and Me
 - [x] Add context-reset watchdog thread (`Watchdog`).
 - [x] Add hardcoded `Rtx5090Profile` constants (170 SMs, 128x256x128 tile, M=8192,N=32768).
 - [x] Add `--rtx5090` / `--benchmark` CLI mode that runs the tuned config.
-- [x] Add CPU-isolated seed generator and `cudaMemcpyAsync` ping-pong seed upload.
+- [x] CPU-isolated nonce upload via pinned `cudaMemcpyAsync` ping-pong on `seed_copy_stream_` (monotonic counter; no background seed thread).
+- [x] Hot-path batch wait: `cudaEventQuery` spin wheel (no blocking sync on steady-state loop).
+- [x] Hashrate telemetry from `cudaEventElapsedTime` (GPU batch ms, not wall clock).
 - [ ] Validate with ncu profiling on target hardware.

@@ -30,12 +30,9 @@
 //   unchanged.
 //
 // Future tcgen05 PTX path:
-//   For warp-specialized / TMEM-style kernels, replace the cute::gemm loop
-//   with explicit tcgen05.mma instructions:
-//       tcgen05.mma.cta_group::1.kind::i8  [d_tmem], [a_smem], [b_smem];
-//   This requires TMEM allocation, tcgen05.cp scale copies, and tcgen05.ld for
-//   the epilogue.  The scaffold below keeps the existing cute TiledMMA path so
-//   the kernel is immediately compilable; inline PTX hooks are annotated.
+//   RTX 5090 (sm_120a) does NOT support tcgen05/TMEM — see external_repos/README.md
+//   and blackwell/transcript_gemm_sm120_geforce.cu (warp-specialized TMA + mma.sync).
+//   B200 tcgen05 remains PEARL_GEMM_ARCH=b200 → transcript_gemm_sm100.cu only.
 
 #include <cute/atom/mma_atom.hpp>
 
@@ -82,17 +79,13 @@ inline void launch_transcript_gemm_sm120(
     HostSignalSync* host_signal_sync,
     HostSignalHeader* host_signal_header,
     cudaStream_t stream) {
-
-  // Grid covers the MxN output tile space, batch dimension in z.
-  dim3 block(consumer::kThreads);
-  dim3 grid(M / consumer::kBM, N / consumer::kBN, 1);
-
-  // Dynamic shared memory = A smem + B smem.
-  size_t smem_size = sizeof(consumer::SharedStorage);
-
-  consumer::transcript_gemm_kernel_consumer<<<grid, block, smem_size, stream>>>(
-      A, B, C, transcript, M, N, K, R,
-      pow_target, pow_key, host_signal_sync, host_signal_header);
+  (void)transcript;
+  // Delegate to the canonical consumer launcher (cluster attrs, TMA descriptors,
+  // dynamic smem carveout).  CAPI uses consumer:: directly; this wrapper exists
+  // for optional blackwell:: dispatch only.
+  (void)consumer::launch_transcript_gemm_headless(
+      A, B, C, M, N, K, R, 1, pow_target, pow_key,
+      host_signal_sync, host_signal_header, stream);
 }
 
 } // namespace blackwell

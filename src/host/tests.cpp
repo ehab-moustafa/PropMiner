@@ -1,13 +1,17 @@
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <vector>
 
+#include "pearl/hashrate_metrics.h"
 #include "pearl/host_signal_header.h"
 #include "pearl/job_key.h"
 #include "pearl/pearl_types.h"
 #include "pearl/rtx5090_profile.h"
+#include "pearl/kernel_knob_cache.h"
+#include "pearl/mine_batch_cache.h"
 #include "pearl/proto/mining_v2.h"
 #include "pearl/protobuf_encoder.h"
 
@@ -187,6 +191,33 @@ static void test_host_signal_header_index_extraction() {
     EXPECT(cols[15] == 512 + 15);
 }
 
+static void test_hashrate_metrics_math() {
+    MiningConfig cfg;
+    cfg.m = 8192;
+    cfg.n = 32768;
+    cfg.k = 128;
+    cfg.bM = 128;
+    cfg.bN = 256;
+
+    const double ips = 0.01;
+    const double tmad = 8192.0 * 32768.0 * 128.0 * ips / 1e12;
+    const double tiles_per_iter = 64.0 * 128.0;
+    const double protocol =
+        ips * tiles_per_iter *
+        static_cast<double>(cfg.difficulty_adjustment_factor());
+
+    auto m = hashrate_metrics_from_rates(cfg, tmad, protocol, 1000.0, 1);
+    EXPECT(std::abs(m.tmad_per_sec - tmad) < 1e-6);
+    EXPECT(std::abs(m.tiles_per_sec - ips * tiles_per_iter) < 1e-3);
+
+    const double tuner_ops = 8192.0 * 32768.0 * 128.0 * 2.0 * ips;
+    EXPECT(std::abs(tmad_from_tuner_ops_per_sec(tuner_ops) - tmad) < 1e-6);
+
+    auto from_iters = hashrate_metrics_from_iters(cfg, 10, 100, 4);
+    EXPECT(from_iters.tmad_per_sec > 0.0);
+    EXPECT(from_iters.protocol_hps > 0.0);
+}
+
 static void test_mining_config_conservative() {
     auto cfg = MiningConfig::conservative();
     EXPECT(cfg.m == 2048);
@@ -213,6 +244,38 @@ static void test_rtx5090_wave_alignment() {
     EXPECT(Rtx5090Profile::tiles(cfg.m, cfg.n) >= Rtx5090Profile::kSMCount * 2);
     auto bench_cfg = rtx5090_mining_config(0, Rtx5090Profile::kBenchMaxN);
     EXPECT(bench_cfg.n == Rtx5090Profile::kBenchMaxN);
+    EXPECT(Rtx5090Profile::kDefaultMineBatch == 4);
+    EXPECT(Rtx5090Profile::kMaxMineBatch == 20);
+    EXPECT(Rtx5090Profile::kBenchDefaultSeconds == 180);
+    EXPECT(Rtx5090Profile::kBenchGraceSeconds == 60);
+}
+
+static void test_mine_batch_manifest_matches() {
+    EXPECT(KernelKnobCache::manifest_matches(nullptr, "k128-s2-sw3-mb1-cp_async"));
+    EXPECT(!KernelKnobCache::manifest_matches(
+        "k128-s2-sw3-mb1-cp_async", "k128-s2-sw3-mb2-cp_async"));
+}
+
+static void test_strict_knob_cache_validate() {
+    const char* prev = std::getenv("PROPMINER_STRICT_KNOB_CACHE");
+    auto restore = [&]() {
+        if (prev) setenv("PROPMINER_STRICT_KNOB_CACHE", prev, 1);
+        else unsetenv("PROPMINER_STRICT_KNOB_CACHE");
+    };
+    unsetenv("PROPMINER_STRICT_KNOB_CACHE");
+    KernelKnobResult ok;
+    ok.manifest = "k128-s2-sw3-mb1-cp_async";
+    ok.self_test_ok = true;
+    EXPECT(!KernelKnobCache::strict_validate("k128-s2-sw3-mb1-cp_async", ok).has_value());
+
+    setenv("PROPMINER_STRICT_KNOB_CACHE", "1", 1);
+    EXPECT(!KernelKnobCache::strict_validate("k128-s2-sw3-mb1-cp_async", ok).has_value());
+    ok.self_test_ok = false;
+    EXPECT(KernelKnobCache::strict_validate("k128-s2-sw3-mb1-cp_async", ok).has_value());
+    ok.self_test_ok = true;
+    ok.manifest = "k128-s2-sw3-mb2-cp_async";
+    EXPECT(KernelKnobCache::strict_validate("k128-s2-sw3-mb1-cp_async", ok).has_value());
+    restore();
 }
 
 static void test_share_found_serialization_sanity() {
@@ -378,8 +441,11 @@ int main() {
     test_reference_audit_index_derive();
     test_reference_claimed_hash_deterministic();
     test_host_signal_header_index_extraction();
+    test_hashrate_metrics_math();
     test_mining_config_conservative();
     test_rtx5090_wave_alignment();
+    test_mine_batch_manifest_matches();
+    test_strict_knob_cache_validate();
     test_share_found_serialization_sanity();
 #if !PROP_MINER_HOST_ONLY_TESTS
     test_merkle_proof_roundtrip();

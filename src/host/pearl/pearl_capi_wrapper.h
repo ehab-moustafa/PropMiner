@@ -34,6 +34,9 @@ public:
 
     int abi_version() const;
     const char* build_profile() const;
+    const char* build_knobs() const;
+    const char* active_kernel_name() const;
+    int validate_kernel_selection() const;
     bool supports_sm(int major, int minor) const;
 
     static int device_count();

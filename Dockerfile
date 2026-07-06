@@ -65,7 +65,8 @@ ARG CMAKE_BUILD_ARGS="\
   -DPEARL_GEMM_BLACKWELL_STAGES=2 \
   -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=3 \
   -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
-  -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async"
+  -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
+  -DPEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=ON"
 
 RUN --mount=type=cache,id=propminer-ccache,target=/ccache \
     --mount=type=cache,id=propminer-cargo-registry,target=/root/.cargo/registry \
@@ -127,10 +128,11 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
-ENV PEARL_GEMM_CONSUMER_CLUSTER_M=1
+ENV PEARL_GEMM_CONSUMER_CLUSTER_M=2
+ENV PROPMINER_USE_TUNE_CACHE=1
 ENV CUDA_MODULE_LOADING=EAGER
 ENV CUDA_DEVICE_MAX_CONNECTIONS=1
-# Zero-config Salad validation: PROPMINER_MODE=full (self-test + 120s benchmark).
+# Zero-config Salad validation: PROPMINER_MODE=full (self-test + 180s benchmark).
 # Production mining: override PROPMINER_MODE=mine and set PROPMINER_WALLET.
 ENV PROPMINER_MODE=full
 ENV PROPMINER_QUICK_EXIT=0
@@ -138,7 +140,8 @@ ENV PROPMINER_SKIP_BENCH=0
 ENV PROPMINER_SKIP_SWEEP=1
 ENV PROPMINER_SKIP_NCU=1
 ENV PROPMINER_KEEP_ALIVE_SECONDS=3600
-ENV PROPMINER_BENCH_SECONDS=120
+ENV PROPMINER_BENCH_SECONDS=180
+ENV PROPMINER_BENCH_GRACE_SECONDS=60
 
 RUN apt-get update && apt-get install -y \
     libssl3 \
@@ -167,6 +170,19 @@ COPY --from=builder /root/PropMiner/scripts/setup_cuda_env.sh ./scripts/setup_cu
 COPY --from=builder /root/PropMiner/scripts/run_mining.sh ./scripts/run_mining.sh
 COPY --from=builder /root/PropMiner/scripts/docker_entrypoint.sh ./scripts/docker_entrypoint.sh
 COPY --from=builder /root/PropMiner/scripts/remote_test_kit.sh ./scripts/remote_test_kit.sh
+COPY --from=builder /root/PropMiner/scripts/tune_blackwell_knobs.sh ./scripts/tune_blackwell_knobs.sh
+COPY --from=builder /root/PropMiner/scripts/tune_kernel_knobs_common.sh ./scripts/tune_kernel_knobs_common.sh
+COPY --from=builder /root/PropMiner/scripts/tune_mine_batch.sh ./scripts/tune_mine_batch.sh
+COPY --from=builder /root/PropMiner/scripts/tune_cluster_sweep.sh ./scripts/tune_cluster_sweep.sh
+COPY --from=builder /root/PropMiner/scripts/run_remaining_5090.sh ./scripts/run_remaining_5090.sh
+COPY --from=builder /root/PropMiner/scripts/pre_deploy_gate.sh ./scripts/pre_deploy_gate.sh
+COPY --from=builder /root/PropMiner/scripts/verify_geforce_transcript.sh ./scripts/verify_geforce_transcript.sh
+COPY --from=builder /root/PropMiner/scripts/validate_knob_manifest.sh ./scripts/validate_knob_manifest.sh
+COPY --from=builder /root/PropMiner/scripts/compare_bench.sh ./scripts/compare_bench.sh
+COPY --from=builder /root/PropMiner/scripts/profile_gemm_ncu.sh ./scripts/profile_gemm_ncu.sh
+COPY --from=builder /root/PropMiner/scripts/build_and_benchmark.sh ./scripts/build_and_benchmark.sh
+RUN mkdir -p ./results
+COPY --from=builder /root/PropMiner/results/baseline_5090_sm120.json ./results/baseline_5090_sm120.json
 
 RUN chmod +x ./scripts/*.sh
 

@@ -1,8 +1,10 @@
 #include "gpu_worker.h"
+#include "hashrate_metrics.h"
 
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
 #include <thread>
 
 #include <cuda_runtime.h>
@@ -32,6 +34,34 @@ namespace {
     uint64_t now_ms() {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    // Hot-path batch wait: tight cudaEventQuery spin, then yield (no sleep).
+    bool spin_wait_batch_event(cudaEvent_t event, Watchdog* watchdog) {
+        constexpr int kSpinTight = 4096;
+        constexpr int kYieldEvery = 64;
+        int spins = 0;
+        while (true) {
+            cudaError_t e = cudaEventQuery(event);
+            if (e == cudaSuccess) return true;
+            if (e != cudaErrorNotReady) {
+                throw std::runtime_error(
+                    std::string("cudaEventQuery: ") + cudaGetErrorString(e));
+            }
+            if (watchdog && (spins & 0x3FFF) == 0) {
+                watchdog->heartbeat();
+            }
+            if (spins < kSpinTight) {
+#if defined(__x86_64__) || defined(_M_X64)
+                __builtin_ia32_pause();
+#elif defined(__aarch64__) || defined(_M_ARM64)
+                __asm__ __volatile__("yield");
+#endif
+            } else if ((spins - kSpinTight) % kYieldEvery == 0) {
+                std::this_thread::yield();
+            }
+            ++spins;
+        }
     }
 }
 
@@ -81,11 +111,13 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
     a_leaf_cv_bytes = a_leaves * K32;
     check(cuMemAlloc(&a_leaf_cvs, a_leaf_cv_bytes), "a_leaf_cvs alloc");
 
-    // Pre-create the timing event so the hot path never allocates.
+    // Pre-create timing events so the hot path never allocates.
+    if (!batch_start_event) {
+        cudaError_t e = cudaEventCreate(&batch_start_event);
+        if (e != cudaSuccess) batch_start_event = nullptr;
+    }
     if (!batch_done_event) {
-        cudaError_t e = cudaEventCreateWithFlags(
-            reinterpret_cast<cudaEvent_t*>(&batch_done_event),
-            cudaEventDisableTiming);
+        cudaError_t e = cudaEventCreate(&batch_done_event);
         if (e != cudaSuccess) batch_done_event = nullptr;
     }
 
@@ -124,6 +156,10 @@ void GpuWorker::HalfBuffers::free() {
     if (workspace) {
         pearl_capi_workspace_free(workspace, stream);
         workspace = nullptr;
+    }
+    if (batch_start_event) {
+        cudaEventDestroy(batch_start_event);
+        batch_start_event = nullptr;
     }
     if (batch_done_event) {
         cudaEventDestroy(batch_done_event);
@@ -206,13 +242,106 @@ void GpuWorker::check_cuda(CUresult r, const char* msg) {
 
 void GpuWorker::start() {
     running_ = true;
+    start_share_gpu_thread();
     thread_ = std::thread(&GpuWorker::run, this);
 }
 
 void GpuWorker::stop() {
     stop_flag_ = true;
     if (thread_.joinable()) thread_.join();
+    stop_share_gpu_thread();
     running_ = false;
+}
+
+bool GpuWorker::defer_share_gpu_enabled() {
+    static int cached = -1;
+    if (cached < 0) {
+        const char* env = std::getenv("PROPMINER_DEFER_SHARE_GPU");
+        cached = (env && env[0] && env[0] != '0') ? 1 : 0;
+    }
+    return cached == 1;
+}
+
+void GpuWorker::start_share_gpu_thread() {
+    if (!defer_share_gpu_enabled() || share_thread_started_) return;
+    share_stop_.store(false);
+    share_thread_ = std::thread(&GpuWorker::share_gpu_loop, this);
+    share_thread_started_ = true;
+}
+
+void GpuWorker::stop_share_gpu_thread() {
+    if (!share_thread_started_) return;
+    {
+        std::lock_guard<std::mutex> lk(share_mtx_);
+        share_stop_.store(true);
+    }
+    share_cv_.notify_all();
+    if (share_thread_.joinable()) share_thread_.join();
+    share_thread_started_ = false;
+    {
+        std::lock_guard<std::mutex> lk(share_mtx_);
+        while (!share_queue_.empty()) share_queue_.pop();
+    }
+    ping_.share_jobs_pending.store(0);
+    pong_.share_jobs_pending.store(0);
+}
+
+void GpuWorker::wait_until_half_free(HalfBuffers& half) {
+    if (half.share_jobs_pending.load(std::memory_order_acquire) == 0) return;
+    std::unique_lock<std::mutex> lk(share_mtx_);
+    share_done_cv_.wait(lk, [&] {
+        return half.share_jobs_pending.load(std::memory_order_acquire) == 0;
+    });
+}
+
+void GpuWorker::enqueue_share_trigger(HalfBuffers& half, uint64_t nonce,
+                                      const std::vector<uint8_t>& header,
+                                      const std::shared_ptr<SigmaContext>& ctx) {
+    ShareTriggerJob job;
+    job.half = &half;
+    job.header = header;
+    job.nonce = nonce;
+    job.target_nbits = target_nbits_.load();
+    job.sigma_ctx = ctx;
+    if (!job.sigma_ctx) return;
+
+    {
+        std::lock_guard<std::mutex> lk(share_mtx_);
+        half.share_jobs_pending.fetch_add(1, std::memory_order_relaxed);
+        share_queue_.push(std::move(job));
+    }
+    share_cv_.notify_one();
+}
+
+void GpuWorker::share_gpu_loop() {
+    CUDA_CHECK(cudaSetDevice(device_index_));
+    while (true) {
+        ShareTriggerJob job;
+        {
+            std::unique_lock<std::mutex> lk(share_mtx_);
+            share_cv_.wait(lk, [&] {
+                return share_stop_.load() || !share_queue_.empty();
+            });
+            if (share_stop_.load() && share_queue_.empty()) break;
+            job = std::move(share_queue_.front());
+            share_queue_.pop();
+        }
+        if (job.half && job.sigma_ctx) {
+            try {
+                (void)process_share_trigger(job);
+            } catch (const std::exception& ex) {
+                std::fprintf(stderr, "[gpu] share trigger failed: %s\n", ex.what());
+            } catch (...) {
+                std::fprintf(stderr, "[gpu] share trigger failed: unknown error\n");
+            }
+        }
+        if (job.half) {
+            std::lock_guard<std::mutex> lk(share_mtx_);
+            const int remaining =
+                job.half->share_jobs_pending.fetch_sub(1) - 1;
+            if (remaining == 0) share_done_cv_.notify_all();
+        }
+    }
 }
 
 void GpuWorker::set_sigma(std::shared_ptr<SigmaContext> ctx) {
@@ -369,6 +498,11 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
     // Clear dSync.
     check_cuda(cuMemsetD8Async(half.sync, 0, 256, half.stream), "sync clear");
 
+    if (half.batch_start_event) {
+        CUDA_CHECK(cudaEventRecord(half.batch_start_event,
+                                   reinterpret_cast<cudaStream_t>(half.stream)));
+    }
+
     if (half.graph_ready && count == half.graph_batch_count) {
         // Extended graph path: seed was uploaded to half.seed_dev on
         // seed_copy_stream_ while the previous batch ran.  Make the compute
@@ -386,7 +520,7 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
         gemm_.iter_batch(half.workspace, half.stream, seed_lo_start,
                          half.host_headers.data(), count);
     }
-    // Record an event so the host can sleep/poll instead of blocking the CPU.
+    // Record completion so the host can spin-wait without blocking the driver.
     if (half.batch_done_event) {
         CUDA_CHECK(cudaEventRecord(half.batch_done_event,
                                    reinterpret_cast<cudaStream_t>(half.stream)));
@@ -437,8 +571,13 @@ bool GpuWorker::wait_for_batch(HalfBuffers& half, int timeout_ms) {
         return false;
     }
     if (timeout_ms <= 0) {
-        CUDA_CHECK(cudaEventSynchronize(half.batch_done_event));
-        return true;
+        try {
+            return spin_wait_batch_event(half.batch_done_event, watchdog_);
+        } catch (const std::exception& ex) {
+            std::fprintf(stderr, "[gpu] batch spin-wait failed: %s\n", ex.what());
+            CUDA_CHECK(cudaEventSynchronize(half.batch_done_event));
+            return true;
+        }
     }
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(timeout_ms);
@@ -455,10 +594,11 @@ bool GpuWorker::wait_for_batch(HalfBuffers& half, int timeout_ms) {
     }
 }
 
-bool GpuWorker::handle_trigger(HalfBuffers& half, const SigmaContext& ctx,
-                               const std::vector<uint8_t>& header,
-                               uint64_t nonce) {
-    HostSignalHeader hdr(header);
+bool GpuWorker::process_share_trigger(const ShareTriggerJob& job) {
+    HalfBuffers& half = *job.half;
+    const SigmaContext& ctx = *job.sigma_ctx;
+
+    HostSignalHeader hdr(job.header);
     std::vector<uint32_t> a_rows, b_cols;
     try {
         hdr.extract_indices(a_rows, b_cols);
@@ -474,7 +614,7 @@ bool GpuWorker::handle_trigger(HalfBuffers& half, const SigmaContext& ctx,
 
     int64_t a_bytes = static_cast<int64_t>(cfg_.m) * cfg_.k;
     gemm_.lcg_int7_fill(reinterpret_cast<void*>(half.a), a_bytes,
-                        nonce, ctx.sigma_seed(), half.stream);
+                        job.nonce, ctx.sigma_seed(), half.stream);
     check_cuda(cuStreamSynchronize(half.stream), "sync A regen");
 
     // Recompute A's leaf-CV table on the GPU so ShareBuilder can use the fast
@@ -537,13 +677,10 @@ bool GpuWorker::handle_trigger(HalfBuffers& half, const SigmaContext& ctx,
 
     ShareFound share;
     share.job = ctx.job();
-    share.installed_target_nbits = target_nbits_.load();
+    share.installed_target_nbits = job.target_nbits;
     share.job.target_nbits = share.installed_target_nbits;
-    {
-        std::lock_guard<std::mutex> lk(sigma_mtx_);
-        share.sigma_ctx = sigma_;
-    }
-    share.nonce = nonce;
+    share.sigma_ctx = job.sigma_ctx;
+    share.nonce = job.nonce;
     share.tile_row = a_rows.empty() ? 0 : a_rows[0];
     share.tile_col = b_cols.empty() ? 0 : b_cols[0];
     share.mma_tile_m = hdr.mma_tile_m();
@@ -557,6 +694,20 @@ bool GpuWorker::handle_trigger(HalfBuffers& half, const SigmaContext& ctx,
 
     if (sink_) sink_->submit(share);
     return true;
+}
+
+bool GpuWorker::handle_trigger(HalfBuffers& half,
+                               const std::shared_ptr<SigmaContext>& ctx,
+                               const std::vector<uint8_t>& header,
+                               uint64_t nonce) {
+    ShareTriggerJob job;
+    job.half = &half;
+    job.header = header;
+    job.nonce = nonce;
+    job.target_nbits = target_nbits_.load();
+    job.sigma_ctx = ctx;
+    if (!job.sigma_ctx) return false;
+    return process_share_trigger(job);
 }
 
 void GpuWorker::run() {
@@ -578,6 +729,10 @@ void GpuWorker::run() {
         }
 
         if (new_sigma) {
+            if (defer_share_gpu_enabled()) {
+                wait_until_half_free(*ping);
+                wait_until_half_free(*pong);
+            }
             current_sigma = new_sigma;
             batch = matmuls_per_poll_.load();
             install_sigma(*current_sigma, *ping);
@@ -603,6 +758,7 @@ void GpuWorker::run() {
                     "[gpu] first batch queued (count=%d, graph=%s)\n",
                     batch, cur->graph_ready ? "on" : "off");
             }
+            wait_until_half_free(*cur);
             upload_next_seed_async(*cur, seed_base_ + global_iter);
             queue_batch(*cur, seed_base_ + global_iter, batch);
             // Start uploading the seed for the next batch immediately so the
@@ -615,6 +771,8 @@ void GpuWorker::run() {
         }
 
         uint64_t t0 = now_ms();
+        wait_until_half_free(*cur);
+        if (stop_flag_) break;
         queue_batch(*cur, seed_base_ + global_iter, batch);
         global_iter += batch;
         total_iters_ += batch;
@@ -624,22 +782,40 @@ void GpuWorker::run() {
         // conveyor belt: zero hashing on CPU, only seed movement.
         upload_next_seed_async(*other, seed_base_ + global_iter + batch);
 
-        // Wait for the previously-launched batch on `other` with a short sleep
-        // so the host does not burn a core.  We still want low latency in case
-        // a share is found.
+        // Spin-wait for the previously-launched batch on `other`.
         if (!wait_for_batch(*other, 0)) {
             check_cuda(cuStreamSynchronize(other->stream), "sync batch");
         }
         const auto winners = scan_winners(*other, batch);
+        const bool defer_share = defer_share_gpu_enabled();
         for (int winner : winners) {
-            handle_trigger(*other, *current_sigma,
-                           other->host_header_storage[winner],
-                           other->batch_seed_start + static_cast<uint64_t>(winner));
+            const uint64_t nonce =
+                other->batch_seed_start + static_cast<uint64_t>(winner);
+            const auto& header = other->host_header_storage[winner];
+            if (defer_share) {
+                enqueue_share_trigger(*other, nonce, header, current_sigma);
+            } else {
+                handle_trigger(*other, current_sigma, header, nonce);
+            }
         }
         if (watchdog_) watchdog_->heartbeat();
 
-        uint64_t t1 = now_ms();
-        double ms = static_cast<double>(t1 - t0);
+        // GPU batch time via cudaEventElapsedTime (excludes host share work).
+        double ms = 0.0;
+        bool gpu_timed = false;
+        if (other->batch_start_event && other->batch_done_event) {
+            float gpu_ms = 0.0f;
+            cudaError_t te = cudaEventElapsedTime(
+                &gpu_ms, other->batch_start_event, other->batch_done_event);
+            if (te == cudaSuccess && gpu_ms > 0.0f) {
+                ms = static_cast<double>(gpu_ms);
+                gpu_timed = true;
+            }
+        }
+        if (!gpu_timed) {
+            uint64_t t1 = now_ms();
+            ms = static_cast<double>(t1 - t0);
+        }
         last_iter_ms_.store(ms);
         if (ms > 0.0) {
             const double sec = ms / 1000.0;
@@ -653,8 +829,12 @@ void GpuWorker::run() {
             hashrate_.store(hr);
             if (!logged_first_hashrate_ && hr > 0.0) {
                 logged_first_hashrate_ = true;
+                const HashrateMetrics metrics = hashrate_metrics_from_rates(
+                    cfg_, tmads, hr, ms, batch);
                 std::fprintf(stderr,
-                    "[gpu] first batch completed in %.0f ms -> %.0f H/s\n", ms, hr);
+                    "[gpu] first batch completed in %.0f ms (%s)\n",
+                    ms, gpu_timed ? "gpu" : "wall");
+                print_hashrate_metrics_line(stderr, "[gpu] ", metrics);
             }
         }
 

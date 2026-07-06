@@ -1,9 +1,11 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <queue>
 #include <thread>
 #include <vector>
 
@@ -49,6 +51,8 @@ public:
 
     double hashrate() const;
     double tmads_per_sec() const { return tmads_per_sec_.load(); }
+    double last_iter_ms() const { return last_iter_ms_.load(); }
+    int matmuls_per_poll() const { return matmuls_per_poll_.load(); }
     uint64_t total_iters() const { return total_iters_.load(); }
 
     void set_watchdog(Watchdog* wd) { watchdog_ = wd; }
@@ -82,7 +86,8 @@ private:
         CUdeviceptr a_leaf_cvs = 0;
         size_t a_leaf_cv_bytes = 0;
 
-        // Timing / non-blocking wait.
+        // Timing / non-blocking wait (cudaEventElapsedTime needs default flags).
+        cudaEvent_t batch_start_event = nullptr;
         cudaEvent_t batch_done_event = nullptr;
 
         // Caller-owned device-side seed pointer for the extended graph path.
@@ -100,6 +105,9 @@ private:
         size_t pinned_a_slice_bytes = 0;
         size_t pinned_opened_leaves_bytes = 0;
 
+        // Share-GPU deferral: non-zero while side thread holds this half for proof prep.
+        std::atomic<int> share_jobs_pending{0};
+
         void allocate(const MiningConfig& cfg, int device_id, CUstream s);
         void free();
     };
@@ -115,9 +123,28 @@ private:
 
     int sync_and_scan(HalfBuffers& half, int batch);
     bool wait_for_batch(HalfBuffers& half, int timeout_ms);
-    bool handle_trigger(HalfBuffers& half, const SigmaContext& ctx,
+    bool handle_trigger(HalfBuffers& half,
+                        const std::shared_ptr<SigmaContext>& ctx,
                         const std::vector<uint8_t>& header,
                         uint64_t nonce);
+
+    struct ShareTriggerJob {
+        HalfBuffers* half = nullptr;
+        std::vector<uint8_t> header;
+        uint64_t nonce = 0;
+        std::shared_ptr<SigmaContext> sigma_ctx;
+        uint32_t target_nbits = 0;
+    };
+
+    static bool defer_share_gpu_enabled();
+    void enqueue_share_trigger(HalfBuffers& half, uint64_t nonce,
+                               const std::vector<uint8_t>& header,
+                               const std::shared_ptr<SigmaContext>& ctx);
+    bool process_share_trigger(const ShareTriggerJob& job);
+    void share_gpu_loop();
+    void wait_until_half_free(HalfBuffers& half);
+    void start_share_gpu_thread();
+    void stop_share_gpu_thread();
 
     // Scan batch for all PoW hits (status==1). Caller must sync stream first.
     std::vector<int> scan_winners(HalfBuffers& half, int batch);
@@ -170,6 +197,15 @@ private:
 
     GemmCapi gemm_;
     MiningCapi mining_;
+
+    // Optional side thread for deferred share GPU work (PROPMINER_DEFER_SHARE_GPU=1).
+    std::mutex share_mtx_;
+    std::condition_variable share_cv_;
+    std::condition_variable share_done_cv_;
+    std::queue<ShareTriggerJob> share_queue_;
+    std::atomic<bool> share_stop_{false};
+    std::thread share_thread_;
+    bool share_thread_started_ = false;
 };
 
 } // namespace pearl

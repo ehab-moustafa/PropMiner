@@ -9,11 +9,20 @@
 #   PROPMINER_GPUS              — default 0
 #   PROPMINER_WORKER            — worker name if not embedded in wallet (max 32 alnum)
 #   PROPMINER_RESTART_ON_EXIT   — 1 (default) restart on crash; 0 exit container
+#   PROPMINER_BATCH               — mine matmuls per poll (default: cache or 4)
+#   PROPMINER_USE_TUNE_CACHE=1    — apply ~/.cache/propminer/autotune.json (default on)
+#   PROPMINER_STRICT_KNOB_CACHE=1  — fail if kernel_knobs.json mismatches built .so
+#   PEARL_GEMM_CONSUMER_CLUSTER_M   — default 2 for prod (set 1 to disable clustering)
+#   PROPMINER_BATCH_TUNE=1        — run batch sweep at startup (slow; prefer tune script)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${ROOT}/build_remote_test"
 source "${ROOT}/scripts/setup_cuda_env.sh"
+
+# Aggressive RTX 5090 production defaults (override via env if needed).
+export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
+export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-2}"
 
 WALLET="${PROPMINER_WALLET:-}"
 POOL="${PROPMINER_POOL:-prl.kryptex.network:443}"
@@ -101,8 +110,13 @@ nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total \
 
 echo "[mine] mode=production pool=${POOL} gpus=${GPUS}" | propminer_log
 echo "[mine] wallet=${WALLET} worker=${WORKER:-<from-wallet-or-default>}" | propminer_log
-echo "[mine] profile: --rtx5090 (N up to 262144 from VRAM, batch=20, pool gRPC/TLS)" \
+echo "[mine] profile: --rtx5090 aggressive prod (N=max VRAM, cluster_m=${PEARL_GEMM_CONSUMER_CLUSTER_M})" \
     | propminer_log
+echo "[mine] PROPMINER_USE_TUNE_CACHE=${PROPMINER_USE_TUNE_CACHE} (autotune.json overrides cluster/carveout)" \
+    | propminer_log
+if [[ -n "${PROPMINER_BATCH:-}" ]]; then
+    echo "[mine] PROPMINER_BATCH=${PROPMINER_BATCH}" | propminer_log
+fi
 echo "[mine] Starting miner (runs until container is stopped)..." | propminer_log
 
 MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --pool "${POOL}" --wallet "${WALLET}")

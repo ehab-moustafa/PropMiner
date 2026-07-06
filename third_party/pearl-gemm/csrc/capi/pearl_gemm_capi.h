@@ -36,6 +36,12 @@ int pearl_capi_abi_version(void);
 // Native build profile reporting. Used by miner startup to fail fast when a
 // loaded architecture-specific .so cannot run on the selected GPU.
 const char* pearl_capi_build_profile(void);
+// Compile-time consumer knob manifest (e.g. k128-s2-sw3-mb1-cp_async).
+const char* pearl_capi_build_knobs(void);
+// Runtime transcript GEMM kernel (e.g. consumer, geforce).
+const char* pearl_capi_active_kernel_name(void);
+// Fail fast when PEARL_GEMM_KERNEL requests a kernel not compiled in.
+int pearl_capi_validate_kernel_selection(void);
 int pearl_capi_supports_sm(int major, int minor);
 
 // Sizes (bytes).

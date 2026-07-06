@@ -3,7 +3,7 @@
 Run these in order on the target machine. These steps validate the load-balancing rules built into the code:
 
 - **No datacenter bleed-through**: all builds target `sm_120`, not `sm_90` or `sm_100a`.
-- **CPU hashing isolation**: the CPU only generates seeds via `SeedGenerator`; all matrix/noise/GEMM math runs on the GPU.
+- **CPU hashing isolation**: the CPU uploads an 8-byte monotonic nonce counter via pinned async H2D on `seed_copy_stream_`; all matrix/noise/GEMM math runs on the GPU.
 - **Strict double-buffering overlap**: `GpuWorker` uses ping/pong compute streams plus a dedicated `seed_copy_stream_` for `cudaMemcpyAsync` seed upload.
 - **Cache alignment**: default shape is `M=8192, N=32768, K=128` with tile `128x256x128`, launching `8192` CTAs on `170` SMs.
 

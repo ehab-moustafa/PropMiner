@@ -13,11 +13,15 @@
 #include "pearl_capi_wrapper.h"
 #include "pearl_types.h"
 #include "gpu_tuner.h"
+#include "hashrate_metrics.h"
 #include "gpu_worker.h"
 #include "job_key.h"
 #include "share_builder.h"
 #include "sigma_context.h"
 #include "rtx5090_profile.h"
+#include "kernel_knob_cache.h"
+#include "mine_batch_cache.h"
+#include "tune_cache.h"
 
 #include "cuda_compat.h"
 #include <condition_variable>
@@ -122,6 +126,113 @@ static int run_self_test() {
     return 0;
 }
 
+static int run_mine_batch_tune(const std::vector<int>& gpu_indices,
+                               const pearl::MiningConfig& cfg,
+                               double seconds_per_candidate,
+                               int repeats) {
+    using namespace pearl;
+    if (gpu_indices.empty()) {
+        fprintf(stderr, "[batch-tune] No GPU indices\n");
+        return 1;
+    }
+    const int idx = gpu_indices[0];
+    fprintf(stderr,
+            "[batch-tune] Sweeping mine batch at M=%d N=%d (%ds x %d repeats/candidate)\n",
+            cfg.m, cfg.n, static_cast<int>(seconds_per_candidate), repeats);
+
+    GpuTuner tuner(idx);
+    auto result = tuner.tune_mine_batch(cfg, seconds_per_candidate, repeats);
+    if (result.hashrate <= 0.0) {
+        fprintf(stderr, "[batch-tune] No candidate completed a full batch\n");
+        return 1;
+    }
+
+    MineBatchResult cached;
+    cached.m = cfg.m;
+    cached.n = cfg.n;
+    cached.batch = result.batch_size;
+    cached.hashrate = result.hashrate;
+    cached.use_graph = result.use_graph;
+    MineBatchCache cache;
+    cache.save(idx, cached);
+
+    fprintf(stderr,
+            "[batch-tune] Winner: batch=%d (%.2f TMAD/s) -> %s\n",
+            cached.batch, tmad_from_tuner_ops_per_sec(cached.hashrate),
+            MineBatchCache::cache_path().c_str());
+    return 0;
+}
+
+static int run_cluster_sweep(const std::vector<int>& gpu_indices,
+                             const pearl::MiningConfig& cfg,
+                             int batch,
+                             double seconds_per_candidate,
+                             int repeats) {
+    using namespace pearl;
+    if (gpu_indices.empty()) {
+        fprintf(stderr, "[cluster-tune] No GPU indices\n");
+        return 1;
+    }
+    const int idx = gpu_indices[0];
+    fprintf(stderr,
+            "[cluster-tune] Sweeping cluster_m in {1,2,4} at M=%d N=%d batch=%d "
+            "(%ds x %d repeats; cluster_m=3 unsupported by kernel)\n",
+            cfg.m, cfg.n, batch,
+            static_cast<int>(seconds_per_candidate), repeats);
+
+    GpuTuner tuner(idx);
+    auto result = tuner.tune_cluster_sweep(cfg, batch, seconds_per_candidate, repeats);
+    if (result.hashrate <= 0.0) {
+        fprintf(stderr, "[cluster-tune] No candidate completed a full batch\n");
+        return 1;
+    }
+
+    fprintf(stderr,
+            "[cluster-tune] Winner: cluster_m=%d (%.2f TMAD/s)\n"
+            "[cluster-tune] Apply for prod: export PEARL_GEMM_CONSUMER_CLUSTER_M=%d\n",
+            result.cluster_m, tmad_from_tuner_ops_per_sec(result.hashrate),
+            result.cluster_m);
+    return 0;
+}
+
+static int run_runtime_autotune(const std::vector<int>& gpu_indices,
+                                double seconds_per_candidate,
+                                int repeats) {
+    using namespace pearl;
+    if (gpu_indices.empty()) {
+        fprintf(stderr, "[autotune] No GPU indices\n");
+        return 1;
+    }
+    const int idx = gpu_indices[0];
+    fprintf(stderr,
+            "[autotune] Full runtime sweep (M/N, batch, graph, cluster_m, carveout) "
+            "(%gs x %d repeats/candidate)\n",
+            seconds_per_candidate, repeats);
+
+    GpuTuner tuner(idx);
+    auto result = tuner.tune(seconds_per_candidate, repeats);
+    if (result.hashrate <= 0.0) {
+        fprintf(stderr, "[autotune] No candidate produced measurable hashrate\n");
+        return 1;
+    }
+
+    TuneCache cache;
+    cache.save(idx, result);
+
+    fprintf(stderr,
+            "[autotune] Winner: M=%d N=%d batch=%d graph=%s cluster_m=%d "
+            "carveout=%d -> %.2f TMAD/s\n"
+            "[autotune] Cached at %s\n"
+            "[autotune] Prod: PROPMINER_AUTOTUNE=1 (or set PEARL_GEMM_CONSUMER_CLUSTER_M=%d "
+            "and PROPMINER_BATCH=%d)\n",
+            result.config.m, result.config.n, result.batch_size,
+            result.use_graph ? "yes" : "no",
+            result.cluster_m, result.carveout_percent,
+            tmad_from_tuner_ops_per_sec(result.hashrate), TuneCache::cache_path().c_str(),
+            result.cluster_m, result.batch_size);
+    return 0;
+}
+
 } // namespace
 
 void signal_handler(int sig) {
@@ -143,11 +254,17 @@ static void print_usage(const char* prog) {
         "  --gpus INDEXES       GPU indices, comma-separated (default: all)\n"
         "  --bench SECONDS      Run benchmark only, don't connect to pool\n"
         "  --self-test          Mine tiny problem + verify first share, then exit\n"
+        "  --tune-mine-batch S  Sweep mine batch at production N, write cache, exit\n"
+        "  --tune-cluster S     Sweep cluster_m {1,2,4} at production N, exit\n"
+        "  --tune-autotune S    Full runtime autotune (M/N/batch/cluster), write cache, exit\n"
         "  --config M,N,K,R     Override default mining dimensions\n"
         "  --rtx5090            RTX 5090 profile (M=8192, N up to 262144 from VRAM)\n"
         "  --no-watchdog        Disable GPU watchdog/auto-recovery thread\n"
         "  --disable-cpu        Explicitly disable CPU mining (default; no-op)\n"
         "  --tls 0/1            Use TLS (default: 1)\n"
+        "  Env: PROPMINER_AUTOTUNE=0|1|2|force  Runtime autotune + knob cache (5090)\n"
+        "  Env: PROPMINER_BATCH=N            Override mine batch (default: cache or 4)\n"
+        "  Env: PROPMINER_BATCH_TUNE=1       Run mine batch sweep at startup (slow)\n"
         "  --help               Show this help\n"
         "\nExamples:\n"
         "  %s --wallet krxX2P3Z84.mine-crypto-script\n"
@@ -190,6 +307,12 @@ int main(int argc, char* argv[]) {
     int bench_seconds = 0;
     bool self_test = false;
     bool use_rtx5090_profile = false;
+    int tune_mine_batch_seconds = 0;
+    int tune_mine_batch_repeats = 2;
+    int tune_cluster_seconds = 0;
+    int tune_cluster_repeats = 3;
+    int tune_autotune_seconds = 0;
+    int tune_autotune_repeats = 3;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0) {
@@ -224,6 +347,15 @@ int main(int argc, char* argv[]) {
         }
         else if (strcmp(argv[i], "--self-test") == 0) {
             self_test = true;
+        }
+        else if (strcmp(argv[i], "--tune-mine-batch") == 0 && i + 1 < argc) {
+            tune_mine_batch_seconds = std::stoi(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--tune-cluster") == 0 && i + 1 < argc) {
+            tune_cluster_seconds = std::stoi(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--tune-autotune") == 0 && i + 1 < argc) {
+            tune_autotune_seconds = std::stoi(argv[++i]);
         }
         else if (strcmp(argv[i], "--tls") == 0 && i + 1 < argc) {
             cfg.use_tls = std::stoi(argv[++i]) != 0;
@@ -269,12 +401,6 @@ int main(int argc, char* argv[]) {
         return run_self_test();
     }
 
-    if (bench_seconds == 0 && cfg.wallet_address.empty()) {
-        fprintf(stderr, "[main] Error: --wallet is required for mining\n\n");
-        print_usage(argv[0]);
-        return 1;
-    }
-
     int n = pearl::GemmCapi::device_count();
     if (n <= 0) {
         fprintf(stderr, "[main] No CUDA devices found\n");
@@ -284,8 +410,6 @@ int main(int argc, char* argv[]) {
         for (int i = 0; i < n; ++i) cfg.gpu_indices.push_back(i);
     }
 
-    // Auto-shape mining config to each selected GPU unless the user explicitly
-    // overrode the dimensions via --config.
     bool user_overrode_config = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--config") == 0) { user_overrode_config = true; break; }
@@ -300,7 +424,13 @@ int main(int argc, char* argv[]) {
         }
         const int n_cap = (bench_seconds > 0) ? pearl::Rtx5090Profile::kBenchMaxN : 0;
         cfg.mining_config = pearl::rtx5090_mining_config(vram_free, n_cap);
-        cfg.batch_size = pearl::Rtx5090Profile::kDefaultBatch;
+        if (bench_seconds == 0 && !user_overrode_config) {
+            cfg.batch_size = pearl::MineBatchCache::resolve(
+                cfg.gpu_indices[0], cfg.mining_config.m, cfg.mining_config.n,
+                pearl::Rtx5090Profile::kDefaultMineBatch);
+        } else if (bench_seconds > 0) {
+            cfg.batch_size = pearl::Rtx5090Profile::kDefaultMineBatch;
+        }
         const int ctas = pearl::Rtx5090Profile::tiles(cfg.mining_config.m,
                                                       cfg.mining_config.n);
         const int tail = ctas % pearl::Rtx5090Profile::kSMCount;
@@ -312,12 +442,83 @@ int main(int argc, char* argv[]) {
                           / pearl::Rtx5090Profile::kSMCount,
                 tail,
                 n_cap > 0 ? " (bench N cap)" : "");
-        // Rtx5090 profile is pre-tuned; skip multi-minute autotune unless requested.
+
+        pearl::GemmCapi capi;
+        if (const int kv = capi.validate_kernel_selection(); kv != 0) {
+            return 1;
+        }
+        const char* built_knobs = capi.build_knobs();
+        fprintf(stderr, "[main] Kernel knobs (built): %s\n",
+                built_knobs ? built_knobs : "unknown");
+        fprintf(stderr, "[main] Active transcript kernel: %s\n",
+                capi.active_kernel_name() ? capi.active_kernel_name() : "unknown");
+
         const char* autotune_env = std::getenv("PROPMINER_AUTOTUNE");
-        if (!autotune_env || autotune_env[0] == '\0' ||
-            std::strcmp(autotune_env, "0") == 0) {
+        int autotune_level = 0;
+        if (autotune_env && autotune_env[0] != '\0') {
+            if (std::strcmp(autotune_env, "force") == 0) {
+                cfg.autotune = true;
+                autotune_level = 2;
+            } else if (std::strcmp(autotune_env, "2") == 0) {
+                cfg.autotune = true;
+                autotune_level = 2;
+            } else if (std::strcmp(autotune_env, "1") == 0) {
+                cfg.autotune = true;
+                autotune_level = 1;
+            } else if (std::strcmp(autotune_env, "0") == 0) {
+                cfg.autotune = false;
+            } else {
+                fprintf(stderr,
+                        "[main] WARN: unknown PROPMINER_AUTOTUNE='%s' (use 0|1|2|force)\n",
+                        autotune_env);
+                cfg.autotune = false;
+            }
+        } else {
             cfg.autotune = false;
-            fprintf(stderr, "[main] RTX 5090: autotune off (set PROPMINER_AUTOTUNE=1 to enable)\n");
+        }
+
+        const char* use_cache_env = std::getenv("PROPMINER_USE_TUNE_CACHE");
+        if (use_cache_env && use_cache_env[0] == '0') {
+            cfg.use_tune_cache = false;
+        } else if (bench_seconds == 0 && !cfg.autotune) {
+            cfg.use_tune_cache = true;
+        } else if (use_cache_env && use_cache_env[0] && use_cache_env[0] != '0') {
+            cfg.use_tune_cache = true;
+        }
+
+        if (cfg.autotune) {
+            fprintf(stderr,
+                    "[main] RTX 5090: runtime autotune on (PROPMINER_AUTOTUNE=%s)\n",
+                    autotune_env);
+            pearl::KernelKnobCache knob_cache;
+            for (int idx : cfg.gpu_indices) {
+                if (auto cached = knob_cache.load(idx)) {
+                    fprintf(stderr,
+                            "[main] Kernel knob cache GPU %d: %s (%.0f H/s, self-test=%s)\n",
+                            idx, cached->manifest.c_str(), cached->hashrate,
+                            cached->self_test_ok ? "ok" : "no");
+                    if (built_knobs &&
+                        !pearl::KernelKnobCache::manifest_matches(
+                            built_knobs, cached->manifest.c_str())) {
+                        fprintf(stderr,
+                                "[main] WARN: built .so knobs != cached winner; "
+                                "run PROPMINER_MODE=tune or ./scripts/tune_blackwell_knobs.sh\n");
+                    }
+                } else if (autotune_level >= 2) {
+                    fprintf(stderr,
+                            "[main] No kernel knob cache for GPU %d; "
+                            "run PROPMINER_MODE=tune or ./scripts/tune_blackwell_knobs.sh\n",
+                            idx);
+                }
+            }
+        } else {
+            fprintf(stderr,
+                    "[main] RTX 5090 prod: aggressive defaults "
+                    "(cluster_m=%d, tune cache %s; "
+                    "PROPMINER_USE_TUNE_CACHE=0 to skip cache, "
+                    "PEARL_GEMM_CONSUMER_CLUSTER_M=1 to disable clusters)\n",
+                    pearl::Rtx5090Profile::kProdDefaultClusterM,
+                    cfg.use_tune_cache ? "on" : "off");
         }
     } else if (!user_overrode_config) {
         for (int idx : cfg.gpu_indices) {
@@ -331,6 +532,59 @@ int main(int argc, char* argv[]) {
                 break;
             }
         }
+    }
+
+    if (tune_mine_batch_seconds > 0) {
+        if (!use_rtx5090_profile) {
+            fprintf(stderr, "[batch-tune] --tune-mine-batch requires --rtx5090\n");
+            return 1;
+        }
+        if (const char* rep = std::getenv("PROPMINER_BATCH_TUNE_REPEATS")) {
+            tune_mine_batch_repeats = std::max(1, std::atoi(rep));
+        }
+        return run_mine_batch_tune(cfg.gpu_indices, cfg.mining_config,
+                                   static_cast<double>(tune_mine_batch_seconds),
+                                   tune_mine_batch_repeats);
+    }
+
+    if (tune_cluster_seconds > 0) {
+        if (!use_rtx5090_profile) {
+            fprintf(stderr, "[cluster-tune] --tune-cluster requires --rtx5090\n");
+            return 1;
+        }
+        if (const char* rep = std::getenv("PROPMINER_CLUSTER_TUNE_REPEATS")) {
+            tune_cluster_repeats = std::max(1, std::atoi(rep));
+        }
+        int batch = cfg.batch_size;
+        if (const char* b = std::getenv("PROPMINER_BENCH_BATCH")) {
+            batch = std::max(1, std::atoi(b));
+        } else {
+            batch = pearl::MineBatchCache::resolve(
+                cfg.gpu_indices[0], cfg.mining_config.m, cfg.mining_config.n,
+                cfg.batch_size);
+        }
+        return run_cluster_sweep(cfg.gpu_indices, cfg.mining_config, batch,
+                                 static_cast<double>(tune_cluster_seconds),
+                                 tune_cluster_repeats);
+    }
+
+    if (tune_autotune_seconds > 0) {
+        if (!use_rtx5090_profile) {
+            fprintf(stderr, "[autotune] --tune-autotune requires --rtx5090\n");
+            return 1;
+        }
+        if (const char* rep = std::getenv("PROPMINER_AUTOTUNE_REPEATS")) {
+            tune_autotune_repeats = std::max(1, std::atoi(rep));
+        }
+        return run_runtime_autotune(cfg.gpu_indices,
+                                    static_cast<double>(tune_autotune_seconds),
+                                    tune_autotune_repeats);
+    }
+
+    if (bench_seconds == 0 && cfg.wallet_address.empty()) {
+        fprintf(stderr, "[main] Error: --wallet is required for mining\n\n");
+        print_usage(argv[0]);
+        return 1;
     }
 
     signal(SIGINT, signal_handler);

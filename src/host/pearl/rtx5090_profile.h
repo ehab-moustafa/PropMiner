@@ -34,11 +34,25 @@ struct Rtx5090Profile {
     static constexpr int kDefaultR = 128;
 
     // Batch size tuned to amortize launch overhead without excessive latency.
-    static constexpr int kDefaultBatch = 20;
+    // kDefaultMineBatch is the Salad/WSL2-safe startup default (v1.38: batch=1
+    // beat batch=4 in short benches; batch=4 is a practical mine default).
+    // kMaxMineBatch is the upper sweep bound for offline tuning.
+    static constexpr int kDefaultMineBatch = 4;
+    static constexpr int kMaxMineBatch = 20;
+    static constexpr int kDefaultBatch = kDefaultMineBatch;  // legacy alias
+
+    // Production mine: thread-block cluster_m (2 beats 1 on many 5090 boxes; tune to confirm).
+    static constexpr int kProdDefaultClusterM = 2;
+
+    static constexpr int kMineBatchCandidates[] = {
+        1, 2, 4, 6, 8, 10, 12, 16, 20,
+    };
 
     // Bench cap: large-N GEMMs may not finish one batch inside the Salad/WSL2
-    // 120s bench window.  Production mining uses pick_n_for_vram() without cap.
+    // bench window.  Production mining uses pick_n_for_vram() without cap.
     static constexpr int kBenchMaxN = 32768;
+    static constexpr int kBenchDefaultSeconds = 180;
+    static constexpr int kBenchGraceSeconds = 60;
 
     // Number of CTAs launched per GEMM = (M/kTileM) * (N/kTileN).
     static constexpr int tiles(int M, int N) {

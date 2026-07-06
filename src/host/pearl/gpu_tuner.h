@@ -36,6 +36,18 @@ public:
                              double seconds_per_candidate,
                              int repeats);
 
+    // Batch-only sweep at a fixed production M/N (mine mode).  Discards
+    // candidates that fail to complete at least one full batch.
+    TuningResult tune_mine_batch(const MiningConfig& cfg,
+                                 double seconds_per_candidate = 12.0,
+                                 int repeats = 2);
+
+    // Cluster-only sweep at fixed M/N/batch (1, 2, 4 — kernel does not support 3).
+    TuningResult tune_cluster_sweep(const MiningConfig& cfg,
+                                  int batch,
+                                  double seconds_per_candidate = 15.0,
+                                  int repeats = 3);
+
     // Pick a sensible base shape for the installed GPU's free VRAM.
     MiningConfig shape_for_vram(size_t free_bytes,
                                 int major, int minor) const;
@@ -46,12 +58,13 @@ private:
     // Evaluate one configuration.  Returns 0 on failure.
     double benchmark_config(const MiningConfig& cfg, int batch, bool use_graph,
                             int cluster_m, int carveout_percent,
-                            double seconds) const;
+                            double seconds, int min_iters = 0) const;
 
     // Repeatably measure a candidate and return the trimmed-mean hashrate.
     double benchmark_stable(const MiningConfig& cfg, int batch, bool use_graph,
                             int cluster_m, int carveout_percent,
-                            double seconds, int repeats) const;
+                            double seconds, int repeats,
+                            int min_iters = 0) const;
 };
 
 } // namespace pearl

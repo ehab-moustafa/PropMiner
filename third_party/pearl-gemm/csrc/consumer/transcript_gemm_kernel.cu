@@ -79,7 +79,8 @@ using namespace cute;
 #error "PEARL_CONSUMER_USE_TMA_EXPERIMENT is Blackwell-only"
 #endif
 #if PEARL_CONSUMER_USE_TMA_EXPERIMENT
-#error "Blackwell consumer TMA loader is scaffolded but not implemented; build the cp.async baseline or add the TMA mainloop before enabling this"
+#include <cute/arch/copy_sm90_tma.hpp>
+#include "tma_tile_loader.cuh"
 #endif
 
 // ─── Shape constants (must match transcript_kernel.cu) ───────────────────────
@@ -180,10 +181,36 @@ using SmemLayoutB = decltype(tile_to_shape(
     SmemLayoutAtomB{},
     make_shape(Int<kBN>{}, Int<kBK>{}, Int<kStages>{})));
 
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+using ConsumerTmaFlatA = tma_loader::SmemLayoutFlatA<SmemLayoutAtomA, SmemLayoutAtomB,
+                                                     kBM, kBN, kBK>;
+using ConsumerTmaFlatB = tma_loader::SmemLayoutFlatB<SmemLayoutAtomA, SmemLayoutAtomB,
+                                                     kBM, kBN, kBK>;
+using ConsumerTmaStagedA =
+    tma_loader::SmemLayoutStagedA<SmemLayoutAtomA, kBM, kBK, kStages>;
+using ConsumerTmaStagedB =
+    tma_loader::SmemLayoutStagedB<SmemLayoutAtomB, kBN, kBK, kStages>;
+using ConsumerTmaA =
+    tma_loader::TmaA<ElementIn, ConsumerTmaFlatA, ConsumerTmaFlatB>;
+using ConsumerTmaB =
+    tma_loader::TmaB<ElementIn, ConsumerTmaFlatA, ConsumerTmaFlatB>;
+
+static_assert(cute::cosize_v<SmemLayoutA> == cute::cosize_v<ConsumerTmaStagedA>,
+              "TMA staged A smem must match cp.async SmemLayoutA");
+static_assert(cute::cosize_v<SmemLayoutB> == cute::cosize_v<ConsumerTmaStagedB>,
+              "TMA staged B smem must match cp.async SmemLayoutB");
+
+struct SharedStorage {
+  alignas(128) ElementIn smem_A[cute::cosize_v<SmemLayoutA>];
+  alignas(128) ElementIn smem_B[cute::cosize_v<SmemLayoutB>];
+  tma_loader::TmaPipelineStorage<kStages> tma_pipe;
+};
+#else
 struct SharedStorage {
   alignas(16) ElementIn smem_A[cute::cosize_v<SmemLayoutA>];
   alignas(16) ElementIn smem_B[cute::cosize_v<SmemLayoutB>];
 };
+#endif
 
 // ─── The fused kernel ───────────────────────────────────────────────────────
 // Default minBlocks is conservative and sweepable per architecture. The fastest
@@ -204,7 +231,12 @@ __global__ void transcript_gemm_kernel_consumer(
     uint32_t const*   __restrict__ pow_target,
     uint32_t const*   __restrict__ pow_key,
     HostSignalSync*               host_signal_sync,
-    HostSignalHeader*             host_signal_header_pinned) {
+    HostSignalHeader*             host_signal_header_pinned
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+    , __grid_constant__ ConsumerTmaA tma_a
+    , __grid_constant__ ConsumerTmaB tma_b
+#endif
+    ) {
 
   extern __shared__ uint8_t smem_raw[];
   SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_raw);
@@ -262,6 +294,23 @@ __global__ void transcript_gemm_kernel_consumer(
   const int K_TILES = K / kBK;
   const int reduce_every_k = R / kBK;       // R=128: kBK=128 → 1
 
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+  // ── gmem→smem via TMA (thread 0 producer, mbarrier completion) ───────
+  auto& tma_pipe = smem.tma_pipe;
+  tma_loader::init_tma_barriers(tma_pipe, tid);
+  __syncthreads();
+
+  // Prologue: issue first kStages-1 loads (mirrors cp.async prologue).
+  CUTLASS_PRAGMA_UNROLL
+  for (int s = 0; s < kStages - 1; ++s) {
+    if (s < K_TILES) {
+      tma_loader::tma_issue_k_tile<ConsumerTmaA, ConsumerTmaB, ConsumerTmaStagedA,
+                                   ConsumerTmaStagedB, kBM, kBN, kBK, kStages,
+                                   ElementIn>(
+          tma_a, tma_b, tma_pipe, smem.smem_A, smem.smem_B, gA, gB, s, s);
+    }
+  }
+#else
   // ── gmem→smem TiledCopy via cp.async ─────────────────────────────────
   // 16-byte cp.async granule (uint128_t).  Thread layout (64,4) k-major
   // and value layout (1,16) k-major:  256 threads cooperatively load 64
@@ -321,10 +370,26 @@ __global__ void transcript_gemm_kernel_consumer(
   for (int s = 0; s < kStages - 1; ++s) {
     if (s < K_TILES) issue_load(s, s);
   }
+#endif
 
   for (int k_iter = 0; k_iter < K_TILES; ++k_iter) {
     int stg = k_iter % kStages;
 
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+    // Wait for this iter's stage (replaces cp.async.wait_group).
+    tma_loader::tma_wait_stage<kStages>(tma_pipe, stg, k_iter);
+    __syncthreads();
+
+    // Prefetch the next K-tile (mirrors cp.async issue_load after wait).
+    int next_k = k_iter + kStages - 1;
+    if (next_k < K_TILES) {
+      tma_loader::tma_issue_k_tile<ConsumerTmaA, ConsumerTmaB, ConsumerTmaStagedA,
+                                   ConsumerTmaStagedB, kBM, kBN, kBK, kStages,
+                                   ElementIn>(
+          tma_a, tma_b, tma_pipe, smem.smem_A, smem.smem_B, gA, gB,
+          next_k, next_k % kStages);
+    }
+#else
     // Wait for the load of this iter's stage to land, sync all threads
     // (also a barrier between previous iter's MMA-reads-of-smem and the
     // upcoming prefetch into the same stage).  With kStages=3 prefetches
@@ -340,6 +405,7 @@ __global__ void transcript_gemm_kernel_consumer(
     } else {
       asm volatile("cp.async.commit_group;\n");
     }
+#endif
 
     // ── Async snapshot reduction ──────────────────────────────────────────
     // Snapshot XOR-reduce for the boundary closed at the END of the
@@ -598,6 +664,22 @@ static cudaError_t ensure_transcript_kernel_attrs(size_t smem_bytes) {
   return cudaSuccess;
 }
 
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+static void build_consumer_tma_descriptors(int8_t const* A, int8_t const* B,
+                                           int Mi, int Ni, int Ki,
+                                           ConsumerTmaA& tma_a,
+                                           ConsumerTmaB& tma_b) {
+  Tensor mA = make_tensor(
+      make_gmem_ptr(const_cast<int8_t*>(A)),
+      make_layout(make_shape(Mi, Ki), make_stride(Ki, _1{})));
+  Tensor mB = make_tensor(
+      make_gmem_ptr(const_cast<int8_t*>(B)),
+      make_layout(make_shape(Ni, Ki), make_stride(Ki, _1{})));
+  tma_a = make_tma_copy(SM90_TMA_LOAD{}, mA, ConsumerTmaFlatA{});
+  tma_b = make_tma_copy(SM90_TMA_LOAD{}, mB, ConsumerTmaFlatB{});
+}
+#endif
+
 cudaError_t launch_transcript_gemm(
     int8_t  const* A,
     int8_t  const* B,
@@ -630,6 +712,12 @@ cudaError_t launch_transcript_gemm(
                      (cluster_m > 1) &&
                      ((grid.x % (unsigned)cluster_m) == 0);
 
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+  ConsumerTmaA tma_a;
+  ConsumerTmaB tma_b;
+  build_consumer_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
+#endif
+
   (void)cudaGetLastError();
   if (use_cluster) {
     cudaLaunchConfig_t cfg = {};
@@ -647,12 +735,20 @@ cudaError_t launch_transcript_gemm(
     err = cudaLaunchKernelEx(&cfg, transcript_gemm_kernel_consumer,
                              A, B, C, transcript,
                              (int)M, (int)N, (int)K, (int)R,
-                             nullptr, nullptr, nullptr, nullptr);
+                             nullptr, nullptr, nullptr, nullptr
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+                             , tma_a, tma_b
+#endif
+                             );
     if (err != cudaSuccess) return err;
   } else {
     transcript_gemm_kernel_consumer<<<grid, block, smem_bytes, stream>>>(
         A, B, C, transcript, (int)M, (int)N, (int)K, (int)R,
-        nullptr, nullptr, nullptr, nullptr);
+        nullptr, nullptr, nullptr, nullptr
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+        , tma_a, tma_b
+#endif
+        );
   }
   return cudaGetLastError();
 }
@@ -688,6 +784,12 @@ cudaError_t launch_transcript_gemm_headless(
                      (cluster_m > 1) &&
                      ((grid.x % (unsigned)cluster_m) == 0);
 
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+  ConsumerTmaA tma_a;
+  ConsumerTmaB tma_b;
+  build_consumer_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
+#endif
+
   (void)cudaGetLastError();
   if (use_cluster) {
     cudaLaunchConfig_t cfg = {};
@@ -706,13 +808,21 @@ cudaError_t launch_transcript_gemm_headless(
                              A, B, C, nullptr,
                              (int)M, (int)N, (int)K, (int)R,
                              pow_target, pow_key,
-                             host_signal_sync, host_signal_header_pinned);
+                             host_signal_sync, host_signal_header_pinned
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+                             , tma_a, tma_b
+#endif
+                             );
     if (err != cudaSuccess) return err;
   } else {
     transcript_gemm_kernel_consumer<<<grid, block, smem_bytes, stream>>>(
         A, B, C, nullptr, (int)M, (int)N, (int)K, (int)R,
         pow_target, pow_key,
-        host_signal_sync, host_signal_header_pinned);
+        host_signal_sync, host_signal_header_pinned
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+        , tma_a, tma_b
+#endif
+        );
   }
   return cudaGetLastError();
 }
