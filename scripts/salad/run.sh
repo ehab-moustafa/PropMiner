@@ -59,7 +59,8 @@ fi
 
 if [[ -z "${WALLET}" ]]; then
     echo "ERROR: set PROPMINER_WALLET (e.g. krxXXXX)" >&2
-    exit 1
+    echo "[salad] Container staying alive for logs (sleep infinity)..." >&2
+    exec sleep infinity
 fi
 
 if [[ -n "${PROPMINER_POOL:-}" ]]; then
