@@ -437,7 +437,7 @@ int WorkerOrchestrator::run() {
         }
     }
 
-    MiningConfig::warn_if_cluster_mismatch(tuned_cluster_m);
+    MiningConfig::warn_if_cluster_m_mismatch(tuned_cluster_m);
 
     TuneCache tune_cache;
     if (cfg_.autotune && cfg_.speed_test_seconds == 0) {
