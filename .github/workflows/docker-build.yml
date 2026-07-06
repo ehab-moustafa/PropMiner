@@ -4,6 +4,11 @@ on:
   push:
     branches: [master, main]
   workflow_dispatch:
+    inputs:
+      build_devel:
+        description: Also build and push devel image (adds ~5 min)
+        type: boolean
+        default: false
 
 concurrency:
   group: propminer-docker-${{ github.ref }}
@@ -34,6 +39,11 @@ jobs:
           else
             echo "gemm_changed=false" >> "$GITHUB_OUTPUT"
           fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.build_devel }}" == "true" ]]; then
+            echo "build_devel=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_devel=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -56,12 +66,16 @@ jobs:
             ghcr.io/ehab-moustafa/propminer-rtx5090:v1.48-full-rtx5090
           provenance: false
           cache-from: |
+            type=registry,ref=ghcr.io/ehab-moustafa/propminer-rtx5090:buildcache
             type=gha,scope=propminer-gemm
             type=gha,scope=propminer-host
           cache-to: |
-            type=gha,mode=max,scope=propminer-${{ steps.meta.outputs.gemm_changed == 'true' && 'gemm' || 'host' }}
+            type=registry,ref=ghcr.io/ehab-moustafa/propminer-rtx5090:buildcache,mode=max
+            type=gha,mode=max,scope=propminer-gemm
+            type=gha,mode=max,scope=propminer-host
 
       - name: Build and push devel image (nvcc + full source)
+        if: steps.meta.outputs.build_devel == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -73,7 +87,9 @@ jobs:
             ghcr.io/ehab-moustafa/propminer-rtx5090:v1.48-devel-rtx5090
           provenance: false
           cache-from: |
+            type=registry,ref=ghcr.io/ehab-moustafa/propminer-rtx5090:buildcache
             type=gha,scope=propminer-gemm
             type=gha,scope=propminer-host
+            type=gha,scope=propminer-devel
           cache-to: |
             type=gha,mode=max,scope=propminer-devel
