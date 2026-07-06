@@ -70,8 +70,6 @@ std::vector<uint8_t> BincodeEncoder::encode_plain_proof(
     // ARC StratumSession.WriteMatrixMerkleProof uses share.HashA/HashB as wire roots.
     write_matrix_merkle_proof(out, a_proof, hash_a, a_row_indices);
     write_matrix_merkle_proof(out, b_proof, hash_b, b_col_indices);
-    // V2 PlainProof: moe: Option<MoEProofParams>::None (upstream pearl/zk-pow).
-    out.push_back(0x00);
     return out;
 }
 

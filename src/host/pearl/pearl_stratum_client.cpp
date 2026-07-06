@@ -153,8 +153,8 @@ double parse_password_difficulty(const std::string& password) {
 }  // namespace
 
 PearlStratumClient::PearlStratumClient(const Options& opts) : opts_(opts) {
-    // SRBMiner/suprnova object submit {job_id, plain_proof} — default for Kryptex.
-    use_object_submit_ = true;
+    // pearl/v1 (Kryptex :7048) requires positional submit; object form is rejected.
+    use_object_submit_ = false;
     if (const char* env = std::getenv("PROPMINER_STRATUM_OBJECT_SUBMIT"); env && env[0]) {
         use_object_submit_ = (env[0] == '1' || env[0] == 'y' || env[0] == 'Y');
     }
