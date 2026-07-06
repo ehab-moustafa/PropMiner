@@ -41,8 +41,9 @@ struct Rtx5090Profile {
     static constexpr int kMaxMineBatch = 20;
     static constexpr int kDefaultBatch = kDefaultMineBatch;  // legacy alias
 
-    // Production mine: thread-block cluster_m (2 beats 1 on many 5090 boxes; tune to confirm).
-    static constexpr int kProdDefaultClusterM = 2;
+    // Production mine: cluster_m=1 keeps GPU transcript byte-identical with CPU
+    // jackpot verify. cluster_m=2+ requires tuned rows/cols alignment.
+    static constexpr int kProdDefaultClusterM = 1;
 
     static constexpr int kMineBatchCandidates[] = {
         1, 2, 4, 6, 8, 10, 12, 16, 20,

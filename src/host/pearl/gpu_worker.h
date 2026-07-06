@@ -46,6 +46,9 @@ public:
     // Update target nbits mid-sigma (vardiff).
     void set_target_nbits(uint32_t nbits);
 
+    // Live pool share target (may differ from device pow_target mid-batch).
+    uint32_t target_nbits() const { return target_nbits_.load(); }
+
     // Set matmuls per poll (batch size). Tuned by benchmark.
     void set_matmuls_per_poll(int mpp);
 
@@ -96,6 +99,10 @@ private:
         CUdeviceptr seed_dev = 0;
         void* seed_dev_ptr = nullptr;
         uint64_t batch_seed_start = 0;  // seed_lo at graph launch for this batch
+        // nbits encoded in half.pow_target (updated by upload_pow_target).
+        uint32_t pow_target_nbits = 0;
+        // nbits active when batch was queued (pinned for share verify).
+        uint32_t batch_mined_target_nbits = 0;
 
         // Pinned PCIe staging for rare share-D2H paths (GPU isolation).
         uint8_t* pinned_leaf_cvs = nullptr;

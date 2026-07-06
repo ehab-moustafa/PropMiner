@@ -208,6 +208,15 @@ static void test_pow_target_stratum_nbits_roundtrip() {
     EXPECT(hex_target_to_nbits(target_hex) == nbits);
 }
 
+static void test_tighter_target_nbits() {
+    const uint32_t easy = difficulty_to_nbits_pdif(32768.0);
+    const uint32_t hard = difficulty_to_nbits_pdif(65536.0);
+    EXPECT(tighter_target_nbits(0, easy) == easy);
+    EXPECT(tighter_target_nbits(easy, 0) == easy);
+    EXPECT(tighter_target_nbits(easy, hard) == hard);
+    EXPECT(tighter_target_nbits(hard, easy) == hard);
+}
+
 static void test_stratum_share_vs_network_nbits() {
     // Kryptex wire target often encodes network block difficulty (~0x1a07ffff).
     const uint32_t share_nbits = difficulty_to_nbits_pdif(32768.0);
@@ -471,6 +480,7 @@ int main() {
     test_reference_claimed_hash_deterministic();
     test_host_signal_header_index_extraction();
     test_pow_target_stratum_nbits_roundtrip();
+    test_tighter_target_nbits();
     test_stratum_share_vs_network_nbits();
     test_hashrate_metrics_math();
     test_mining_config_conservative();

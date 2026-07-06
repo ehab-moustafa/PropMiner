@@ -528,9 +528,13 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
     const uint64_t daf = share.job.config.difficulty_adjustment_factor();
     const auto diag = diagnose_share_target(claimed.data(), live_nbits, daf);
     if (!diag.clears_with_daf) {
+        const char* hint = diag.clears_without_daf
+            ? "hint=target_mismatch_or_vardiff"
+            : "hint=gpu_cpu_jackpot_mismatch_try_cluster_m_1";
         share_log("verify-fail", "nonce=" + std::to_string(share.nonce) +
                                   " reason=below_share_target " +
                                   format_target_diag(diag, live_nbits) +
+                                  " " + hint +
                                   " tile=" + std::to_string(share.tile_row) + "," +
                                   std::to_string(share.tile_col));
         share_trace("verify-target",

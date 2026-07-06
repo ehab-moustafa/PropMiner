@@ -46,6 +46,21 @@ bool claimed_hash_clears_target(const uint8_t claimed_hash[32],
 bool claimed_hash_clears_nbits_target(const uint8_t claimed_hash[32],
                                       uint32_t nbits);
 
+// Of two compact nbits targets, return the tighter (higher difficulty) one.
+// Zero means unset and defers to the other (ARC ShareTargetGuard.Tighter).
+inline uint32_t tighter_target_nbits(uint32_t a, uint32_t b) {
+    if (a == 0) return b;
+    if (b == 0) return a;
+    const auto ta = nbits_to_target_le(a);
+    const auto tb = nbits_to_target_le(b);
+    for (int i = 31; i >= 0; --i) {
+        if (ta[static_cast<size_t>(i)] != tb[static_cast<size_t>(i)]) {
+            return ta[static_cast<size_t>(i)] < tb[static_cast<size_t>(i)] ? a : b;
+        }
+    }
+    return a;
+}
+
 struct ShareTargetDiag {
     bool clears_with_daf = false;
     bool clears_without_daf = false;

@@ -16,7 +16,7 @@
 #   PROPMINER_BATCH               — mine matmuls per poll (default: cache or 4)
 #   PROPMINER_USE_TUNE_CACHE=1    — apply ~/.cache/propminer/autotune.json (default on)
 #   PROPMINER_STRICT_KNOB_CACHE=1  — fail if kernel_knobs.json mismatches built .so
-#   PEARL_GEMM_CONSUMER_CLUSTER_M   — default 2 for prod (set 1 to disable clustering)
+#   PEARL_GEMM_CONSUMER_CLUSTER_M   — default 1 for prod (set 2/4 only with PROPMINER_ALLOW_CLUSTER_M=1)
 #   PROPMINER_BATCH_TUNE=1        — run batch sweep at startup (slow; prefer tune script)
 #   PROPMINER_USE_RELEASE=1       — download binaries from GitHub Release (bootstrap image)
 #   PROPMINER_RELEASE_TAG=continuous — rolling release tag (default)
@@ -30,7 +30,7 @@ source "${ROOT}/scripts/download_release.sh"
 
 # Aggressive RTX 5090 production defaults (override via env if needed).
 export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
-export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-2}"
+export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-1}"
 
 WALLET="${PROPMINER_WALLET:-}"
 if [[ -n "${PROPMINER_POOL:-}" ]]; then

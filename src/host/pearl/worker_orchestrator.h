@@ -112,6 +112,7 @@ private:
     std::mutex stratum_job_mtx_;
     std::string current_stratum_job_id_;
     std::atomic<uint32_t> pending_target_nbits_{0};
+    std::atomic<uint32_t> live_share_target_nbits_{0};
     std::atomic<double> total_hashrate_{0.0};
     std::atomic<uint64_t> shares_found_{0};
     std::atomic<uint64_t> shares_submitted_{0};

@@ -15,6 +15,7 @@
 #include "kernel_knob_cache.h"
 #include "mine_batch_cache.h"
 #include "pearl_capi_wrapper.h"
+#include "pow_target_utils.h"
 #include "rtx5090_profile.h"
 #include "share_builder.h"
 #include "share_trace.h"
@@ -388,6 +389,7 @@ void WorkerOrchestrator::publish_job_from_assignment(const proto::JobAssignment&
         w->set_target_nbits(ja.target_nbits);
         w->set_sigma(ctx);
     }
+    live_share_target_nbits_.store(ja.target_nbits);
     share_trace("job-installed",
                 "job_id=" + miner_id_hex(ja.job_id) +
                 " height=" + std::to_string(ja.block_height) +
@@ -402,6 +404,7 @@ void WorkerOrchestrator::handle_pool_event(const proto::PoolEvent& evt) {
             break;
         case proto::PoolEventType::Vardiff: {
             const uint32_t nbits = evt.vardiff.new_target_nbits;
+            live_share_target_nbits_.store(nbits);
             for (auto& w : workers_) w->set_target_nbits(nbits);
             auto entry = bus_.drain_latest();
             if (entry.ctx) {
@@ -509,6 +512,7 @@ void WorkerOrchestrator::run_stratum_session() {
                 publish_job_from_assignment(ja);
             },
             [this](uint32_t nbits) {
+                live_share_target_nbits_.store(nbits);
                 for (auto& w : workers_) w->set_target_nbits(nbits);
                 auto entry = bus_.drain_latest();
                 if (entry.ctx) entry.ctx->set_target_nbits(nbits);
@@ -619,6 +623,28 @@ void WorkerOrchestrator::share_sender_thread_func() {
             if (!ShareBuilder::VerifyShare(raw, *raw.sigma_ctx)) {
                 shares_dropped_.fetch_add(1);
                 continue;
+            }
+            // Drop if vardiff tightened while share was queued (ARC ShareTargetGuard).
+            {
+                const uint32_t mined = raw.installed_target_nbits
+                    ? raw.installed_target_nbits
+                    : raw.job.target_nbits;
+                const uint32_t live = live_share_target_nbits_.load();
+                const uint32_t guard = tighter_target_nbits(live, mined);
+                if (guard != 0 && guard != mined && !raw.claimed_hash.empty()) {
+                    const uint64_t daf = raw.job.config.difficulty_adjustment_factor();
+                    const auto diag = diagnose_share_target(
+                        raw.claimed_hash.data(), guard, daf);
+                    if (!diag.clears_with_daf) {
+                        shares_dropped_.fetch_add(1);
+                        share_log("dropped",
+                                  "reason=vardiff_tightened nonce=" +
+                                  std::to_string(raw.nonce) +
+                                  " mined=" + nbits_hex(mined) +
+                                  " live=" + nbits_hex(guard));
+                        continue;
+                    }
+                }
             }
             std::vector<uint8_t> proof;
             if (use_stratum_.load()) {
@@ -883,6 +909,15 @@ int WorkerOrchestrator::run() {
 
     const bool bench_mode = cfg_.speed_test_seconds > 0;
     if (!bench_mode && tuned_config.m == Rtx5090Profile::kDefaultM) {
+        if (tuned_cluster_m > 1) {
+            const char* allow = std::getenv("PROPMINER_ALLOW_CLUSTER_M");
+            if (!allow || allow[0] != '1') {
+                std::cerr << "[orchestrator] WARN: cluster_m=" << tuned_cluster_m
+                          << " disabled for share safety (gpu-hit + verify-fail). "
+                          << "Set PROPMINER_ALLOW_CLUSTER_M=1 to override.\n";
+                tuned_cluster_m = 1;
+            }
+        }
         setenv("PEARL_GEMM_CONSUMER_CLUSTER_M",
                std::to_string(tuned_cluster_m).c_str(), 1);
         if (tuned_carveout >= 0) {

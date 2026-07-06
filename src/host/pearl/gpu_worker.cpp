@@ -13,6 +13,7 @@
 #include "merkle_utils.h"
 #include "pearl_blake3.h"
 #include "pow_target_utils.h"
+#include "share_builder.h"
 #include "share_trace.h"
 #include "watchdog.h"
 
@@ -314,7 +315,9 @@ void GpuWorker::enqueue_share_trigger(HalfBuffers& half, uint64_t nonce,
     job.half = &half;
     job.header = header;
     job.nonce = nonce;
-    job.target_nbits = target_nbits_.load();
+    job.target_nbits = half.batch_mined_target_nbits
+        ? half.batch_mined_target_nbits
+        : target_nbits_.load();
     job.sigma_ctx = ctx;
     if (!job.sigma_ctx) return;
 
@@ -381,6 +384,7 @@ void GpuWorker::upload_pow_target(HalfBuffers& half, uint32_t nbits) {
     auto words = target_le_to_pow_u32(adjusted_pow_target_le(nbits, daf));
     check_cuda(cuMemcpyHtoDAsync(half.pow_target, words.data(), 32, half.stream),
                "pow_target h2d");
+    half.pow_target_nbits = nbits;
     if (share_trace_enabled() || std::getenv("PROPMINER_DEBUG_POW_TARGET")) {
         std::fprintf(stderr,
                      "[gpu] pow_target upload nbits=%s daf=%llu "
@@ -525,6 +529,7 @@ void GpuWorker::prepare_graph(HalfBuffers& half) {
 
 void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count) {
     half.batch_seed_start = seed_lo_start;
+    half.batch_mined_target_nbits = half.pow_target_nbits;
     // Clear host headers.
     for (int i = 0; i < count; ++i) {
         std::memset(half.host_headers[i], 0, half.header_size);
@@ -595,7 +600,8 @@ std::vector<int> GpuWorker::scan_winners(HalfBuffers& half, int batch) {
                         " tile_n=" + std::to_string(hdr.mma_tile_n()) +
                         " tile_row=" + std::to_string(hdr.tile_row_coord()) +
                         " tile_col=" + std::to_string(hdr.tile_col_coord()) +
-                        " target=" + nbits_hex(target_nbits_.load()));
+                        " batch_target=" + nbits_hex(half.batch_mined_target_nbits) +
+                        " live_target=" + nbits_hex(target_nbits_.load()));
         }
     }
     return winners;
@@ -783,13 +789,20 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
     share.a_opened_leaf_data = std::move(a_opened_leaf_data);
     share.a_leaf_cvs = std::move(a_leaf_cvs_host);
 
+    ShareBuilder builder(cfg_);
+    auto claimed = builder.compute_claimed_hash(
+        share, share.job.job_key.data(), hash_a.data(), hash_b.data());
+    share.claimed_hash = claimed;
+
     share_trace("rebuild-done",
                 "nonce=" + std::to_string(share.nonce) +
                 " rows=" + std::to_string(share.a_row_indices.size()) +
                 " cols=" + std::to_string(share.b_col_indices.size()) +
                 " hash_a=" + hex_prefix(share.hash_a.data(), 32) +
                 " hash_b=" + hex_prefix(share.hash_b.data(), 32) +
-                " commit_a=" + hex_prefix(share.gpu_commit_a.data(), 32));
+                " commit_a=" + hex_prefix(share.gpu_commit_a.data(), 32) +
+                " claimed=" + hex_prefix(share.claimed_hash.data(), 32) +
+                " batch_target=" + nbits_hex(share.installed_target_nbits));
 
     if (sink_) sink_->submit(share);
     return true;
@@ -803,7 +816,9 @@ bool GpuWorker::handle_trigger(HalfBuffers& half,
     job.half = &half;
     job.header = header;
     job.nonce = nonce;
-    job.target_nbits = target_nbits_.load();
+    job.target_nbits = half.batch_mined_target_nbits
+        ? half.batch_mined_target_nbits
+        : target_nbits_.load();
     job.sigma_ctx = ctx;
     if (!job.sigma_ctx) return false;
     return process_share_trigger(job);
@@ -841,7 +856,10 @@ void GpuWorker::run() {
             target_dirty_.store(false);
             first = true;
         } else if (target_dirty_.exchange(false)) {
-            upload_pow_target_both_halves(target_nbits_.load());
+            const uint32_t nbits = target_nbits_.load();
+            upload_pow_target_both_halves(nbits);
+            check_cuda(cuStreamSynchronize(ping_.stream), "vardiff pow_target sync ping");
+            check_cuda(cuStreamSynchronize(pong_.stream), "vardiff pow_target sync pong");
         }
 
         if (!current_sigma) {
