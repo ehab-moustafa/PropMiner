@@ -73,6 +73,7 @@ private:
     static std::vector<uint8_t> hex_to_bytes(const std::string& hex);
     static double read_difficulty_param(const propminer::JsonValue& params);
     void flush_stale_pending_submits();
+    void flush_all_pending_submits(const char* reason);
     double effective_share_difficulty() const;
     uint32_t share_target_nbits() const;
 

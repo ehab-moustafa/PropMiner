@@ -181,6 +181,17 @@ bool PearlStratumClient::connect() {
     }
     int yes = 1;
     setsockopt(sock_, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
+    setsockopt(sock_, SOL_SOCKET, SO_KEEPALIVE, &yes, sizeof(yes));
+#ifdef TCP_KEEPIDLE
+    {
+        int idle = 30;
+        int intvl = 10;
+        int cnt = 4;
+        setsockopt(sock_, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+        setsockopt(sock_, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+        setsockopt(sock_, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof(cnt));
+    }
+#endif
     if (::connect(sock_, res->ai_addr, res->ai_addrlen) < 0) {
         last_error_ = std::string("connect failed: ") + strerror(errno);
         close(sock_);
@@ -205,6 +216,7 @@ bool PearlStratumClient::connect() {
 }
 
 void PearlStratumClient::disconnect() {
+    flush_all_pending_submits("disconnect");
     running_ = false;
     connected_ = false;
     if (recv_thread_ && recv_thread_->joinable()) recv_thread_->join();
@@ -336,6 +348,29 @@ double PearlStratumClient::read_difficulty_param(const propminer::JsonValue& par
     return 0.0;
 }
 
+void PearlStratumClient::flush_all_pending_submits(const char* reason) {
+    std::vector<std::pair<int, PendingSubmit>> pending;
+    {
+        std::lock_guard<std::mutex> lk(pending_submit_mtx_);
+        pending.reserve(pending_submit_nonces_.size());
+        for (auto& entry : pending_submit_nonces_) {
+            pending.emplace_back(entry.first, entry.second);
+        }
+        pending_submit_nonces_.clear();
+    }
+    const auto now = std::chrono::steady_clock::now();
+    for (const auto& [id, ps] : pending) {
+        const auto waited = std::chrono::duration_cast<std::chrono::seconds>(
+            now - ps.sent_at).count();
+        pool_diag_log("pool-no-response",
+                      "nonce=" + std::to_string(ps.nonce) +
+                      " stratum_id=" + std::to_string(id) +
+                      " waited_sec=" + std::to_string(waited) +
+                      " reason=" + (reason ? reason : "unknown") +
+                      " (Kryptex :7048 often sends no mining.submit ack)");
+    }
+}
+
 void PearlStratumClient::flush_stale_pending_submits() {
     constexpr auto kAckTimeout = std::chrono::seconds(45);
     const auto now = std::chrono::steady_clock::now();
@@ -366,8 +401,8 @@ void PearlStratumClient::receive_loop() {
     while (running_.load()) {
         std::string line;
         if (!read_line(line, 30000)) {
-            flush_stale_pending_submits();
             if (running_.load()) {
+                flush_all_pending_submits("connection_lost");
                 stratum_log("stratum connection lost");
                 connected_ = false;
             }

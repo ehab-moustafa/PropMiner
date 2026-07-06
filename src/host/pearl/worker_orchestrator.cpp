@@ -96,6 +96,26 @@ namespace {
             env && env[0] != '\0') {
             return env;
         }
+        auto read_version_file = [](const char* path) -> std::string {
+            FILE* vf = std::fopen(path, "r");
+            if (!vf) return {};
+            char buf[64] = {};
+            if (!std::fgets(buf, sizeof(buf), vf)) {
+                std::fclose(vf);
+                return {};
+            }
+            std::fclose(vf);
+            size_t len = std::strlen(buf);
+            while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+                buf[--len] = '\0';
+            }
+            return len > 0 ? std::string(buf, len) : std::string{};
+        };
+        for (const char* path : {"VERSION", "/opt/propminer/VERSION"}) {
+            if (const std::string v = read_version_file(path); !v.empty()) {
+                return v;
+            }
+        }
         std::string sha;
         FILE* pipe = popen("git rev-parse --short HEAD 2>/dev/null", "r");
         if (pipe) {
