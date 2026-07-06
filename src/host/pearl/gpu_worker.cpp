@@ -109,6 +109,9 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
     // separate copy stream while the other half runs the GEMM graph.
     check(cuMemAlloc(&seed_dev, sizeof(uint64_t)), "seed_dev alloc");
     seed_dev_ptr = reinterpret_cast<void*>(seed_dev);
+    check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_seed_host),
+                           sizeof(uint64_t), cudaHostAllocDefault),
+             "half pinned_seed_host");
 
     size_t a_leaves = (a_bytes + K1024 - 1) / K1024;
     a_leaf_cv_bytes = a_leaves * K32;
@@ -165,6 +168,10 @@ void GpuWorker::HalfBuffers::free() {
     f(apea); f(a_scales); f(c); f(sync); f(pow_target); f(a_leaf_cvs);
     f(seed_dev);
     seed_dev_ptr = nullptr;
+    if (pinned_seed_host) {
+        cudaFreeHost(pinned_seed_host);
+        pinned_seed_host = nullptr;
+    }
     if (workspace) {
         pearl_capi_workspace_free(workspace, stream);
         workspace = nullptr;
@@ -224,8 +231,6 @@ GpuWorker::GpuWorker(int device_index, int gpu_index,
 
     CUDA_CHECK(cudaEventCreateWithFlags(&seed_copy_done_event_,
                                         cudaEventDisableTiming));
-    CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void**>(&pinned_seed_host_),
-                             sizeof(uint64_t), cudaHostAllocDefault));
 
     ping_.allocate(cfg_, device_index_, ping_.stream);
     pong_.allocate(cfg_, device_index_, pong_.stream);
@@ -242,7 +247,6 @@ GpuWorker::~GpuWorker() {
     ping_.free();
     pong_.free();
     if (seed_copy_done_event_) { cudaEventDestroy(seed_copy_done_event_); seed_copy_done_event_ = nullptr; }
-    if (pinned_seed_host_) { cudaFreeHost(pinned_seed_host_); pinned_seed_host_ = nullptr; }
     if (seed_copy_stream_) { cuStreamDestroy(seed_copy_stream_); seed_copy_stream_ = nullptr; }
     if (merkle_copy_stream_) cuStreamDestroy(merkle_copy_stream_);
     // Primary context is implicit with Runtime API; do not destroy it.
@@ -565,15 +569,12 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
     }
 
     if (use_graph) {
-        // Extended graph path: seed was uploaded to half.seed_dev on
-        // seed_copy_stream_ while the previous batch ran.  Make the compute
-        // stream wait for the upload, then launch the graph.
-        if (seed_copy_done_event_) {
-            cudaError_t w = cudaStreamWaitEvent(
-                reinterpret_cast<cudaStream_t>(half.stream),
-                seed_copy_done_event_, 0);
-            if (w != cudaSuccess) check_cuda(CUDA_ERROR_UNKNOWN, "stream wait event");
-        }
+        // Authoritative seed for this batch: each graph iter reads *seed_dev+i
+        // at kernel time, so seed_dev must stay stable for all count iters.
+        // Re-upload and sync here (not just rely on async priming) so a copy
+        // to the other half or a shared pinned race cannot clobber mid-graph.
+        upload_next_seed_async(half, seed_lo_start);
+        CUDA_CHECK(cudaStreamSynchronize(seed_copy_stream_));
         gemm_.iter_batch_graph_launch_ex(half.workspace, half.stream);
     } else {
         // Fallback / dynamic batch size.  The batched C API entry point keeps
@@ -596,9 +597,9 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
 }
 
 void GpuWorker::upload_next_seed_async(HalfBuffers& half, uint64_t seed_lo) {
-    if (!seed_copy_stream_ || !pinned_seed_host_) return;
-    *pinned_seed_host_ = seed_lo;
-    cudaError_t e = cudaMemcpyAsync(half.seed_dev_ptr, pinned_seed_host_,
+    if (!seed_copy_stream_ || !half.pinned_seed_host) return;
+    *half.pinned_seed_host = seed_lo;
+    cudaError_t e = cudaMemcpyAsync(half.seed_dev_ptr, half.pinned_seed_host,
                                     sizeof(uint64_t), cudaMemcpyHostToDevice,
                                     seed_copy_stream_);
     if (e != cudaSuccess) check_cuda(CUDA_ERROR_UNKNOWN, "seed h2d");

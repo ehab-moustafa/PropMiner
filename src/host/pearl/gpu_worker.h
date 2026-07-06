@@ -98,6 +98,7 @@ private:
         // the compute stream is busy with the previous batch.
         CUdeviceptr seed_dev = 0;
         void* seed_dev_ptr = nullptr;
+        uint64_t* pinned_seed_host = nullptr;  // per-half pinned seed (no shared race)
         uint64_t batch_seed_start = 0;  // seed_lo at graph launch for this batch
         // nbits encoded in half.pow_target (updated by upload_pow_target).
         uint32_t pow_target_nbits = 0;
@@ -174,7 +175,6 @@ private:
     // uploaded here while the Tensor Cores run on ping_/pong_.stream.
     CUstream seed_copy_stream_ = nullptr;
     cudaEvent_t seed_copy_done_event_ = nullptr;
-    uint64_t* pinned_seed_host_ = nullptr;
 
     HalfBuffers ping_;
     HalfBuffers pong_;
