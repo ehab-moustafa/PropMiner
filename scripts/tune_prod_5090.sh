@@ -13,8 +13,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "===== PropMiner RTX 5090 production tune (Kryptex) ====="
-echo "[tune-prod] Step 1/3: kernel knobs (compile sweep)..."
-"${ROOT}/scripts/tune_blackwell_knobs.sh" 15 3
+if [[ "${PROPMINER_SKIP_KNOB_TUNE:-0}" == "1" ]]; then
+    echo "[tune-prod] Step 1/3: kernel knobs SKIPPED (PROPMINER_SKIP_KNOB_TUNE=1; runtime image / no nvcc)"
+else
+    echo "[tune-prod] Step 1/3: kernel knobs (compile sweep)..."
+    "${ROOT}/scripts/tune_blackwell_knobs.sh" 15 3
+fi
 
 echo "[tune-prod] Step 2/3: cluster + runtime autotune..."
 "${ROOT}/scripts/tune_cluster_sweep.sh" 20 3 12

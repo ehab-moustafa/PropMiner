@@ -820,7 +820,7 @@ void GpuWorker::run() {
         if (ms > 0.0) {
             const double sec = ms / 1000.0;
             const double ips = static_cast<double>(batch) / sec;
-            const double tmads = static_cast<double>(cfg_.m) * cfg_.n * cfg_.k * ips / 1e12;
+            const double tmads = mining_mac_volume(cfg_) * ips / 1e12;
             const double tiles_per_iter =
                 static_cast<double>(cfg_.m / cfg_.bM) * (cfg_.n / cfg_.bN);
             const double tiles_per_sec = ips * tiles_per_iter;

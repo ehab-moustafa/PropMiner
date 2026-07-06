@@ -25,6 +25,11 @@ struct HashrateMetrics {
     int k = 0;
 };
 
+// M*N*K exceeds INT32_MAX at production shapes (8192*32768*128 = 2^35).
+inline double mining_mac_volume(const MiningConfig& cfg) {
+    return static_cast<double>(static_cast<int64_t>(cfg.m) * cfg.n * cfg.k);
+}
+
 inline HashrateMetrics hashrate_metrics_from_rates(const MiningConfig& cfg,
                                                  double tmad_per_sec,
                                                  double protocol_hps,
@@ -63,8 +68,7 @@ inline HashrateMetrics hashrate_metrics_from_iters(const MiningConfig& cfg,
     }
     const double sec = static_cast<double>(elapsed_sec);
     const double ips = static_cast<double>(iters) / sec;
-    const double tmad =
-        static_cast<double>(cfg.m) * cfg.n * cfg.k * ips / 1e12;
+    const double tmad = mining_mac_volume(cfg) * ips / 1e12;
     const double tiles_per_iter =
         static_cast<double>(cfg.m / cfg.bM) * (cfg.n / cfg.bN);
     const double protocol =

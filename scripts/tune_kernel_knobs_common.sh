@@ -45,6 +45,13 @@ tune_knob_extract_bench_rate() {
         echo "${rate}"
         return
     fi
+    # Fallback when TMAD/s reports 0 (int32 M*N*K overflow in older binaries): tiles/s ~= pool TMAD/s scale.
+    rate="$(grep '^benchmark: ' "${logfile}" 2>/dev/null | tail -1 \
+        | sed -n 's/.*tiles\/s=\([0-9.eE+-]*\).*/\1/p' || true)"
+    if [[ -n "${rate}" && "${rate}" != "0" ]]; then
+        echo "${rate}"
+        return
+    fi
     rate="$(grep 'benchmark complete:' "${logfile}" 2>/dev/null | tail -1 \
         | sed -E 's/.*benchmark complete:[[:space:]]*([0-9.eE+-]+).*/\1/' || true)"
     if [[ -n "${rate}" && "${rate}" != "0" ]]; then
