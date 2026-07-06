@@ -344,7 +344,9 @@ docker run --gpus all -e PROPMINER_MODE=mine -e PROPMINER_WALLET=krxUSER.worker 
 
 ### Salad / WSL2
 
-- Default `PROPMINER_MODE=full` validates GPU in zero-config deployments.
+**SRBMiner-style (`ubuntu:24.04` only, no custom image):** set env `PROPMINER_WALLET=krxUSER.worker1` and paste the startup command from `scripts/salad/ubuntu24_one_liner_fast.oneline` (see `ubuntu24_one_liner_fast.sh`).
+
+**Docker image:** default `PROPMINER_MODE=full` validates GPU in zero-config deployments.
 - `setup_cuda_env.sh` sets WSL `LD_PRELOAD` for `/dev/dxg` driver bridge.
 - Bench uses `PROPMINER_BENCH_BATCH=1` so the first batch completes in the 180s window.
 

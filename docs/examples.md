@@ -239,7 +239,15 @@ PEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async \
 
 ## Cloud marketplace patterns
 
-**Salad / WSL2 — validate then switch to mine:**
+**Salad / WSL2 — SRBMiner-style (`ubuntu:24.04` + one-line startup):**
+
+```text
+Image: ubuntu:24.04
+Env:   PROPMINER_WALLET=krxYOURUSER.worker1
+Startup: see scripts/salad/ubuntu24_one_liner_fast.oneline
+```
+
+**Salad / WSL2 — Docker image (validate then switch to mine):**
 
 ```bash
 # Deploy with PROPMINER_MODE=full first (default image env)

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# SRBMiner-style Salad bootstrap: ubuntu:24.04 + wget release tarball.
+# Legacy Salad bootstrap: ubuntu:24.04 + wget PropMiner-Salad-Linux.tar.gz (~1.55 GB).
+# Prefer scripts/salad/ubuntu24_one_liner_fast.sh (NVIDIA CUDA + ~1.2 MB release).
 # Salad image: ubuntu:24.04
 set -euo pipefail
 
