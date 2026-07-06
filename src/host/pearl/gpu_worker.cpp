@@ -539,14 +539,14 @@ void GpuWorker::prepare_graph(HalfBuffers& half) {
         std::memset(half.host_headers[i], 0, half.header_size);
     }
     check_cuda(cuMemsetD8Async(half.sync, 0, 256, half.stream), "sync clear");
-    // Use the extended graph prepare so the seed copy is not captured; seeds
-    // are uploaded asynchronously on seed_copy_stream_ while the other half
-    // runs the previous batch.
-    gemm_.iter_batch_graph_prepare_ex(half.workspace, half.stream,
-                                      half.host_headers.data(), batch,
-                                      half.seed_dev_ptr);
+    // ARC-miner pattern: captured H2D seed copy on the compute stream; seed is
+    // written to workspace pinned host at launch time (no async _ex path).
+    gemm_.iter_batch_graph_prepare(half.workspace, half.stream,
+                                   half.host_headers.data(), batch);
     half.graph_ready = true;
     half.graph_batch_count = batch;
+    std::fprintf(stderr,
+        "[gpu] cuda graph captured (ARC launch path, batch=%d)\n", batch);
     share_trace("graph-ready",
                 "gpu=" + std::to_string(device_index_) +
                 " enabled=1 batch=" + std::to_string(batch));
@@ -557,36 +557,39 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
     half.batch_mined_target_nbits = half.pow_target_nbits;
     const char* half_tag = (&half == &ping_) ? "ping" : "pong";
     const bool use_graph = half.graph_ready && count == half.graph_batch_count;
-    // Clear host headers.
+    // Clear host headers (ARC INVARIANT 1).
     for (int i = 0; i < count; ++i) {
         std::memset(half.host_headers[i], 0, half.header_size);
     }
-    // Clear dSync.
-    check_cuda(cuMemsetD8Async(half.sync, 0, 256, half.stream), "sync clear");
 
     if (half.batch_start_event) {
         CUDA_CHECK(cudaEventRecord(half.batch_start_event,
                                    reinterpret_cast<cudaStream_t>(half.stream)));
     }
 
+    bool launched_graph = false;
     if (use_graph) {
-        // Authoritative seed for this batch: each graph iter reads *seed_dev+i
-        // at kernel time, so seed_dev must stay stable for all count iters.
-        // Re-upload and sync here (not just rely on async priming) so a copy
-        // to the other half or a shared pinned race cannot clobber mid-graph.
-        upload_next_seed_async(half, seed_lo_start);
-        CUDA_CHECK(cudaStreamSynchronize(seed_copy_stream_));
-        gemm_.iter_batch_graph_launch_ex(half.workspace, half.stream);
-    } else {
-        // Fallback / dynamic batch size.  The batched C API entry point keeps
-        // the per-iter CPU launch cost low even without graphs.
+        try {
+            gemm_.iter_batch_graph_launch(half.workspace, half.stream,
+                                          seed_lo_start);
+            launched_graph = true;
+        } catch (const std::exception& ex) {
+            std::fprintf(stderr,
+                "[gpu] graph launch failed, falling back to iter_batch: %s\n",
+                ex.what());
+            half.graph_ready = false;
+        }
+    }
+
+    if (!launched_graph) {
+        check_cuda(cuMemsetD8Async(half.sync, 0, 256, half.stream), "sync clear");
         gemm_.iter_batch(half.workspace, half.stream, seed_lo_start,
                          half.host_headers.data(), count);
     }
     share_trace("batch-queue",
                 "gpu=" + std::to_string(device_index_) +
                 " half=" + half_tag +
-                " path=" + (use_graph ? "graph" : "iter_batch") +
+                " path=" + (launched_graph ? "graph" : "iter_batch") +
                 " batch_seed_start=" + u64_hex(seed_lo_start) +
                 " count=" + std::to_string(count) +
                 " target=" + nbits_hex(half.batch_mined_target_nbits));
@@ -961,12 +964,8 @@ void GpuWorker::run() {
                     batch, cur->graph_ready ? "on" : "off");
             }
             wait_until_half_free(*cur);
-            upload_next_seed_async(*cur, seed_base_ + global_iter);
             queue_batch(*cur, seed_base_ + global_iter, batch);
-            // Start uploading the seed for the next batch immediately so the
-            // conveyor belt is primed.
             global_iter += batch;
-            upload_next_seed_async(*other, seed_base_ + global_iter);
             first = false;
             std::swap(ping, pong);
             continue;
@@ -978,11 +977,6 @@ void GpuWorker::run() {
         queue_batch(*cur, seed_base_ + global_iter, batch);
         global_iter += batch;
         total_iters_ += batch;
-
-        // Upload the seed for the *next* batch on the copy stream while the
-        // current batch runs on the compute stream.  This is the PCIe Gen5
-        // conveyor belt: zero hashing on CPU, only seed movement.
-        upload_next_seed_async(*other, seed_base_ + global_iter);
 
         // Spin-wait for the previously-launched batch on `other`.
         if (!wait_for_batch(*other, 0)) {
