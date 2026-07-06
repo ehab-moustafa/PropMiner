@@ -117,6 +117,10 @@ RUN BASE="https://developer.download.nvidia.com/compute/cuda/redist" && \
     for f in *.tar.xz; do tar -xf "$f" --strip-components=1 -C "${DEST}"; done && \
     rm -f *.tar.xz
 
+COPY scripts/link_cuda_redist_libs.sh /tmp/link_cuda_redist_libs.sh
+RUN chmod +x /tmp/link_cuda_redist_libs.sh \
+    && /tmp/link_cuda_redist_libs.sh /root/cuda128/usr/local/cuda-12.8/targets/x86_64-linux/lib /root/cuda128/usr/local/cuda/lib64
+
 # ── Runtime stage (default) ─────────────────────────────────────────────────
 FROM ubuntu:24.04 AS runtime
 
@@ -154,13 +158,9 @@ COPY --from=builder /root/PropMiner/build_runtime/libpearl_gemm_capi.so .
 COPY --from=builder /root/PropMiner/build_runtime/libpearl_mining_capi.so .
 
 COPY --from=cuda128-runtime /root/cuda128/usr/local/cuda-12.8 /usr/local/cuda-12.8
-RUN mkdir -p /usr/local/cuda/lib64 && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so.12 && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvrtc.so.12 /usr/local/cuda/lib64/libnvrtc.so.12 && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcublas.so.12 /usr/local/cuda/lib64/libcublas.so.12 && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcublasLt.so.12 /usr/local/cuda/lib64/libcublasLt.so.12 && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvJitLink.so.12 /usr/local/cuda/lib64/libnvJitLink.so.12
+COPY --from=builder /root/PropMiner/scripts/link_cuda_redist_libs.sh ./scripts/link_cuda_redist_libs.sh
+RUN chmod +x ./scripts/link_cuda_redist_libs.sh \
+    && ./scripts/link_cuda_redist_libs.sh
 
 COPY --from=builder /root/PropMiner/scripts/setup_cuda_env.sh ./scripts/setup_cuda_env.sh
 COPY --from=builder /root/PropMiner/scripts/run_mining.sh ./scripts/run_mining.sh
@@ -183,8 +183,10 @@ RUN mkdir -p ./results
 COPY results/baseline_5090_sm120.json ./results/baseline_5090_sm120.json
 
 RUN chmod +x ./scripts/*.sh \
-    && test -f /usr/local/cuda/lib64/libcudart.so.12 \
-    && ldd ./propminer | grep -q libcudart
+    && ./scripts/link_cuda_redist_libs.sh \
+    && readlink -f /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 | grep -q 'libcudart.so.12.8.57' \
+    && LD_LIBRARY_PATH=/usr/local/cuda-12.8/targets/x86_64-linux/lib ldd ./propminer 2>&1 \
+        | grep 'libcudart.so.12 =>' | grep -vq 'not found'
 
 ENTRYPOINT ["./scripts/docker_entrypoint.sh"]
 
@@ -212,13 +214,12 @@ ENV PATH=/usr/local/cuda/bin:/root/.cargo/bin:${PATH}
 
 # Salad WSL2 uses /dev/dxg + host driver store — same redist libs as runtime image.
 COPY --from=cuda128-runtime /root/cuda128/usr/local/cuda-12.8 /usr/local/cuda-12.8
-RUN mkdir -p /usr/local/cuda/lib64 && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so.12 && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 /usr/local/cuda/lib64/libcudart.so && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvrtc.so.12 /usr/local/cuda/lib64/libnvrtc.so.12 && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcublas.so.12 /usr/local/cuda/lib64/libcublas.so.12 && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcublasLt.so.12 /usr/local/cuda/lib64/libcublasLt.so.12 && \
-    ln -sf /usr/local/cuda-12.8/targets/x86_64-linux/lib/libnvJitLink.so.12 /usr/local/cuda/lib64/libnvJitLink.so.12
+COPY scripts/link_cuda_redist_libs.sh ./scripts/link_cuda_redist_libs.sh
+RUN chmod +x ./scripts/link_cuda_redist_libs.sh \
+    && ./scripts/link_cuda_redist_libs.sh \
+    && readlink -f /usr/local/cuda-12.8/targets/x86_64-linux/lib/libcudart.so.12 | grep -q 'libcudart.so.12.8.57' \
+    && LD_LIBRARY_PATH=/usr/local/cuda-12.8/targets/x86_64-linux/lib ldd build_runtime/propminer 2>&1 \
+        | grep 'libcudart.so.12 =>' | grep -vq 'not found'
 
 RUN mkdir -p results && \
     ln -sf build_runtime/propminer propminer && \
@@ -228,8 +229,5 @@ RUN mkdir -p results && \
     chmod +x scripts/*.sh
 
 COPY results/baseline_5090_sm120.json ./results/baseline_5090_sm120.json
-
-RUN test -f /usr/local/cuda/lib64/libcudart.so.12 \
-    && ldd build_runtime/propminer | grep -q libcudart
 
 ENTRYPOINT ["./scripts/docker_entrypoint.sh"]

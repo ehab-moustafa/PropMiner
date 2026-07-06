@@ -105,7 +105,7 @@ inline void print_hashrate_metrics_line(FILE* out,
     format_scaled_rate(m.protocol_hps, protocol_buf, sizeof(protocol_buf));
 
     std::fprintf(out,
-        "%sTMAD/s=%.2f (pool TH/s) | protocol=%s (%.3e H/s) | "
+        "%sTMAD/s=%.3f (pool TH/s) | protocol=%s (%.3e H/s) | "
         "TOPS=%.1f%% | tiles/s=%.2e",
         prefix, m.tmad_per_sec, protocol_buf, m.protocol_hps, m.tops_pct,
         m.tiles_per_sec);

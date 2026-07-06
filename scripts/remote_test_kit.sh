@@ -313,49 +313,38 @@ bench_rate_to_int() {
 if [[ "${SKIP_BENCH}" == "1" ]]; then
     echo "[bench] Skipped (PROPMINER_SKIP_BENCH=1)." | tee -a "${RESULTS_DIR}/summary.txt"
 else
-echo "[bench] Running hashrate benchmark (${BENCH_SECONDS}s + ${BENCH_GRACE_SECONDS}s grace, up to 4 attempts)..." \
+echo "[bench] Running hashrate benchmark (${BENCH_SECONDS}s + grace, batches 1/4/8/20 graph=on)..." \
     | tee -a "${RESULTS_DIR}/summary.txt"
 
 BEST_RATE=0
 BEST_LABEL=""
-
-# v1.38: batch=1 beat batch=4 on Salad/WSL2 — try smallest batches first.
-RATE=$(run_benchmark_attempt 1 1 on "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark.log")
-RATE_INT=$(bench_rate_to_int "${RATE}")
-if (( RATE_INT > 0 )); then
-    BEST_RATE=${RATE_INT}
-    BEST_LABEL="batch=1 graph=on"
-fi
-
-if (( BEST_RATE == 0 )); then
-    echo "[bench] attempt 1 yielded 0 — trying batch=4..." | tee -a "${RESULTS_DIR}/summary.txt" >&2
-    RATE=$(run_benchmark_attempt 2 4 on "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark_try2.log")
-    RATE_INT=$(bench_rate_to_int "${RATE}")
-    if (( RATE_INT > BEST_RATE )); then
-        BEST_RATE=${RATE_INT}
-        BEST_LABEL="batch=4 graph=on"
+BENCH_BATCHES=(1 4 8 20)
+attempt=0
+for batch in "${BENCH_BATCHES[@]}"; do
+    attempt=$((attempt + 1))
+    if (( batch >= 8 )); then
+        export PROPMINER_BENCH_GRACE_SECONDS=$((BENCH_GRACE_SECONDS * 3))
+    else
+        export PROPMINER_BENCH_GRACE_SECONDS="${BENCH_GRACE_SECONDS}"
     fi
-fi
+    logfile="${RESULTS_DIR}/benchmark_batch${batch}.log"
+    RATE=$(run_benchmark_attempt "${attempt}" "${batch}" on "${BENCH_SECONDS}" "${logfile}")
+    RATE_INT=$(bench_rate_to_int "${RATE}")
+  if (( RATE_INT > BEST_RATE )); then
+        BEST_RATE=${RATE_INT}
+        BEST_LABEL="batch=${batch} graph=on"
+    fi
+done
 
 if (( BEST_RATE == 0 )); then
-    echo "[bench] attempts 1-2 yielded 0 — trying batch=1 graph=off..." \
+    echo "[bench] all graph=on attempts yielded 0 — trying batch=1 graph=off..." \
         | tee -a "${RESULTS_DIR}/summary.txt"
-    RATE=$(run_benchmark_attempt 3 1 off "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark_try3.log")
+    export PROPMINER_BENCH_GRACE_SECONDS="${BENCH_GRACE_SECONDS}"
+    RATE=$(run_benchmark_attempt 5 1 off "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark_try_graph_off.log")
     RATE_INT=$(bench_rate_to_int "${RATE}")
     if (( RATE_INT > BEST_RATE )); then
         BEST_RATE=${RATE_INT}
         BEST_LABEL="batch=1 graph=off"
-    fi
-fi
-
-if (( BEST_RATE == 0 )); then
-    echo "[bench] attempts 1-3 yielded 0 — trying batch=4 graph=off..." \
-        | tee -a "${RESULTS_DIR}/summary.txt"
-    RATE=$(run_benchmark_attempt 4 4 off "${BENCH_SECONDS}" "${RESULTS_DIR}/benchmark_try4.log")
-    RATE_INT=$(bench_rate_to_int "${RATE}")
-    if (( RATE_INT > BEST_RATE )); then
-        BEST_RATE=${RATE_INT}
-        BEST_LABEL="batch=4 graph=off"
     fi
 fi
 
@@ -366,7 +355,7 @@ else
         | tee -a "${RESULTS_DIR}/summary.txt"
 fi
 grep -iE 'TMAD/s|benchmark:|"tmad_per_sec"|benchmark complete|benchmark incomplete' "${RESULTS_DIR}"/benchmark*.log 2>/dev/null \
-    | tail -30 | tee "${RESULTS_DIR}/benchmark_hashrate.txt" || true
+    | tail -40 | tee "${RESULTS_DIR}/benchmark_hashrate.txt" || true
 fi
 
 # ── 7. ncu profiling (optional) ────────────────────────────────────────────
