@@ -396,10 +396,25 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
     // Rebuild B proof from the stored Merkle tree.
     OwnedProof b_proof = builder.mining_.proof_for_handle(
         *ctx.b_merkle_tree(), share.b_col_indices);
-    if (!builder.mining_.verify_proof(b_proof, share.job.job_key.data(),
-                                      b_proof.root.data())) {
+    const uint8_t* tree_root = ctx.b_merkle_tree()->root();
+    if (std::memcmp(tree_root, share.hash_b.data(), 32) != 0) {
         share_log("verify-fail", "nonce=" + std::to_string(share.nonce) +
-                                  " reason=b_merkle_mismatch");
+                                  " reason=b_hash_tree_mismatch tree=" +
+                                  hex_prefix(tree_root, 32) +
+                                  " gpu=" + hex_prefix(share.hash_b.data(), 32));
+        return false;
+    }
+    if (!builder.mining_.verify_proof(b_proof, share.job.job_key.data(),
+                                      share.hash_b.data())) {
+        share_log("verify-fail", "nonce=" + std::to_string(share.nonce) +
+                                  " reason=b_merkle_mismatch cols=" +
+                                  std::to_string(share.b_col_indices.size()) +
+                                  (share.b_col_indices.empty()
+                                       ? ""
+                                       : (" min=" +
+                                          std::to_string(share.b_col_indices.front()) +
+                                          " max=" +
+                                          std::to_string(share.b_col_indices.back())));
         return false;
     }
 

@@ -8,6 +8,7 @@
 #include "job_key.h"
 #include "pearl_blake3.h"
 #include "pow_target_utils.h"
+#include "share_trace.h"
 
 namespace pearl {
 
@@ -147,6 +148,9 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id,
         throw;
     }
 
+    // leaf_cvs D2H runs on copy_stream; tensor_hash completed on stream.
+    check_cuda(cuStreamSynchronize(stream), "sync after B tensor_hash");
+
     // Pinned staging for leaf CV D2H — avoids PCIe driver pageable staging.
     uint8_t* leaf_cvs_pinned = nullptr;
     cudaError_t perr = cudaHostAlloc(reinterpret_cast<void**>(&leaf_cvs_pinned),
@@ -233,6 +237,16 @@ void SigmaContext::install(CUstream stream, void* workspace, int device_id,
             job_.job_key.data(),
             cfg_.n,
             cfg_.k));
+
+    std::array<uint8_t, 32> gpu_b_hash{};
+    check_cuda(cuMemcpyDtoH(gpu_b_hash.data(), resident_.b_hash(), K32),
+               "b_hash d2h verify");
+    if (std::memcmp(gpu_b_hash.data(), b_tree_->root(), K32) != 0) {
+        fprintf(stderr,
+                "[sigma] WARN: B Merkle root != GPU BHash (tree=%s gpu=%s)\n",
+                hex_prefix(b_tree_->root(), 32, 8).c_str(),
+                hex_prefix(gpu_b_hash.data(), 32, 8).c_str());
+    }
 
     installed_ = true;
 }
