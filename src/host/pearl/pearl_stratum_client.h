@@ -12,6 +12,7 @@
 #include <unordered_map>
 
 #include "simple_json.h"
+#include "pow_target_utils.h"
 #include "proto/mining_v2.h"
 
 namespace pearl {
@@ -46,6 +47,8 @@ public:
     bool submit_plain_proof(const std::string& job_id,
                             const std::vector<uint8_t>& proof_bytes);
 
+    std::string job_id_for_sigma(const std::array<uint8_t, kSigmaHeaderBytes>& sigma) const;
+
     std::string last_error() const;
 
 private:
@@ -61,10 +64,9 @@ private:
                                     const std::string& header_hex,
                                     const std::string& target_hex,
                                     int64_t height);
-    static uint32_t target_hex_to_nbits(const std::string& target_hex);
-    static uint32_t difficulty_to_nbits(double difficulty);
     static std::array<uint8_t, 16> job_id_bytes(const std::string& job_id);
     static std::vector<uint8_t> hex_to_bytes(const std::string& hex);
+    static double read_difficulty_param(const propminer::JsonValue& params);
 
     Options opts_;
     int sock_ = -1;

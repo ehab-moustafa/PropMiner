@@ -11,6 +11,7 @@
 
 #include <cerrno>
 #include <chrono>
+#include <cctype>
 #include <cstring>
 #include <iostream>
 #include <thread>
@@ -28,9 +29,19 @@ std::string json_escape(const std::string& s) {
     return out;
 }
 
+void stratum_log(const std::string& msg) {
+    std::cout << "pool: " << msg << std::endl;
+}
+
 }  // namespace
 
-PearlStratumClient::PearlStratumClient(const Options& opts) : opts_(opts) {}
+PearlStratumClient::PearlStratumClient(const Options& opts) : opts_(opts) {
+    if (const char* d = std::getenv("PROPMINER_STRATUM_DIFF"); d && d[0]) {
+        const double req = std::atof(d);
+        if (req > 0.0) last_difficulty_ = req;
+    }
+}
+
 PearlStratumClient::~PearlStratumClient() { disconnect(); }
 
 bool PearlStratumClient::connect() {
@@ -61,10 +72,10 @@ bool PearlStratumClient::connect() {
     }
     freeaddrinfo(res);
 
-    std::cerr << "[stratum] connected to " << opts_.host << ":" << opts_.port << "\n";
+    stratum_log("stratum connected " + opts_.host + ":" + std::to_string(opts_.port));
 
     if (!subscribe()) {
-        std::cerr << "[stratum] subscribe failed; trying authorize-only path\n";
+        stratum_log("stratum subscribe skipped/failed; continuing to authorize");
     }
     if (!authorize()) {
         disconnect();
@@ -155,7 +166,7 @@ bool PearlStratumClient::subscribe() {
         last_error_ = "subscribe error: " + parsed["error"].serialize();
         return false;
     }
-    std::cerr << "[stratum] subscribed\n";
+    stratum_log("stratum subscribed");
     return true;
 }
 
@@ -188,7 +199,7 @@ bool PearlStratumClient::authorize() {
                 last_error_ = "authorize rejected (check wallet.worker format)";
                 return false;
             }
-            std::cerr << "[stratum] authorized as " << user << "\n";
+            stratum_log("stratum authorized as " + user + " password=" + opts_.password);
             return true;
         }
     }
@@ -196,12 +207,25 @@ bool PearlStratumClient::authorize() {
     return false;
 }
 
+double PearlStratumClient::read_difficulty_param(const propminer::JsonValue& params) {
+    if (params.is_array()) {
+        for (size_t i = 0; i < params.size(); ++i) {
+            if (params[i].is_number()) return params[i].to_number();
+            if (params[i].is_string()) return std::atof(params[i].to_string().c_str());
+        }
+        return 0.0;
+    }
+    if (params.is_number()) return params.to_number();
+    if (params.is_string()) return std::atof(params.to_string().c_str());
+    return 0.0;
+}
+
 void PearlStratumClient::receive_loop() {
     while (running_.load()) {
         std::string line;
         if (!read_line(line, 30000)) {
             if (running_.load()) {
-                std::cerr << "[stratum] connection lost\n";
+                stratum_log("stratum connection lost");
                 connected_ = false;
             }
             break;
@@ -223,22 +247,36 @@ void PearlStratumClient::handle_message(const std::string& line) {
             } else {
                 parse_notify_object(params.serialize());
             }
-        } else if (method == "mining.set_difficulty" && params.is_array() && params.size() >= 1) {
-            last_difficulty_ = params[0].to_number();
-            const uint32_t nbits = difficulty_to_nbits(last_difficulty_);
-            std::cerr << "[stratum] difficulty=" << last_difficulty_
-                      << " (nbits=0x" << std::hex << nbits << std::dec << ")\n";
-            if (vardiff_cb_) vardiff_cb_(nbits);
+        } else if (method == "mining.set_difficulty") {
+            const double diff = read_difficulty_param(params);
+            if (diff > 0.0) {
+                last_difficulty_ = diff;
+                const uint32_t nbits = difficulty_to_nbits_pdif(last_difficulty_);
+                char buf[96];
+                std::snprintf(buf, sizeof(buf),
+                              "stratum set_difficulty=%.3f nbits=0x%08x",
+                              last_difficulty_, nbits);
+                stratum_log(buf);
+                if (vardiff_cb_) vardiff_cb_(nbits);
+            }
         }
         return;
     }
 
     if (parsed["id"].is_number() && parsed["id"].to_int() > 2) {
-        const int id = static_cast<int>(parsed["id"].to_int());
-        bool accepted = parsed["result"].is_bool() && parsed["result"].to_bool();
-        std::string err = parsed["error"].is_null() ? "" : parsed["error"].serialize();
+        bool accepted = true;
+        std::string err;
+        if (!parsed["error"].is_null()) {
+            accepted = false;
+            err = parsed["error"].serialize();
+        } else if (parsed["result"].is_bool() && !parsed["result"].to_bool()) {
+            accepted = false;
+            err = "rejected";
+        } else if (parsed["result"].is_null()) {
+            accepted = false;
+            err = "null result";
+        }
         if (share_cb_) share_cb_(accepted, accepted ? "Accepted" : err);
-        (void)id;
     }
 }
 
@@ -259,7 +297,7 @@ bool PearlStratumClient::parse_notify_array(const propminer::JsonValue& params) 
     const std::string header = params[2].to_string();
     const int64_t height = params[3].is_number() ? params[3].to_int() : 0;
     double diff = last_difficulty_ > 0 ? last_difficulty_ : 32.0;
-    const uint32_t nbits = difficulty_to_nbits(diff);
+    const uint32_t nbits = difficulty_to_nbits_pdif(diff);
     std::array<uint8_t, 32> target_le = nbits_to_target_le(nbits);
     std::string target_hex;
     target_hex.reserve(64);
@@ -284,8 +322,13 @@ proto::JobAssignment PearlStratumClient::make_job(const std::string& job_id,
     if (sigma.size() >= kSigmaHeaderBytes) {
         std::memcpy(ja.sigma.data(), sigma.data(), kSigmaHeaderBytes);
     }
-    ja.target_nbits = target_hex.empty() ? difficulty_to_nbits(last_difficulty_) :
-                                           target_hex_to_nbits(target_hex);
+    if (!target_hex.empty()) {
+        ja.target_nbits = hex_target_to_nbits(target_hex);
+    } else if (last_difficulty_ > 0.0) {
+        ja.target_nbits = difficulty_to_nbits_pdif(last_difficulty_);
+    } else {
+        ja.target_nbits = 0x207fffff;
+    }
     ja.network_target_nbits = ja.target_nbits;
     ja.block_height = height;
     ja.protocol_version = 2;
@@ -299,10 +342,29 @@ proto::JobAssignment PearlStratumClient::make_job(const std::string& job_id,
         std::lock_guard<std::mutex> lk(job_map_mtx_);
         sigma_hex_to_job_id_[sigma_key] = job_id;
     }
-    std::cerr << "[stratum] new job " << job_id.substr(0, 8)
-              << " height=" << height << " nbits=0x" << std::hex << ja.target_nbits
-              << std::dec << "\n";
+    char buf[128];
+    std::snprintf(buf, sizeof(buf),
+                  "stratum new job %s height=%lld nbits=0x%08x diff=%.3f",
+                  job_id.substr(0, std::min<size_t>(12, job_id.size())).c_str(),
+                  static_cast<long long>(height), ja.target_nbits, last_difficulty_);
+    stratum_log(buf);
     return ja;
+}
+
+std::string PearlStratumClient::job_id_for_sigma(
+    const std::array<uint8_t, kSigmaHeaderBytes>& sigma) const {
+    std::string hex;
+    hex.reserve(kSigmaHeaderBytes * 2);
+    for (size_t i = 0; i < kSigmaHeaderBytes; ++i) {
+        char buf[3];
+        std::snprintf(buf, sizeof(buf), "%02x",
+                      static_cast<unsigned char>(sigma[i]));
+        hex += buf;
+    }
+    std::lock_guard<std::mutex> lk(job_map_mtx_);
+    auto it = sigma_hex_to_job_id_.find(hex);
+    if (it != sigma_hex_to_job_id_.end()) return it->second;
+    return hex.substr(0, std::min<size_t>(32, hex.size()));
 }
 
 bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
@@ -326,42 +388,9 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
     std::string line = "{\"id\":" + std::to_string(id) +
                        ",\"method\":\"mining.submit\",\"params\":{\"job_id\":\"" +
                        json_escape(job_id) + "\",\"plain_proof\":\"" + b64 + "\"}}";
+    stratum_log("share submitting job=" + job_id.substr(0, std::min<size_t>(12, job_id.size())) +
+                " proof=" + std::to_string(proof_bytes.size()) + "B id=" + std::to_string(id));
     return send_line(line);
-}
-
-uint32_t PearlStratumClient::target_hex_to_nbits(const std::string& target_hex) {
-    auto bytes = hex_to_bytes(target_hex);
-    if (bytes.size() < 32) return 0x207fffff;
-    int first = -1;
-    for (int i = 0; i < 32; ++i) {
-        if (bytes[static_cast<size_t>(i)] != 0) { first = i; break; }
-    }
-    if (first < 0) return 0;
-    const int len = 32 - first;
-    uint32_t mant = 0;
-    if (len >= 3) {
-        mant = (static_cast<uint32_t>(bytes[static_cast<size_t>(first)]) << 16) |
-               (static_cast<uint32_t>(bytes[static_cast<size_t>(first + 1)]) << 8) |
-               static_cast<uint32_t>(bytes[static_cast<size_t>(first + 2)]);
-    } else {
-        for (int i = 0; i < len; ++i) {
-            mant |= static_cast<uint32_t>(bytes[static_cast<size_t>(first + i)])
-                    << (8 * (len - 1 - i));
-        }
-    }
-    return (static_cast<uint32_t>(32 - first) << 24) | (mant & 0xFFFFFFu);
-}
-
-uint32_t PearlStratumClient::difficulty_to_nbits(double difficulty) {
-    if (difficulty <= 0) return 0x207fffff;
-    const double target = (256.0 * 256.0 * 256.0) / difficulty;
-    uint32_t exp = 32;
-    uint32_t mant = static_cast<uint32_t>(target);
-    while (mant > 0xFFFFFFu && exp > 0) {
-        mant >>= 8;
-        ++exp;
-    }
-    return (exp << 24) | (mant & 0xFFFFFFu);
 }
 
 std::array<uint8_t, 16> PearlStratumClient::job_id_bytes(const std::string& job_id) {

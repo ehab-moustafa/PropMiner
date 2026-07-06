@@ -1,8 +1,104 @@
 #include "pow_target_utils.h"
 
+#include <cmath>
+#include <cctype>
 #include <cstring>
 
 namespace pearl {
+
+namespace {
+
+std::array<uint8_t, 32> diff1_target_be() {
+    std::array<uint8_t, 32> t{};
+    t[4] = 0xFF;
+    t[5] = 0xFF;
+    return t;
+}
+
+void be_mul_u32_inplace(std::array<uint8_t, 32>& be, uint32_t m) {
+    uint64_t carry = 0;
+    for (int i = 31; i >= 0; --i) {
+        const uint64_t v = static_cast<uint64_t>(be[static_cast<size_t>(i)]) * m + carry;
+        be[static_cast<size_t>(i)] = static_cast<uint8_t>(v & 0xFF);
+        carry = v >> 8;
+    }
+    if (carry != 0) {
+        be.fill(0xFF);
+    }
+}
+
+std::array<uint8_t, 32> be_div_u64(std::array<uint8_t, 32> be, uint64_t d) {
+    if (d == 0) return be;
+    uint64_t rem = 0;
+    for (int i = 0; i < 32; ++i) {
+        rem = (rem << 8) | be[static_cast<size_t>(i)];
+        be[static_cast<size_t>(i)] = static_cast<uint8_t>(rem / d);
+        rem %= d;
+    }
+    return be;
+}
+
+}  // namespace
+
+uint32_t target_be_to_nbits(const std::array<uint8_t, 32>& target_bytes) {
+    int first_non_zero = -1;
+    for (int i = 0; i < 32; ++i) {
+        if (target_bytes[static_cast<size_t>(i)] != 0) {
+            first_non_zero = i;
+            break;
+        }
+    }
+    if (first_non_zero < 0) return 0;
+
+    const int len = 32 - first_non_zero;
+    uint32_t mantissa = 0;
+    if (len >= 3) {
+        mantissa = (static_cast<uint32_t>(target_bytes[static_cast<size_t>(first_non_zero)]) << 16) |
+                   (static_cast<uint32_t>(target_bytes[static_cast<size_t>(first_non_zero + 1)]) << 8) |
+                   static_cast<uint32_t>(target_bytes[static_cast<size_t>(first_non_zero + 2)]);
+    } else if (len == 2) {
+        mantissa = (static_cast<uint32_t>(target_bytes[static_cast<size_t>(first_non_zero)]) << 16) |
+                   (static_cast<uint32_t>(target_bytes[static_cast<size_t>(first_non_zero + 1)]) << 8);
+    } else {
+        mantissa = static_cast<uint32_t>(target_bytes[static_cast<size_t>(first_non_zero)]) << 16;
+    }
+
+    int out_len = len;
+    if ((mantissa & 0x00800000u) != 0) {
+        mantissa >>= 8;
+        ++out_len;
+    }
+    return (static_cast<uint32_t>(out_len) << 24) | (mantissa & 0xFFFFFFu);
+}
+
+uint32_t difficulty_to_nbits_pdif(double difficulty) {
+    if (!(difficulty > 0.0) || !std::isfinite(difficulty)) {
+        difficulty = 1.0;
+    }
+    const uint64_t scaled_diff =
+        std::max<uint64_t>(1ULL, static_cast<uint64_t>(difficulty * 1000000.0));
+    auto be = diff1_target_be();
+    be_mul_u32_inplace(be, 1000000U);
+    be = be_div_u64(be, scaled_diff);
+    return target_be_to_nbits(be);
+}
+
+uint32_t hex_target_to_nbits(const std::string& target_hex) {
+    std::string h = target_hex;
+    if (h.size() >= 2 && (h.rfind("0x", 0) == 0 || h.rfind("0X", 0) == 0)) {
+        h = h.substr(2);
+    }
+    if (h.size() % 2) h = "0" + h;
+    std::array<uint8_t, 32> bytes{};
+    const size_t copy_len = std::min(h.size() / 2, size_t{32});
+    const size_t offset = 32 - copy_len;
+    for (size_t i = 0; i < copy_len; ++i) {
+        const std::string byte_hex = h.substr(i * 2, 2);
+        bytes[offset + i] =
+            static_cast<uint8_t>(std::strtoul(byte_hex.c_str(), nullptr, 16));
+    }
+    return target_be_to_nbits(bytes);
+}
 
 std::array<uint8_t, 32> nbits_to_target_le(uint32_t nbits) {
     int exp = static_cast<int>(nbits >> 24);

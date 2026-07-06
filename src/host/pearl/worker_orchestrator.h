@@ -113,6 +113,11 @@ private:
     std::string current_stratum_job_id_;
     std::atomic<uint32_t> pending_target_nbits_{0};
     std::atomic<double> total_hashrate_{0.0};
+    std::atomic<uint64_t> shares_found_{0};
+    std::atomic<uint64_t> shares_submitted_{0};
+    std::atomic<uint64_t> shares_accepted_{0};
+    std::atomic<uint64_t> shares_rejected_{0};
+    std::atomic<uint64_t> shares_dropped_{0};
     int reconnect_attempt_ = 0;
     std::string last_pool_error_;
 

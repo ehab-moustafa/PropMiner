@@ -122,6 +122,24 @@ namespace {
         return 15.0;
     }
 
+    std::string build_stratum_password() {
+        std::string pw = "x";
+        if (const char* env = std::getenv("PROPMINER_STRATUM_PASSWORD"); env && env[0]) {
+            pw = env;
+        }
+        if (const char* d = std::getenv("PROPMINER_STRATUM_DIFF"); d && d[0]) {
+            const long long diff = std::atoll(d);
+            if (diff > 0 && pw.find("d=") == std::string::npos) {
+                pw += ";d=" + std::to_string(diff);
+            }
+        }
+        return pw;
+    }
+
+    void pool_log(const std::string& msg) {
+        std::cout << "pool: " << msg << std::endl;
+    }
+
     std::string miner_id_hex(const std::array<uint8_t, 16>& id) {
         char hex[33] = {0};
         for (int b = 0; b < 16; ++b) {
@@ -386,9 +404,12 @@ void WorkerOrchestrator::handle_pool_event(const proto::PoolEvent& evt) {
             break;
         }
         case proto::PoolEventType::ShareResult:
-            // Log accepted/rejected. The pool does not need a client-side ack.
-            std::cout << "share " << evt.share_result.outcome
+            if (evt.share_result.accepted) shares_accepted_.fetch_add(1);
+            else shares_rejected_.fetch_add(1);
+            std::cout << "share: " << evt.share_result.outcome
                       << (evt.share_result.is_block_find ? " BLOCK" : "")
+                      << " (totals " << shares_accepted_.load() << "a/"
+                      << shares_rejected_.load() << "r)"
                       << std::endl;
             break;
         case proto::PoolEventType::Error:
@@ -466,7 +487,7 @@ void WorkerOrchestrator::run_stratum_session() {
         opts.port = ep.port;
         opts.wallet = cfg_.wallet_address;
         opts.worker = cfg_.worker_name;
-        opts.password = "x";
+        opts.password = build_stratum_password();
         opts.user_agent = cfg_.miner_version;
         if (const char* t = std::getenv("PROPMINER_GRPC_TIMEOUT_MS"); t && t[0]) {
             opts.connect_timeout_ms = std::max(5000, std::atoi(t));
@@ -486,8 +507,14 @@ void WorkerOrchestrator::run_stratum_session() {
                 auto entry = bus_.drain_latest();
                 if (entry.ctx) entry.ctx->set_target_nbits(nbits);
             },
-            [](bool accepted, const std::string& msg) {
-                std::cout << "share " << (accepted ? "Accepted" : msg) << std::endl;
+            [this](bool accepted, const std::string& msg) {
+                if (accepted) shares_accepted_.fetch_add(1);
+                else shares_rejected_.fetch_add(1);
+                std::cout << "share: " << (accepted ? "ACCEPTED" : ("REJECTED " + msg))
+                          << " (totals " << shares_accepted_.load() << "a/"
+                          << shares_rejected_.load() << "r/"
+                          << shares_dropped_.load() << "d)"
+                          << std::endl;
             });
 
         std::cerr << "[orchestrator] connecting Stratum " << ep.host << ":" << ep.port
@@ -578,12 +605,15 @@ void WorkerOrchestrator::share_sender_thread_func() {
         if (stop_flag_) break;
         for (const ShareFound& raw : batch) {
             if (!raw.sigma_ctx) {
-                std::cerr << "share dropped: missing sigma context\n";
+                shares_dropped_.fetch_add(1);
+                pool_log("share DROPPED missing sigma context");
                 continue;
             }
             ShareBuilder builder(raw.job.config);
             if (!ShareBuilder::VerifyShare(raw, *raw.sigma_ctx)) {
-                std::cerr << "share dropped: VerifyShare failed\n";
+                shares_dropped_.fetch_add(1);
+                pool_log("share DROPPED VerifyShare failed nonce=" +
+                         std::to_string(raw.nonce));
                 continue;
             }
             std::vector<uint8_t> proof;
@@ -593,22 +623,25 @@ void WorkerOrchestrator::share_sender_thread_func() {
                 proof = builder.build(raw, *raw.sigma_ctx);
             }
             if (proof.empty()) {
-                std::cerr << "share dropped: stale target or build failed\n";
+                shares_dropped_.fetch_add(1);
+                pool_log("share DROPPED build failed (stale target) nonce=" +
+                         std::to_string(raw.nonce));
                 continue;
             }
             if (use_stratum_.load() && stratum_client_ && stratum_client_->connected()) {
-                std::string job_id;
-                {
-                    std::lock_guard<std::mutex> lk(stratum_job_mtx_);
-                    job_id = current_stratum_job_id_;
-                }
+                const std::string job_id =
+                    stratum_client_->job_id_for_sigma(raw.job.sigma);
                 if (job_id.empty()) {
-                    std::cerr << "share dropped: no stratum job_id\n";
+                    shares_dropped_.fetch_add(1);
+                    pool_log("share DROPPED no job_id for sigma nonce=" +
+                             std::to_string(raw.nonce));
                     continue;
                 }
+                shares_submitted_.fetch_add(1);
                 if (!stratum_client_->submit_plain_proof(job_id, proof)) {
-                    std::cerr << "stratum share send failed: " << stratum_client_->last_error()
-                              << std::endl;
+                    shares_dropped_.fetch_add(1);
+                    pool_log("share DROPPED send failed: " +
+                             stratum_client_->last_error());
                 }
                 continue;
             }
@@ -656,6 +689,10 @@ void WorkerOrchestrator::heartbeat_thread_func() {
 }
 
 void WorkerOrchestrator::submit(const ShareFound& share) {
+    shares_found_.fetch_add(1);
+    pool_log("share FOUND nonce=" + std::to_string(share.nonce) +
+             " rows=" + std::to_string(share.a_row_indices.size()) +
+             " cols=" + std::to_string(share.b_col_indices.size()));
     std::lock_guard<std::mutex> lk(share_mtx_);
     pending_share_found_.push_back(share);
     share_cv_.notify_one();
@@ -943,6 +980,12 @@ int WorkerOrchestrator::run() {
 
         if (metrics.tmad_per_sec > 0.0 || metrics.protocol_hps > 0.0) {
             print_hashrate_metrics_line(stdout, "hashrate: ", metrics);
+            std::printf("shares: found=%llu submitted=%llu accepted=%llu rejected=%llu dropped=%llu\n",
+                        static_cast<unsigned long long>(shares_found_.load()),
+                        static_cast<unsigned long long>(shares_submitted_.load()),
+                        static_cast<unsigned long long>(shares_accepted_.load()),
+                        static_cast<unsigned long long>(shares_rejected_.load()),
+                        static_cast<unsigned long long>(shares_dropped_.load()));
         } else if (bench_mode) {
             std::cout << "hashrate: waiting for first batch..." << std::endl;
         } else {

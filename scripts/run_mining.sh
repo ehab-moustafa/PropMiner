@@ -6,7 +6,8 @@
 #
 # Optional env:
 #   PROPMINER_POOL              — default prl.kryptex.network:443,prl-eu.kryptex.network:443
-#   PROPMINER_STRATUM_POOL        — Stratum fallback (default prl.kryptex.network:7048 per Kryptex docs)
+#   PROPMINER_STRATUM_DIFF        — append ;d=N to stratum password (5090: try 262144)
+#   PROPMINER_STRATUM_PASSWORD    — override stratum password (default x or x;d=N)
 #   PROPMINER_USE_STRATUM=1       — Skip gRPC; use Stratum only
 #   PROPMINER_POOL_MODE=stratum   — Same as USE_STRATUM=1
 #   PROPMINER_GPUS              — default 0

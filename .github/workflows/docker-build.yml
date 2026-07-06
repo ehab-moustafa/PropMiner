@@ -53,7 +53,7 @@ jobs:
             ghcr.io/ehab-moustafa/propminer-rtx5090:latest
             ghcr.io/ehab-moustafa/propminer-rtx5090:${{ steps.meta.outputs.tag }}
             ghcr.io/ehab-moustafa/propminer-rtx5090:dev
-            ghcr.io/ehab-moustafa/propminer-rtx5090:v1.47-full-rtx5090
+            ghcr.io/ehab-moustafa/propminer-rtx5090:v1.48-full-rtx5090
           provenance: false
           cache-from: |
             type=gha,scope=propminer-gemm
@@ -70,7 +70,7 @@ jobs:
           push: true
           tags: |
             ghcr.io/ehab-moustafa/propminer-rtx5090:devel
-            ghcr.io/ehab-moustafa/propminer-rtx5090:v1.47-devel-rtx5090
+            ghcr.io/ehab-moustafa/propminer-rtx5090:v1.48-devel-rtx5090
           provenance: false
           cache-from: |
             type=gha,scope=propminer-gemm
