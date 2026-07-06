@@ -57,7 +57,10 @@ public:
     std::string last_error() const;
 
 private:
+    enum class ReadStatus { Line, Timeout, Closed };
+
     bool send_line(const std::string& line);
+    ReadStatus read_line_status(std::string& out, int timeout_ms);
     bool read_line(std::string& out, int timeout_ms);
     bool subscribe();
     bool authorize();
@@ -78,6 +81,7 @@ private:
     uint32_t share_target_nbits() const;
 
     Options opts_;
+    bool use_object_submit_ = false;
     int sock_ = -1;
     std::atomic<bool> connected_{false};
     std::atomic<bool> running_{false};

@@ -153,6 +153,11 @@ double parse_password_difficulty(const std::string& password) {
 }  // namespace
 
 PearlStratumClient::PearlStratumClient(const Options& opts) : opts_(opts) {
+    // SRBMiner/suprnova object submit {job_id, plain_proof} — default for Kryptex.
+    use_object_submit_ = true;
+    if (const char* env = std::getenv("PROPMINER_STRATUM_OBJECT_SUBMIT"); env && env[0]) {
+        use_object_submit_ = (env[0] == '1' || env[0] == 'y' || env[0] == 'Y');
+    }
     if (const char* d = std::getenv("PROPMINER_STRATUM_DIFF"); d && d[0]) {
         const double req = std::atof(d);
         if (req > 0.0) last_difficulty_ = req;
@@ -178,7 +183,8 @@ PearlStratumClient::PearlStratumClient(const Options& opts) : opts_(opts) {
         }
     }
     stratum_log("propminer build=" + build +
-                " (stratum ack diagnostics enabled; need build>=9a03d9e)");
+                " stratum_submit=" + (use_object_submit_ ? "object" : "positional") +
+                " (stratum ack diagnostics enabled)");
 }
 
 PearlStratumClient::~PearlStratumClient() { disconnect(); }
@@ -285,7 +291,8 @@ bool PearlStratumClient::send_line(const std::string& line) {
     return true;
 }
 
-bool PearlStratumClient::read_line(std::string& out, int timeout_ms) {
+PearlStratumClient::ReadStatus PearlStratumClient::read_line_status(std::string& out,
+                                                                  int timeout_ms) {
     out.clear();
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     while (true) {
@@ -294,20 +301,28 @@ bool PearlStratumClient::read_line(std::string& out, int timeout_ms) {
             out = recv_buf_.substr(0, nl);
             recv_buf_.erase(0, nl + 1);
             if (!out.empty() && out.back() == '\r') out.pop_back();
-            return true;
+            return ReadStatus::Line;
         }
-        if (std::chrono::steady_clock::now() >= deadline) return false;
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return ReadStatus::Timeout;
+        }
         pollfd pfd{sock_, POLLIN, 0};
         int remain = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now()).count());
-        if (remain <= 0) return false;
+        if (remain <= 0) return ReadStatus::Timeout;
         int pr = poll(&pfd, 1, remain);
-        if (pr <= 0) return false;
+        if (pr == 0) return ReadStatus::Timeout;
+        if (pr < 0) return ReadStatus::Closed;
         char buf[8192];
         ssize_t n = recv(sock_, buf, sizeof(buf), 0);
-        if (n <= 0) return false;
+        if (n == 0) return ReadStatus::Closed;
+        if (n < 0) return ReadStatus::Closed;
         recv_buf_.append(buf, static_cast<size_t>(n));
     }
+}
+
+bool PearlStratumClient::read_line(std::string& out, int timeout_ms) {
+    return read_line_status(out, timeout_ms) == ReadStatus::Line;
 }
 
 bool PearlStratumClient::subscribe() {
@@ -434,7 +449,12 @@ void PearlStratumClient::flush_stale_pending_submits() {
 void PearlStratumClient::receive_loop() {
     while (running_.load()) {
         std::string line;
-        if (!read_line(line, 30000)) {
+        const ReadStatus st = read_line_status(line, 120000);
+        if (st == ReadStatus::Timeout) {
+            flush_stale_pending_submits();
+            continue;
+        }
+        if (st == ReadStatus::Closed) {
             if (running_.load()) {
                 flush_all_pending_submits("connection_lost");
                 stratum_log("stratum connection lost");
@@ -644,13 +664,19 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
         superseded = !current_job_id_.empty() && job_id != current_job_id_;
     }
     if (superseded) {
-        stratum_log("submit superseded job_id=" +
+        stratum_log("submit dropped superseded job_id=" +
                     job_id.substr(0, std::min<size_t>(12, job_id.size())) +
                     " current=" +
-                    current_job_id_.substr(0, std::min<size_t>(12, current_job_id_.size())) +
-                    " age_ms=" + std::to_string(job_age_ms) +
-                    " (pool may ignore stale job_id)");
-    } else if (job_age_ms >= 0) {
+                    current_job_id_.substr(0, std::min<size_t>(12, current_job_id_.size()));
+        share_log("submit-drop", "nonce=" + std::to_string(nonce) + " reason=superseded_job");
+        return false;
+    }
+    if (job_age_ms > 15000) {
+        stratum_log("submit dropped stale job age_ms=" + std::to_string(job_age_ms));
+        share_log("submit-drop", "nonce=" + std::to_string(nonce) + " reason=stale_job");
+        return false;
+    }
+    if (job_age_ms >= 0) {
         stratum_log("submit job_age_ms=" + std::to_string(job_age_ms) +
                     " job=" + job_id.substr(0, std::min<size_t>(12, job_id.size())));
     }
@@ -663,12 +689,23 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
             nonce, std::chrono::steady_clock::now()};
     }
     const std::string user = opts_.wallet + "." + opts_.worker;
-    // pearl/v1 pools (Kryptex :7048) require positional submit:
-    // [worker, job_id, plain_proof_b64]
-    std::string line = "{\"id\":" + std::to_string(id) +
-                       ",\"method\":\"mining.submit\",\"params\":[\"" +
-                       json_escape(user) + "\",\"" + json_escape(job_id) + "\",\"" +
-                       b64 + "\"]}";
+    std::string line;
+    if (use_object_submit_) {
+        // SRBMiner / suprnova object form (Kryptex officially supports SRBMiner).
+        line = "{\"id\":" + std::to_string(id) +
+               ",\"method\":\"mining.submit\",\"params\":{" +
+               "\"job_id\":\"" + json_escape(job_id) + "\"," +
+               "\"plain_proof\":\"" + b64 + "\"}}";
+    } else {
+        // pearl/v1 positional: [worker, job_id, plain_proof_b64]
+        line = "{\"id\":" + std::to_string(id) +
+               ",\"method\":\"mining.submit\",\"params\":[\"" +
+               json_escape(user) + "\",\"" + json_escape(job_id) + "\",\"" +
+               b64 + "\"]}";
+    }
+    stratum_log(std::string("submit-wire format=") +
+                (use_object_submit_ ? "object" : "positional") +
+                " user=" + user + " proof_bytes=" + std::to_string(proof_bytes.size()));
     share_trace("submit-wire",
                 "job=" + job_id.substr(0, std::min<size_t>(16, job_id.size())) +
                 " proof=" + std::to_string(proof_bytes.size()) + "B id=" +

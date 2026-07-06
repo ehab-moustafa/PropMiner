@@ -468,6 +468,7 @@ static void test_bincode_plain_proof_header_and_roots() {
     }
     EXPECT(found_a);
     EXPECT(found_b);
+    EXPECT(proof.back() == 0x00);  // V2 moe: None
 }
 
 #if !PROP_MINER_HOST_ONLY_TESTS
