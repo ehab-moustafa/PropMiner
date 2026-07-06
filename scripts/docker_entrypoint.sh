@@ -13,6 +13,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Salad/WSL2: libcudart lives off default loader path — set before any propminer exec.
 source "${ROOT}/scripts/setup_cuda_env.sh"
 setup_cuda_runtime_env
+if [[ "${PROPMINER_USE_RELEASE:-0}" == "1" ]]; then
+    source "${ROOT}/scripts/download_release.sh"
+    ok=0
+    for attempt in $(seq 1 18); do
+        if ensure_binaries "${ROOT}/build_remote_test"; then
+            ok=1
+            break
+        fi
+        echo "[entrypoint] release download attempt ${attempt}/18 failed; retry in 10s..." >&2
+        sleep 10
+    done
+    if [[ "${ok}" -ne 1 ]]; then
+        echo "[entrypoint] ERROR: failed to download release binaries after retries" >&2
+        exit 1
+    fi
+fi
 
 MODE_RAW="${PROPMINER_MODE:-full}"
 MODE="$(printf '%s' "${MODE_RAW}" | tr '[:upper:]' '[:lower:]')"

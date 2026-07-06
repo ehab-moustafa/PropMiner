@@ -1,0 +1,88 @@
+# Build PropMiner binaries and publish to GitHub Releases (~3-5 min).
+# Salad bootstrap image downloads from the rolling "continuous" release on start.
+name: Release binaries
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: propminer-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker meta
+        id: meta
+        run: echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ehab-moustafa
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Build release artifacts
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: release-artifacts
+          platforms: linux/amd64
+          push: false
+          provenance: false
+          build-args: |
+            GIT_SHA=${{ steps.meta.outputs.sha }}
+          outputs: type=local,dest=./artifact
+          cache-from: |
+            type=registry,ref=ghcr.io/ehab-moustafa/propminer-rtx5090:buildcache
+            type=gha,scope=propminer-gemm
+            type=gha,scope=propminer-host
+          cache-to: |
+            type=registry,ref=ghcr.io/ehab-moustafa/propminer-rtx5090:buildcache,mode=max
+            type=gha,mode=max,scope=propminer-gemm
+            type=gha,mode=max,scope=propminer-host
+
+      - name: Package tarball
+        run: |
+          cd artifact
+          tar czf ../propminer-rtx5090-linux-amd64.tar.gz \
+            propminer libpearl_gemm_capi.so libpearl_mining_capi.so VERSION
+          ls -la ../propminer-rtx5090-linux-amd64.tar.gz
+          tar tzf ../propminer-rtx5090-linux-amd64.tar.gz
+
+      - name: Publish rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: RTX5090 continuous
+          prerelease: true
+          make_latest: true
+          files: propminer-rtx5090-linux-amd64.tar.gz
+          body: |
+            Rolling RTX 5090 binary release for Salad bootstrap image.
+            Commit: ${{ github.sha }}
+            Short: sha-${{ steps.meta.outputs.sha }}
+
+      - name: Publish pinned release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sha-${{ steps.meta.outputs.sha }}
+          name: RTX5090 sha-${{ steps.meta.outputs.sha }}
+          prerelease: true
+          files: propminer-rtx5090-linux-amd64.tar.gz
+          body: |
+            Pinned build for PROPMINER_RELEASE_TAG=sha-${{ steps.meta.outputs.sha }}

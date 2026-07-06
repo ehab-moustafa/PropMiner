@@ -18,11 +18,15 @@
 #   PROPMINER_STRICT_KNOB_CACHE=1  — fail if kernel_knobs.json mismatches built .so
 #   PEARL_GEMM_CONSUMER_CLUSTER_M   — default 2 for prod (set 1 to disable clustering)
 #   PROPMINER_BATCH_TUNE=1        — run batch sweep at startup (slow; prefer tune script)
+#   PROPMINER_USE_RELEASE=1       — download binaries from GitHub Release (bootstrap image)
+#   PROPMINER_RELEASE_TAG=continuous — rolling release tag (default)
+#   PROPMINER_AUTO_UPDATE=1         — check for new release on each mine restart
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="${ROOT}/build_remote_test"
 source "${ROOT}/scripts/setup_cuda_env.sh"
+source "${ROOT}/scripts/download_release.sh"
 
 # Aggressive RTX 5090 production defaults (override via env if needed).
 export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
@@ -118,7 +122,7 @@ date | propminer_log
 
 setup_cuda_runtime_env
 
-if ! prepare_prebuilt_binaries "${BUILD_DIR}"; then
+if ! ensure_binaries "${BUILD_DIR}"; then
     exit 1
 fi
 
@@ -159,6 +163,7 @@ fi
 
 # Production: keep container alive — retry on any exit (pool blips, Salad SIGTERM races).
 while true; do
+    maybe_auto_update_release
     run_mine_loop
     rc=$?
     if [[ "${rc}" -eq 0 && -n "${PROPMINER_ONCE:-}" ]]; then
