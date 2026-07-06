@@ -77,7 +77,8 @@ ensure_pytorch_cuda_fallback() {
 run_propminer() {
     local bin="${1}"
     shift
-    if "${bin}" "$@" 2>>"${PROPMINER_LOG_DIR}/propminer_stderr.log"; then
+    setup_cuda_runtime_env
+    if LD_LIBRARY_PATH="${LD_LIBRARY_PATH}" "${bin}" "$@" 2>>"${PROPMINER_LOG_DIR}/propminer_stderr.log"; then
         return 0
     fi
     local rc=$?

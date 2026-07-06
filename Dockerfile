@@ -121,6 +121,7 @@ RUN BASE="https://developer.download.nvidia.com/compute/cuda/redist" && \
 FROM ubuntu:24.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/targets/x86_64-linux/lib:/usr/local/cuda/lib64
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV PEARL_GEMM_CONSUMER_CLUSTER_M=2
@@ -181,7 +182,9 @@ COPY --from=builder /root/PropMiner/scripts/build_and_benchmark.sh ./scripts/bui
 RUN mkdir -p ./results
 COPY results/baseline_5090_sm120.json ./results/baseline_5090_sm120.json
 
-RUN chmod +x ./scripts/*.sh
+RUN chmod +x ./scripts/*.sh \
+    && test -f /usr/local/cuda/lib64/libcudart.so.12 \
+    && ldd ./propminer | grep -q libcudart
 
 ENTRYPOINT ["./scripts/docker_entrypoint.sh"]
 
@@ -190,6 +193,7 @@ FROM builder AS devel
 
 ENV PROPMINER_DEVEL=1
 ENV PROPMINER_BUILD_DIR=/root/PropMiner/build_runtime
+ENV LD_LIBRARY_PATH=/usr/local/cuda-12.8/targets/x86_64-linux/lib:/usr/local/cuda/lib64
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV PEARL_GEMM_CONSUMER_CLUSTER_M=2
@@ -224,5 +228,8 @@ RUN mkdir -p results && \
     chmod +x scripts/*.sh
 
 COPY results/baseline_5090_sm120.json ./results/baseline_5090_sm120.json
+
+RUN test -f /usr/local/cuda/lib64/libcudart.so.12 \
+    && ldd build_runtime/propminer | grep -q libcudart
 
 ENTRYPOINT ["./scripts/docker_entrypoint.sh"]

@@ -9,6 +9,11 @@
 #   tune-prod    — full 5090 prod tune (knobs + cluster + batch)
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Salad/WSL2: libcudart lives off default loader path — set before any propminer exec.
+source "${ROOT}/scripts/setup_cuda_env.sh"
+setup_cuda_runtime_env
+
 MODE_RAW="${PROPMINER_MODE:-full}"
 MODE="$(printf '%s' "${MODE_RAW}" | tr '[:upper:]' '[:lower:]')"
 
