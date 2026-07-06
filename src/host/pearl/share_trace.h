@@ -33,6 +33,10 @@ inline std::string hex_prefix(const uint8_t* data, size_t len, size_t nbytes = 8
     return hex;
 }
 
+inline std::string hex_full32(const uint8_t* data, size_t len) {
+    return hex_prefix(data, len, 32);
+}
+
 inline std::string nbits_hex(uint32_t nbits) {
     char buf[16];
     std::snprintf(buf, sizeof(buf), "0x%08x", nbits);

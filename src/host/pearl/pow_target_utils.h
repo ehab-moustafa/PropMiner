@@ -42,4 +42,21 @@ bool claimed_hash_clears_target(const uint8_t claimed_hash[32],
                                 uint32_t nbits,
                                 uint64_t daf);
 
+// Returns true when claimed_hash (LE) <= nbits_target (pool stratum view, no DAF).
+bool claimed_hash_clears_nbits_target(const uint8_t claimed_hash[32],
+                                      uint32_t nbits);
+
+struct ShareTargetDiag {
+    bool clears_with_daf = false;
+    bool clears_without_daf = false;
+    uint64_t daf = 0;
+    std::string claimed_hex;
+    std::string target_adj_hex;
+    std::string target_raw_hex;
+};
+
+ShareTargetDiag diagnose_share_target(const uint8_t claimed_hash[32],
+                                      uint32_t nbits,
+                                      uint64_t daf);
+
 }  // namespace pearl

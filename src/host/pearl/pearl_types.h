@@ -123,6 +123,7 @@ struct ShareFound {
     int mma_tile_n = 0;
     std::vector<uint32_t> a_row_indices;
     std::vector<uint32_t> b_col_indices;
+    std::array<uint8_t, 32> hash_a{};     // AHash from GPU (post-regen)
     std::array<uint8_t, 32> hash_b{};     // BHash from GPU
     std::vector<uint8_t> a_slice;              // opened A rows (rows.size() * k)
     std::vector<uint8_t> a_opened_leaf_data; // opened leaves (leaf_indices.size() * 1024)

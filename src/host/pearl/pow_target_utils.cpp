@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <cstring>
@@ -185,17 +186,56 @@ std::array<uint32_t, 8> target_le_to_pow_u32(const std::array<uint8_t, 32>& targ
     return words;
 }
 
-bool claimed_hash_clears_target(const uint8_t claimed_hash[32],
-                                uint32_t nbits,
-                                uint64_t daf) {
-    auto target = adjusted_pow_target_le(nbits, daf);
+namespace {
+
+bool hash_le_below_target(const uint8_t claimed_hash[32],
+                          const std::array<uint8_t, 32>& target_le) {
     for (int i = 31; i >= 0; --i) {
         const uint8_t h = claimed_hash[i];
-        const uint8_t t = target[static_cast<size_t>(i)];
+        const uint8_t t = target_le[static_cast<size_t>(i)];
         if (h < t) return true;
         if (h > t) return false;
     }
     return true;
+}
+
+std::string bytes_to_hex(const uint8_t* data, size_t len) {
+    std::string hex;
+    hex.reserve(len * 2);
+    for (size_t i = 0; i < len; ++i) {
+        char buf[3];
+        std::snprintf(buf, sizeof(buf), "%02x", static_cast<unsigned char>(data[i]));
+        hex += buf;
+    }
+    return hex;
+}
+
+}  // namespace
+
+bool claimed_hash_clears_target(const uint8_t claimed_hash[32],
+                                uint32_t nbits,
+                                uint64_t daf) {
+    return hash_le_below_target(claimed_hash, adjusted_pow_target_le(nbits, daf));
+}
+
+bool claimed_hash_clears_nbits_target(const uint8_t claimed_hash[32],
+                                      uint32_t nbits) {
+    return hash_le_below_target(claimed_hash, nbits_to_target_le(nbits));
+}
+
+ShareTargetDiag diagnose_share_target(const uint8_t claimed_hash[32],
+                                      uint32_t nbits,
+                                      uint64_t daf) {
+    ShareTargetDiag diag;
+    diag.daf = daf;
+    diag.claimed_hex = bytes_to_hex(claimed_hash, 32);
+    const auto raw = nbits_to_target_le(nbits);
+    const auto adj = adjusted_pow_target_le(nbits, daf);
+    diag.target_raw_hex = bytes_to_hex(raw.data(), raw.size());
+    diag.target_adj_hex = bytes_to_hex(adj.data(), adj.size());
+    diag.clears_without_daf = hash_le_below_target(claimed_hash, raw);
+    diag.clears_with_daf = hash_le_below_target(claimed_hash, adj);
+    return diag;
 }
 
 }  // namespace pearl

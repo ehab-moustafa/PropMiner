@@ -140,6 +140,9 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
     check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_opened_leaves),
                            pinned_opened_leaves_bytes, cudaHostAllocDefault),
              "pinned_opened_leaves");
+    check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_hash_a), 32,
+                           cudaHostAllocDefault),
+             "pinned_hash_a");
     check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_hash_b), 32,
                            cudaHostAllocDefault),
              "pinned_hash_b");
@@ -178,6 +181,7 @@ void GpuWorker::HalfBuffers::free() {
         cudaFreeHost(pinned_opened_leaves);
         pinned_opened_leaves = nullptr;
     }
+    if (pinned_hash_a) { cudaFreeHost(pinned_hash_a); pinned_hash_a = nullptr; }
     if (pinned_hash_b) { cudaFreeHost(pinned_hash_b); pinned_hash_b = nullptr; }
 }
 
@@ -581,6 +585,8 @@ std::vector<int> GpuWorker::scan_winners(HalfBuffers& half, int batch) {
                         " batch_idx=" + std::to_string(k) +
                         " tile_m=" + std::to_string(hdr.mma_tile_m()) +
                         " tile_n=" + std::to_string(hdr.mma_tile_n()) +
+                        " tile_row=" + std::to_string(hdr.tile_row_coord()) +
+                        " tile_col=" + std::to_string(hdr.tile_col_coord()) +
                         " target=" + nbits_hex(target_nbits_.load()));
         }
     }
@@ -668,6 +674,17 @@ bool GpuWorker::process_share_trigger(const ShareTriggerJob& job) {
         device_index_,
         half.stream);
 
+    gemm_.commitment_hash_from_merkle_roots(
+        reinterpret_cast<const uint8_t*>(half.a_hash),
+        reinterpret_cast<const uint8_t*>(ctx.resident().b_hash()),
+        ctx.job().job_key.data(),
+        reinterpret_cast<uint8_t*>(half.commit_a),
+        reinterpret_cast<uint8_t*>(half.commit_b),
+        device_index_,
+        half.stream);
+
+    check_cuda(cuMemcpyDtoHAsync(half.pinned_hash_a, half.a_hash, 32,
+                                 half.stream), "a_hash d2h");
     // D2H compact proof inputs into pinned staging (single PCIe sync below).
     if (!half.pinned_leaf_cvs || half.a_leaf_cv_bytes == 0) return false;
     check_cuda(cuMemcpyDtoHAsync(half.pinned_leaf_cvs, half.a_leaf_cvs,
@@ -708,7 +725,9 @@ bool GpuWorker::process_share_trigger(const ShareTriggerJob& job) {
     std::vector<uint8_t> a_opened_leaf_data(opened_bytes);
     std::memcpy(a_opened_leaf_data.data(), half.pinned_opened_leaves, opened_bytes);
     std::array<uint8_t, 32> hash_b{};
+    std::array<uint8_t, 32> hash_a{};
     std::memcpy(hash_b.data(), half.pinned_hash_b, 32);
+    std::memcpy(hash_a.data(), half.pinned_hash_a, 32);
 
     ShareFound share;
     share.job = ctx.job();
@@ -723,6 +742,7 @@ bool GpuWorker::process_share_trigger(const ShareTriggerJob& job) {
     share.a_row_indices = std::move(a_rows);
     share.b_col_indices = std::move(b_cols);
     share.hash_b = hash_b;
+    share.hash_a = hash_a;
     share.a_slice = std::move(a_slice);
     share.a_opened_leaf_data = std::move(a_opened_leaf_data);
     share.a_leaf_cvs = std::move(a_leaf_cvs_host);
@@ -731,6 +751,7 @@ bool GpuWorker::process_share_trigger(const ShareTriggerJob& job) {
                 "nonce=" + std::to_string(share.nonce) +
                 " rows=" + std::to_string(share.a_row_indices.size()) +
                 " cols=" + std::to_string(share.b_col_indices.size()) +
+                " hash_a=" + hex_prefix(share.hash_a.data(), 32) +
                 " hash_b=" + hex_prefix(share.hash_b.data(), 32));
 
     if (sink_) sink_->submit(share);

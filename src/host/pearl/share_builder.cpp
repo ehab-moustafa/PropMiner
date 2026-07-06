@@ -113,6 +113,22 @@ namespace {
         auto h = Blake3Helper::keyed(buf.data(), buf.size(), a_noise_seed);
         return h;
     }
+
+    bool hash_bytes_set(const std::array<uint8_t, 32>& hash) {
+        for (uint8_t b : hash) {
+            if (b != 0) return true;
+        }
+        return false;
+    }
+
+    std::string format_target_diag(const ShareTargetDiag& diag, uint32_t nbits) {
+        return "nbits=" + nbits_hex(nbits) +
+               " daf=" + std::to_string(diag.daf) +
+               " clears_daf=" + (diag.clears_with_daf ? "1" : "0") +
+               " clears_no_daf=" + (diag.clears_without_daf ? "1" : "0") +
+               " claimed=" + diag.claimed_hex +
+               " target_adj=" + diag.target_adj_hex.substr(0, 32) + "...";
+    }
 }
 
 ShareBuilder::ShareBuilder(const MiningConfig& cfg) : cfg_(cfg) {}
@@ -236,15 +252,26 @@ std::vector<uint8_t> ShareBuilder::build(const ShareFound& share,
         cfg_.k,
         share.a_row_indices);
 
-    std::array<uint8_t, 32> hashA{};
-    std::memcpy(hashA.data(), a_proof.root.data(), 32);
-
-    // Build B proof from handle.
     OwnedProof b_proof = mining_.proof_for_handle(
         *ctx.b_merkle_tree(), share.b_col_indices);
 
+    std::array<uint8_t, 32> hashA{};
+    std::memcpy(hashA.data(), a_proof.root.data(), 32);
+    if (hash_bytes_set(share.hash_a) &&
+        std::memcmp(hashA.data(), share.hash_a.data(), 32) != 0) {
+        share_log("build-warn", "nonce=" + std::to_string(share.nonce) +
+                                  " reason=hash_a_proof_mismatch proof=" +
+                                  hex_prefix(hashA.data(), 32) +
+                                  " gpu=" + hex_prefix(share.hash_a.data(), 32));
+        std::memcpy(hashA.data(), share.hash_a.data(), 32);
+    }
+
     std::array<uint8_t, 32> hashB{};
-    std::memcpy(hashB.data(), b_proof.root.data(), 32);
+    if (hash_bytes_set(share.hash_b)) {
+        std::memcpy(hashB.data(), share.hash_b.data(), 32);
+    } else {
+        std::memcpy(hashB.data(), b_proof.root.data(), 32);
+    }
 
     // Compute claimed hash.
     auto claimed = compute_claimed_hash(share, ctx.job().job_key.data(),
@@ -266,13 +293,16 @@ std::vector<uint8_t> ShareBuilder::build(const ShareFound& share,
     const uint32_t live_nbits = share.installed_target_nbits
         ? share.installed_target_nbits
         : share.job.target_nbits;
-    if (!claimed_hash_clears_target(claimed.data(), live_nbits,
-                                    cfg_.difficulty_adjustment_factor())) {
+    const uint64_t daf = cfg_.difficulty_adjustment_factor();
+    const auto diag = diagnose_share_target(claimed.data(), live_nbits, daf);
+    if (!diag.clears_with_daf) {
         share_log("build-fail", "nonce=" + std::to_string(share.nonce) +
-                                  " reason=below_share_target claimed=" +
-                                  hex_prefix(claimed.data(), 32) +
-                                  " target=" + nbits_hex(live_nbits) +
+                                  " reason=below_share_target " +
+                                  format_target_diag(diag, live_nbits) +
                                   " format=grpc");
+        share_trace("build-target",
+                    "nonce=" + std::to_string(share.nonce) + " " +
+                    format_target_diag(diag, live_nbits));
         return {};
     }
 
@@ -302,8 +332,21 @@ std::vector<uint8_t> ShareBuilder::build_stratum_plain_proof(
 
     std::array<uint8_t, 32> hashA{};
     std::memcpy(hashA.data(), a_proof.root.data(), 32);
+    if (hash_bytes_set(share.hash_a) &&
+        std::memcmp(hashA.data(), share.hash_a.data(), 32) != 0) {
+        share_log("build-warn", "nonce=" + std::to_string(share.nonce) +
+                                  " reason=hash_a_proof_mismatch proof=" +
+                                  hex_prefix(hashA.data(), 32) +
+                                  " gpu=" + hex_prefix(share.hash_a.data(), 32));
+        std::memcpy(hashA.data(), share.hash_a.data(), 32);
+    }
+
     std::array<uint8_t, 32> hashB{};
-    std::memcpy(hashB.data(), b_proof.root.data(), 32);
+    if (hash_bytes_set(share.hash_b)) {
+        std::memcpy(hashB.data(), share.hash_b.data(), 32);
+    } else {
+        std::memcpy(hashB.data(), b_proof.root.data(), 32);
+    }
 
     auto claimed = compute_claimed_hash(share, ctx.job().job_key.data(),
                                         hashA.data(), hashB.data());
@@ -311,12 +354,19 @@ std::vector<uint8_t> ShareBuilder::build_stratum_plain_proof(
     const uint32_t live_nbits = share.installed_target_nbits
         ? share.installed_target_nbits
         : share.job.target_nbits;
-    if (!claimed_hash_clears_target(claimed.data(), live_nbits,
-                                    cfg_.difficulty_adjustment_factor())) {
+    const uint64_t daf = cfg_.difficulty_adjustment_factor();
+    const auto diag = diagnose_share_target(claimed.data(), live_nbits, daf);
+    if (!diag.clears_with_daf) {
         share_log("build-fail", "nonce=" + std::to_string(share.nonce) +
-                                  " reason=below_share_target claimed=" +
-                                  hex_prefix(claimed.data(), 32) +
-                                  " target=" + nbits_hex(live_nbits));
+                                  " reason=below_share_target " +
+                                  format_target_diag(diag, live_nbits));
+        share_trace("build-target",
+                    "nonce=" + std::to_string(share.nonce) + " " +
+                    format_target_diag(diag, live_nbits) +
+                    " hash_a=" + hex_prefix(hashA.data(), 32) +
+                    " hash_b=" + hex_prefix(hashB.data(), 32) +
+                    " tile=" + std::to_string(share.tile_row) + "," +
+                    std::to_string(share.tile_col));
         return {};
     }
 
@@ -420,8 +470,22 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
 
     std::array<uint8_t, 32> hashA{};
     std::memcpy(hashA.data(), a_proof.root.data(), 32);
+    if (hash_bytes_set(share.hash_a) &&
+        std::memcmp(hashA.data(), share.hash_a.data(), 32) != 0) {
+        share_trace("verify-warn",
+                    "nonce=" + std::to_string(share.nonce) +
+                    " reason=hash_a_proof_mismatch proof=" +
+                    hex_prefix(hashA.data(), 32) +
+                    " gpu=" + hex_prefix(share.hash_a.data(), 32));
+        std::memcpy(hashA.data(), share.hash_a.data(), 32);
+    }
+
     std::array<uint8_t, 32> hashB{};
-    std::memcpy(hashB.data(), b_proof.root.data(), 32);
+    if (hash_bytes_set(share.hash_b)) {
+        std::memcpy(hashB.data(), share.hash_b.data(), 32);
+    } else {
+        std::memcpy(hashB.data(), b_proof.root.data(), 32);
+    }
 
     // Recompute claimed hash and compare when the GPU populated it.
     auto claimed = builder.compute_claimed_hash(share, share.job.job_key.data(),
@@ -437,12 +501,30 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
                                   " host=" + hex_prefix(claimed.data(), 32));
         return false;
     }
+
+    const uint32_t live_nbits = share.installed_target_nbits
+        ? share.installed_target_nbits
+        : share.job.target_nbits;
+    const uint64_t daf = share.job.config.difficulty_adjustment_factor();
+    const auto diag = diagnose_share_target(claimed.data(), live_nbits, daf);
+    if (!diag.clears_with_daf) {
+        share_log("verify-fail", "nonce=" + std::to_string(share.nonce) +
+                                  " reason=below_share_target " +
+                                  format_target_diag(diag, live_nbits) +
+                                  " tile=" + std::to_string(share.tile_row) + "," +
+                                  std::to_string(share.tile_col));
+        share_trace("verify-target",
+                    "nonce=" + std::to_string(share.nonce) + " " +
+                    format_target_diag(diag, live_nbits));
+        return false;
+    }
+
     share_trace("verify-ok",
                 "nonce=" + std::to_string(share.nonce) +
-                " claimed=" + hex_prefix(claimed.data(), 32) +
-                " target=" + nbits_hex(share.installed_target_nbits
-                                          ? share.installed_target_nbits
-                                          : share.job.target_nbits));
+                " claimed=" + hex_full32(claimed.data(), 32) +
+                " target=" + nbits_hex(live_nbits) +
+                " clears_daf=1 clears_no_daf=" +
+                (diag.clears_without_daf ? "1" : "0"));
     return true;
 }
 

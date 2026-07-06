@@ -628,10 +628,8 @@ void WorkerOrchestrator::share_sender_thread_func() {
             }
             if (proof.empty()) {
                 shares_dropped_.fetch_add(1);
-                if (!share_trace_enabled()) {
-                    share_log("dropped", "reason=build_failed_stale_target nonce=" +
-                                         std::to_string(raw.nonce));
-                }
+                share_log("dropped", "reason=build_failed_below_target nonce=" +
+                                     std::to_string(raw.nonce));
                 continue;
             }
             if (use_stratum_.load() && stratum_client_ && stratum_client_->connected()) {
