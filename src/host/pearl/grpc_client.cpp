@@ -109,6 +109,52 @@ namespace {
     };
 } // namespace
 
+namespace {
+    bool looks_like_html(const uint8_t* data, size_t len) {
+        if (len < 1) return false;
+        if (data[0] == '<') return true;
+        if (len >= 5 && std::memcmp(data, "HTTP/", 5) == 0) return true;
+        return false;
+    }
+
+    bool extract_grpc_payload(const std::vector<uint8_t>& framed,
+                              std::vector<uint8_t>& out,
+                              std::string& err) {
+        if (framed.empty()) {
+            err = "empty register response";
+            return false;
+        }
+        if (framed[0] != 0) {
+            if (looks_like_html(framed.data(), framed.size())) {
+                err = "pool returned HTML (likely 503 from load balancer)";
+            } else {
+                err = "grpc compression not supported";
+            }
+            return false;
+        }
+        if (framed.size() < 5) {
+            err = "truncated grpc frame header";
+            return false;
+        }
+        uint32_t msg_len = read_u32_be(framed.data() + 1);
+        if (msg_len == 0) {
+            err = "empty grpc message";
+            return false;
+        }
+        if (framed.size() < 5 + msg_len) {
+            err = "truncated grpc message body";
+            return false;
+        }
+        const uint8_t* proto = framed.data() + 5;
+        if (looks_like_html(proto, msg_len)) {
+            err = "pool returned HTML inside grpc frame (503?)";
+            return false;
+        }
+        out.assign(proto, proto + msg_len);
+        return true;
+    }
+} // namespace
+
 struct PearlGrpcClient::Impl {
     Options opts;
     int sock_ = -1;
@@ -343,10 +389,14 @@ struct PearlGrpcClient::Impl {
     bool send_headers(uint32_t stream_id, const std::string& path,
                       bool end_stream) {
         HpackEncoder enc;
+        std::string authority = opts.host;
+        if (opts.port != 443) {
+            authority += ":" + std::to_string(opts.port);
+        }
         auto headers = enc.encode_request_headers(
             "POST",
             opts.use_tls ? "https" : "http",
-            opts.host + ":" + std::to_string(opts.port),
+            authority,
             path,
             opts.user_agent,
             "application/grpc+proto");
@@ -481,13 +531,26 @@ bool PearlGrpcClient::register_miner(const proto::RegisterRequest& req, proto::R
         }
         std::vector<uint8_t> payload(len);
         if (len > 0 && !impl_->read_exact(payload.data(), len, 1000)) return false;
-        if (type == FRAME_DATA) {
-            response_body.insert(response_body.end(), payload.begin(), payload.end());
+        if (rsid == sid) {
+            if (type == FRAME_DATA) {
+                response_body.insert(response_body.end(), payload.begin(), payload.end());
+            }
             if (flags & FLAG_END_STREAM) break;
         }
     }
-    if (response_body.size() < 5) return impl_->set_error("empty register response");
-    return out.decode(response_body.data() + 5, response_body.size() - 5);
+    std::vector<uint8_t> proto_body;
+    std::string extract_err;
+    if (!extract_grpc_payload(response_body, proto_body, extract_err)) {
+        return impl_->set_error(extract_err);
+    }
+    try {
+        if (!out.decode(proto_body.data(), proto_body.size())) {
+            return impl_->set_error("register protobuf decode failed");
+        }
+    } catch (const std::exception& e) {
+        return impl_->set_error(std::string("register decode error: ") + e.what());
+    }
+    return true;
 }
 
 bool PearlGrpcClient::start_mining_stream(const proto::AuthEvent& auth) {

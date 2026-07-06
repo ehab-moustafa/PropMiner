@@ -311,15 +311,13 @@ def grpc_register(
 
     if len(response_body) < 5:
         raise RuntimeError(f"empty register response ({len(response_body)} bytes)")
-
-    # gRPC framing: 1 byte compression + 4 byte length + protobuf
-    if response_body[0:1] == b"<" or response_body[:5] == b"\x00" and len(response_body) > 5:
-        preview = bytes(response_body[:120])
-        if preview.lstrip().startswith(b"<"):
-            raise RuntimeError(
-                "non-gRPC HTML response (likely 503 from load balancer): "
-                + preview.decode("utf-8", errors="replace")[:200]
-            )
+    if response_body[0:1] == b"<":
+        raise RuntimeError(
+            "pool returned HTML (likely 503): "
+            + bytes(response_body[:120]).decode("utf-8", errors="replace")
+        )
+    if response_body[0] != 0:
+        raise RuntimeError("grpc compression not supported")
     msg_len = struct.unpack(">I", response_body[1:5])[0]
     proto = bytes(response_body[5 : 5 + msg_len])
     decoded = pb_decode_register_response(proto)

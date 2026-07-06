@@ -27,6 +27,7 @@ public:
     bool next(WireField& out);
 
     static uint64_t decode_varint(const uint8_t*& p, const uint8_t* end);
+    bool skip_field(uint32_t wire);
 
 private:
     const uint8_t* p_;

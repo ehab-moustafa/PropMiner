@@ -43,6 +43,31 @@ uint64_t ProtoReader::decode_varint(const uint8_t*& p, const uint8_t* end) {
     throw std::runtime_error("truncated varint");
 }
 
+bool ProtoReader::skip_field(uint32_t wire) {
+    switch (wire) {
+        case 0:
+            decode_varint(p_, end_);
+            return p_ <= end_;
+        case 1:
+            if (p_ + 8 > end_) return false;
+            p_ += 8;
+            return true;
+        case 2: {
+            uint64_t len = decode_varint(p_, end_);
+            if (p_ + len > end_) return false;
+            p_ += len;
+            return true;
+        }
+        case 5:
+            if (p_ + 4 > end_) return false;
+            p_ += 4;
+            return true;
+        default:
+            // Groups (3/4) and unknown wire types cannot be skipped safely.
+            return false;
+    }
+}
+
 bool ProtoReader::next(WireField& out) {
     if (p_ >= end_) return false;
     uint64_t tag = decode_varint(p_, end_);
@@ -74,7 +99,8 @@ bool ProtoReader::next(WireField& out) {
             p_ += 4;
             break;
         default:
-            throw std::runtime_error("unknown wire type");
+            if (!skip_field(out.wire)) return false;
+            break;
     }
     return true;
 }
