@@ -321,11 +321,11 @@ void PearlStratumClient::handle_message(const std::string& line) {
         }
         if (share_cb_) share_cb_(accepted, accepted ? "Accepted" : err);
         share_trace("pool-response",
-                    (accepted ? "accepted" : ("rejected err=" + err)) +
+                    std::string(accepted ? "accepted" : ("rejected err=" + err)) +
                     " id=" + std::to_string(stratum_id) +
                     (nonce ? (" nonce=" + std::to_string(nonce)) : ""));
         share_log("pool-response",
-                  (accepted ? "accepted" : "rejected") +
+                  std::string(accepted ? "accepted" : "rejected") +
                   " nonce=" + std::to_string(nonce) +
                   " stratum_id=" + std::to_string(stratum_id) +
                   (accepted ? "" : (" err=" + err)));
