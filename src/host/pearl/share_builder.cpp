@@ -161,26 +161,19 @@ std::array<uint8_t, 32> ShareBuilder::compute_claimed_hash(
     const uint8_t hashB[32]) const {
     uint8_t b_noise_seed[32]{};
     uint8_t a_noise_seed[32]{};
-    const bool have_gpu_commits =
-        hash_bytes_set(share.gpu_commit_a) && hash_bytes_set(share.gpu_commit_b);
-    if (have_gpu_commits) {
-        std::memcpy(b_noise_seed, share.gpu_commit_b.data(), 32);
-        std::memcpy(a_noise_seed, share.gpu_commit_a.data(), 32);
-        uint8_t derived_b[32]{};
-        uint8_t derived_a[32]{};
-        derive_noise_seeds(job_key, hashA, hashB, derived_b, derived_a);
-        if (std::memcmp(derived_a, a_noise_seed, 32) != 0 ||
-            std::memcmp(derived_b, b_noise_seed, 32) != 0) {
+    derive_noise_seeds(job_key, hashA, hashB, b_noise_seed, a_noise_seed);
+    if (hash_bytes_set(share.gpu_commit_a.data()) &&
+        hash_bytes_set(share.gpu_commit_b.data())) {
+        if (std::memcmp(a_noise_seed, share.gpu_commit_a.data(), 32) != 0 ||
+            std::memcmp(b_noise_seed, share.gpu_commit_b.data(), 32) != 0) {
             share_trace("seed-warn",
                         "nonce=" + std::to_string(share.nonce) +
                         " reason=derived_commit_mismatch" +
-                        " derived_a=" + hex_prefix(derived_a, 32) +
-                        " gpu_a=" + hex_prefix(a_noise_seed, 32) +
-                        " derived_b=" + hex_prefix(derived_b, 32) +
-                        " gpu_b=" + hex_prefix(b_noise_seed, 32));
+                        " derived_a=" + hex_prefix(a_noise_seed, 32) +
+                        " gpu_a=" + hex_prefix(share.gpu_commit_a.data(), 32) +
+                        " derived_b=" + hex_prefix(b_noise_seed, 32) +
+                        " gpu_b=" + hex_prefix(share.gpu_commit_b.data(), 32));
         }
-    } else {
-        derive_noise_seeds(job_key, hashA, hashB, b_noise_seed, a_noise_seed);
     }
 
     const int h = static_cast<int>(share.a_row_indices.size());
@@ -530,13 +523,27 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
     if (!diag.clears_with_daf) {
         const char* hint = diag.clears_without_daf
             ? "hint=target_mismatch_or_vardiff"
-            : "hint=gpu_cpu_jackpot_mismatch_try_cluster_m_1";
+            : "hint=gpu_cpu_jackpot_mismatch";
+        std::string rows_sample;
+        for (size_t i = 0; i < share.a_row_indices.size() && i < 4; ++i) {
+            if (i) rows_sample += ",";
+            rows_sample += std::to_string(share.a_row_indices[i]);
+        }
+        std::string cols_sample;
+        for (size_t i = 0; i < share.b_col_indices.size() && i < 4; ++i) {
+            if (i) cols_sample += ",";
+            cols_sample += std::to_string(share.b_col_indices[i]);
+        }
         share_log("verify-fail", "nonce=" + std::to_string(share.nonce) +
                                   " reason=below_share_target " +
                                   format_target_diag(diag, live_nbits) +
                                   " " + hint +
                                   " tile=" + std::to_string(share.tile_row) + "," +
-                                  std::to_string(share.tile_col));
+                                  std::to_string(share.tile_col) +
+                                  " rows=" + rows_sample +
+                                  " cols=" + cols_sample +
+                                  " regs=" + std::to_string(share.a_row_indices.size()) +
+                                  "x" + std::to_string(share.b_col_indices.size()));
         share_trace("verify-target",
                     "nonce=" + std::to_string(share.nonce) + " " +
                     format_target_diag(diag, live_nbits));
@@ -549,6 +556,11 @@ bool ShareBuilder::VerifyShare(const ShareFound& share,
                 " target=" + nbits_hex(live_nbits) +
                 " clears_daf=1 clears_no_daf=" +
                 (diag.clears_without_daf ? "1" : "0"));
+    share_log("verify-ok",
+              "nonce=" + std::to_string(share.nonce) +
+              " target=" + nbits_hex(live_nbits) +
+              " claimed=" + hex_prefix(claimed.data(), 32) +
+              " clears_daf=1");
     return true;
 }
 

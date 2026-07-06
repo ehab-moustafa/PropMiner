@@ -43,6 +43,13 @@ inline std::string nbits_hex(uint32_t nbits) {
     return buf;
 }
 
+inline std::string u64_hex(uint64_t v) {
+    char buf[24];
+    std::snprintf(buf, sizeof(buf), "0x%016llx",
+                  static_cast<unsigned long long>(v));
+    return buf;
+}
+
 inline void share_trace(const char* stage, const std::string& detail) {
     if (!share_trace_enabled()) return;
     std::cout << "[share-trace] " << stage << ": " << detail << std::endl;

@@ -45,7 +45,8 @@ public:
                        ShareResultCallback share_cb);
 
     bool submit_plain_proof(const std::string& job_id,
-                            const std::vector<uint8_t>& proof_bytes);
+                            const std::vector<uint8_t>& proof_bytes,
+                            uint64_t nonce = 0);
 
     std::string job_id_for_sigma(const std::array<uint8_t, kSigmaHeaderBytes>& sigma) const;
 
@@ -80,6 +81,8 @@ private:
     double last_difficulty_ = 0.0;
     std::mutex send_mtx_;
     mutable std::mutex job_map_mtx_;
+    mutable std::mutex pending_submit_mtx_;
+    std::unordered_map<int, uint64_t> pending_submit_nonces_;
     std::unordered_map<std::string, std::string> sigma_hex_to_job_id_;
 
     JobCallback job_cb_;

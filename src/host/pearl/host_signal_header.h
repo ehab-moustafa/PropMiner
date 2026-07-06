@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <cstddef>
 #include <vector>
@@ -18,6 +19,9 @@ public:
     int mma_tile_m() const;
     int mma_tile_n() const;
     uint16_t num_registers_per_thread() const;
+
+    // PoW target words captured in the header at GPU hit time (LE u32[8]).
+    std::array<uint32_t, 8> header_pow_target() const;
 
     void extract_indices(std::vector<uint32_t>& a_rows,
                          std::vector<uint32_t>& b_cols) const;

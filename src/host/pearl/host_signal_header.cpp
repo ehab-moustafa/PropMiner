@@ -1,6 +1,7 @@
 #include "host_signal_header.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <stdexcept>
 
@@ -13,6 +14,7 @@ namespace {
     constexpr int OFF_THREAD_ROWS = 66;
     constexpr int OFF_THREAD_COLS = 322;
     constexpr int OFF_MMA_TILE_SIZE = 592;
+    constexpr int OFF_TARGET = 604;
     constexpr int MAX_REGS = 256;
 }
 
@@ -52,6 +54,18 @@ uint16_t HostSignalHeader::num_registers_per_thread() const {
     uint16_t v = 0;
     std::memcpy(&v, data_ + OFF_NUM_REGISTERS_PER_THREAD, 2);
     return v;
+}
+
+std::array<uint32_t, 8> HostSignalHeader::header_pow_target() const {
+    std::array<uint32_t, 8> words{};
+    if (!data_ || OFF_TARGET + static_cast<int>(words.size()) * 4 >
+                      static_cast<int>(size_)) {
+        return words;
+    }
+    for (size_t i = 0; i < words.size(); ++i) {
+        std::memcpy(&words[i], data_ + OFF_TARGET + static_cast<int>(i) * 4, 4);
+    }
+    return words;
 }
 
 void HostSignalHeader::extract_indices(std::vector<uint32_t>& a_rows,

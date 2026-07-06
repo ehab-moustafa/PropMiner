@@ -14,6 +14,7 @@
 #include "pearl_blake3.h"
 #include "pow_target_utils.h"
 #include "share_builder.h"
+#include "env_flags.h"
 #include "share_trace.h"
 #include "watchdog.h"
 
@@ -319,7 +320,17 @@ void GpuWorker::enqueue_share_trigger(HalfBuffers& half, uint64_t nonce,
         ? half.batch_mined_target_nbits
         : target_nbits_.load();
     job.sigma_ctx = ctx;
-    if (!job.sigma_ctx) return;
+    if (!job.sigma_ctx) {
+        share_log("rebuild-drop", "nonce=" + std::to_string(nonce) +
+                                  " reason=missing_sigma_context");
+        return;
+    }
+
+    share_trace("rebuild-queued",
+                "nonce=" + std::to_string(nonce) +
+                " gpu=" + std::to_string(device_index_) +
+                " batch_seed_start=" + u64_hex(half.batch_seed_start) +
+                " defer_gpu=1");
 
     {
         std::lock_guard<std::mutex> lk(share_mtx_);
@@ -346,9 +357,13 @@ void GpuWorker::share_gpu_loop() {
             try {
                 (void)process_share_trigger(job);
             } catch (const std::exception& ex) {
-                std::fprintf(stderr, "[gpu] share trigger failed: %s\n", ex.what());
+                share_log("rebuild-fail",
+                          "nonce=" + std::to_string(job.nonce) +
+                          " reason=exception err=" + ex.what());
             } catch (...) {
-                std::fprintf(stderr, "[gpu] share trigger failed: unknown error\n");
+                share_log("rebuild-fail",
+                          "nonce=" + std::to_string(job.nonce) +
+                          " reason=unknown_exception");
             }
         }
         if (job.half) {
@@ -506,10 +521,12 @@ void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
 void GpuWorker::prepare_graph(HalfBuffers& half) {
     int batch = matmuls_per_poll_.load();
     if (batch <= 0 || half.workspace == nullptr) return;
-    if (std::getenv("PROPMINER_BENCH_NO_GRAPH")) {
+    if (bench_no_graph_enabled()) {
         half.graph_ready = false;
         half.graph_batch_count = 0;
         std::fprintf(stderr, "[gpu] cuda graph disabled (PROPMINER_BENCH_NO_GRAPH)\n");
+        share_trace("graph-ready", "gpu=" + std::to_string(device_index_) +
+                                   " enabled=0 reason=PROPMINER_BENCH_NO_GRAPH");
         return;
     }
     // Reset headers to a known state before capture.
@@ -525,11 +542,16 @@ void GpuWorker::prepare_graph(HalfBuffers& half) {
                                       half.seed_dev_ptr);
     half.graph_ready = true;
     half.graph_batch_count = batch;
+    share_trace("graph-ready",
+                "gpu=" + std::to_string(device_index_) +
+                " enabled=1 batch=" + std::to_string(batch));
 }
 
 void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count) {
     half.batch_seed_start = seed_lo_start;
     half.batch_mined_target_nbits = half.pow_target_nbits;
+    const char* half_tag = (&half == &ping_) ? "ping" : "pong";
+    const bool use_graph = half.graph_ready && count == half.graph_batch_count;
     // Clear host headers.
     for (int i = 0; i < count; ++i) {
         std::memset(half.host_headers[i], 0, half.header_size);
@@ -542,7 +564,7 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
                                    reinterpret_cast<cudaStream_t>(half.stream)));
     }
 
-    if (half.graph_ready && count == half.graph_batch_count) {
+    if (use_graph) {
         // Extended graph path: seed was uploaded to half.seed_dev on
         // seed_copy_stream_ while the previous batch ran.  Make the compute
         // stream wait for the upload, then launch the graph.
@@ -559,6 +581,13 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
         gemm_.iter_batch(half.workspace, half.stream, seed_lo_start,
                          half.host_headers.data(), count);
     }
+    share_trace("batch-queue",
+                "gpu=" + std::to_string(device_index_) +
+                " half=" + half_tag +
+                " path=" + (use_graph ? "graph" : "iter_batch") +
+                " batch_seed_start=" + u64_hex(seed_lo_start) +
+                " count=" + std::to_string(count) +
+                " target=" + nbits_hex(half.batch_mined_target_nbits));
     // Record completion so the host can spin-wait without blocking the driver.
     if (half.batch_done_event) {
         CUDA_CHECK(cudaEventRecord(half.batch_done_event,
@@ -577,6 +606,11 @@ void GpuWorker::upload_next_seed_async(HalfBuffers& half, uint64_t seed_lo) {
         cudaError_t r = cudaEventRecord(seed_copy_done_event_, seed_copy_stream_);
         if (r != cudaSuccess) check_cuda(CUDA_ERROR_UNKNOWN, "seed event record");
     }
+    const char* half_tag = (&half == &ping_) ? "ping" : "pong";
+    share_trace("seed-upload",
+                "gpu=" + std::to_string(device_index_) +
+                " half=" + half_tag +
+                " seed_lo=" + u64_hex(seed_lo));
 }
 
 int GpuWorker::sync_and_scan(HalfBuffers& half, int batch) {
@@ -593,15 +627,38 @@ std::vector<int> GpuWorker::scan_winners(HalfBuffers& half, int batch) {
             std::memcpy(half.host_header_storage[k].data(),
                         half.host_headers[k], half.header_size);
             winners.push_back(k);
+            const auto header_target = hdr.header_pow_target();
+            const auto batch_words =
+                target_le_to_pow_u32(adjusted_pow_target_le(
+                    half.batch_mined_target_nbits,
+                    cfg_.difficulty_adjustment_factor()));
+            bool target_match = true;
+            for (size_t i = 0; i < header_target.size(); ++i) {
+                if (header_target[i] != batch_words[i]) {
+                    target_match = false;
+                    break;
+                }
+            }
             share_trace("gpu-hit",
                         "gpu=" + std::to_string(device_index_) +
                         " batch_idx=" + std::to_string(k) +
+                        " nonce=" + std::to_string(half.batch_seed_start +
+                                                    static_cast<uint64_t>(k)) +
+                        " batch_seed_start=" + u64_hex(half.batch_seed_start) +
                         " tile_m=" + std::to_string(hdr.mma_tile_m()) +
                         " tile_n=" + std::to_string(hdr.mma_tile_n()) +
                         " tile_row=" + std::to_string(hdr.tile_row_coord()) +
                         " tile_col=" + std::to_string(hdr.tile_col_coord()) +
+                        " regs=" + std::to_string(hdr.num_registers_per_thread()) +
                         " batch_target=" + nbits_hex(half.batch_mined_target_nbits) +
-                        " live_target=" + nbits_hex(target_nbits_.load()));
+                        " live_target=" + nbits_hex(target_nbits_.load()) +
+                        " header_target_match=" + (target_match ? "1" : "0"));
+            share_log("gpu-hit",
+                      "nonce=" + std::to_string(half.batch_seed_start +
+                                                  static_cast<uint64_t>(k)) +
+                      " gpu=" + std::to_string(device_index_) +
+                      " batch_idx=" + std::to_string(k) +
+                      " target_match=" + (target_match ? "1" : "0"));
         }
     }
     return winners;
@@ -656,12 +713,17 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
     HalfBuffers& half = *job.half;
     const SigmaContext& ctx = *job.sigma_ctx;
 
+    HostSignalHeader hdr(job.header);
     share_trace("rebuild-start",
                 "nonce=" + std::to_string(job.nonce) +
                 " target=" + nbits_hex(job.target_nbits) +
-                " gpu=" + std::to_string(device_index_));
+                " gpu=" + std::to_string(device_index_) +
+                " batch_seed_start=" + u64_hex(half.batch_seed_start) +
+                " batch_idx=" + std::to_string(job.nonce - half.batch_seed_start) +
+                " tile_coord=" + std::to_string(hdr.tile_row_coord()) + "," +
+                std::to_string(hdr.tile_col_coord()) +
+                " regs=" + std::to_string(hdr.num_registers_per_thread()));
 
-    HostSignalHeader hdr(job.header);
     std::vector<uint32_t> a_rows, b_cols;
     try {
         hdr.extract_indices(a_rows, b_cols);
@@ -722,13 +784,22 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
     check_cuda(cuMemcpyDtoHAsync(half.pinned_commit_b, half.commit_b, 32,
                                  half.stream), "commit_b d2h");
     // D2H compact proof inputs into pinned staging (single PCIe sync below).
-    if (!half.pinned_leaf_cvs || half.a_leaf_cv_bytes == 0) return false;
+    if (!half.pinned_leaf_cvs || half.a_leaf_cv_bytes == 0) {
+        share_log("rebuild-fail", "nonce=" + std::to_string(job.nonce) +
+                                  " reason=missing_leaf_cvs");
+        return false;
+    }
     check_cuda(cuMemcpyDtoHAsync(half.pinned_leaf_cvs, half.a_leaf_cvs,
                                  half.a_leaf_cv_bytes, half.stream),
                "a_leaf_cvs d2h");
 
     const size_t row_bytes = static_cast<size_t>(cfg_.k);
-    if (a_rows.size() * row_bytes > half.pinned_a_slice_bytes) return false;
+    if (a_rows.size() * row_bytes > half.pinned_a_slice_bytes) {
+        share_log("rebuild-fail", "nonce=" + std::to_string(job.nonce) +
+                                  " reason=a_slice_overflow rows=" +
+                                  std::to_string(a_rows.size()));
+        return false;
+    }
     for (size_t i = 0; i < a_rows.size(); ++i) {
         const uint32_t row = a_rows[i];
         check_cuda(cuMemcpyDtoHAsync(
@@ -740,7 +811,12 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
     const auto a_leaf_indices =
         compute_leaf_indices_from_rows(a_rows, row_bytes);
     const size_t opened_bytes = a_leaf_indices.size() * 1024;
-    if (opened_bytes > half.pinned_opened_leaves_bytes) return false;
+    if (opened_bytes > half.pinned_opened_leaves_bytes) {
+        share_log("rebuild-fail", "nonce=" + std::to_string(job.nonce) +
+                                  " reason=opened_leaves_overflow leaves=" +
+                                  std::to_string(a_leaf_indices.size()));
+        return false;
+    }
     for (size_t i = 0; i < a_leaf_indices.size(); ++i) {
         const uint64_t byte_off =
             static_cast<uint64_t>(a_leaf_indices[i]) * 1024;
@@ -802,6 +878,12 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
                 " commit_a=" + hex_prefix(share.gpu_commit_a.data(), 32) +
                 " claimed=" + hex_prefix(share.claimed_hash.data(), 32) +
                 " batch_target=" + nbits_hex(share.installed_target_nbits));
+    share_log("rebuild-ok",
+              "nonce=" + std::to_string(share.nonce) +
+              " gpu=" + std::to_string(device_index_) +
+              " rows=" + std::to_string(share.a_row_indices.size()) +
+              " cols=" + std::to_string(share.b_col_indices.size()) +
+              " claimed=" + hex_prefix(share.claimed_hash.data(), 32));
 
     if (sink_) sink_->submit(share);
     return true;
@@ -881,8 +963,8 @@ void GpuWorker::run() {
             queue_batch(*cur, seed_base_ + global_iter, batch);
             // Start uploading the seed for the next batch immediately so the
             // conveyor belt is primed.
-            upload_next_seed_async(*other, seed_base_ + global_iter + batch);
             global_iter += batch;
+            upload_next_seed_async(*other, seed_base_ + global_iter);
             first = false;
             std::swap(ping, pong);
             continue;
@@ -898,7 +980,7 @@ void GpuWorker::run() {
         // Upload the seed for the *next* batch on the copy stream while the
         // current batch runs on the compute stream.  This is the PCIe Gen5
         // conveyor belt: zero hashing on CPU, only seed movement.
-        upload_next_seed_async(*other, seed_base_ + global_iter + batch);
+        upload_next_seed_async(*other, seed_base_ + global_iter);
 
         // Spin-wait for the previously-launched batch on `other`.
         if (!wait_for_batch(*other, 0)) {

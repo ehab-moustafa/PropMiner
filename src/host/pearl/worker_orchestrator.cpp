@@ -18,6 +18,7 @@
 #include "pow_target_utils.h"
 #include "rtx5090_profile.h"
 #include "share_builder.h"
+#include "env_flags.h"
 #include "share_trace.h"
 #include "tune_cache.h"
 
@@ -622,6 +623,8 @@ void WorkerOrchestrator::share_sender_thread_func() {
             ShareBuilder builder(raw.job.config);
             if (!ShareBuilder::VerifyShare(raw, *raw.sigma_ctx)) {
                 shares_dropped_.fetch_add(1);
+                share_log("dropped", "reason=verify_failed nonce=" +
+                                     std::to_string(raw.nonce));
                 continue;
             }
             // Drop if vardiff tightened while share was queued (ARC ShareTargetGuard).
@@ -658,6 +661,10 @@ void WorkerOrchestrator::share_sender_thread_func() {
                                      std::to_string(raw.nonce));
                 continue;
             }
+            share_log("build-ok",
+                      "nonce=" + std::to_string(raw.nonce) +
+                      " proof_bytes=" + std::to_string(proof.size()) +
+                      " format=" + (use_stratum_.load() ? "stratum" : "grpc"));
             if (use_stratum_.load() && stratum_client_ && stratum_client_->connected()) {
                 const std::string job_id =
                     stratum_client_->job_id_for_sigma(raw.job.sigma);
@@ -675,10 +682,11 @@ void WorkerOrchestrator::share_sender_thread_func() {
                           " target=" + nbits_hex(raw.installed_target_nbits
                                                     ? raw.installed_target_nbits
                                                     : raw.job.target_nbits));
-                if (!stratum_client_->submit_plain_proof(job_id, proof)) {
+                if (!stratum_client_->submit_plain_proof(job_id, proof, raw.nonce)) {
                     shares_dropped_.fetch_add(1);
-                    share_log("dropped", "reason=send_failed err=" +
-                                         stratum_client_->last_error());
+                    share_log("dropped", "reason=send_failed nonce=" +
+                                         std::to_string(raw.nonce) +
+                                         " err=" + stratum_client_->last_error());
                 }
                 continue;
             }
@@ -983,7 +991,7 @@ int WorkerOrchestrator::run() {
             bench_batch = std::max(1, std::atoi(bb));
         }
         tuned_batch = bench_batch;
-        const bool bench_graph = !std::getenv("PROPMINER_BENCH_NO_GRAPH");
+        const bool bench_graph = !bench_no_graph_enabled();
         std::cerr << "[orchestrator] Benchmark mode: local job, no pool connection"
                   << " (batch=" << tuned_batch
                   << " graph=" << (bench_graph ? "on" : "off") << ")\n";

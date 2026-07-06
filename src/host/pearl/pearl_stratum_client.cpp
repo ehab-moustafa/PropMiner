@@ -309,10 +309,26 @@ void PearlStratumClient::handle_message(const std::string& line) {
             accepted = false;
             err = "null result";
         }
+        const int stratum_id = parsed["id"].to_int();
+        uint64_t nonce = 0;
+        {
+            std::lock_guard<std::mutex> lk(pending_submit_mtx_);
+            auto it = pending_submit_nonces_.find(stratum_id);
+            if (it != pending_submit_nonces_.end()) {
+                nonce = it->second;
+                pending_submit_nonces_.erase(it);
+            }
+        }
         if (share_cb_) share_cb_(accepted, accepted ? "Accepted" : err);
         share_trace("pool-response",
                     (accepted ? "accepted" : ("rejected err=" + err)) +
-                    " id=" + std::to_string(parsed["id"].to_int()));
+                    " id=" + std::to_string(stratum_id) +
+                    (nonce ? (" nonce=" + std::to_string(nonce)) : ""));
+        share_log("pool-response",
+                  (accepted ? "accepted" : "rejected") +
+                  " nonce=" + std::to_string(nonce) +
+                  " stratum_id=" + std::to_string(stratum_id) +
+                  (accepted ? "" : (" err=" + err)));
     }
 }
 
@@ -416,7 +432,8 @@ std::string PearlStratumClient::job_id_for_sigma(
 }
 
 bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
-                                             const std::vector<uint8_t>& proof_bytes) {
+                                             const std::vector<uint8_t>& proof_bytes,
+                                             uint64_t nonce) {
     if (!connected_.load()) return false;
     std::string b64;
     static const char* tbl =
@@ -433,6 +450,10 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
         b64.push_back(i > proof_bytes.size() ? '=' : tbl[triple & 0x3F]);
     }
     const int id = ++request_id_;
+    if (nonce != 0) {
+        std::lock_guard<std::mutex> lk(pending_submit_mtx_);
+        pending_submit_nonces_[id] = nonce;
+    }
     const std::string user = opts_.wallet + "." + opts_.worker;
     // pearl/v1 pools (Kryptex :7048) require positional submit:
     // [worker, job_id, plain_proof_b64]
@@ -443,10 +464,23 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
     share_trace("submit-wire",
                 "job=" + job_id.substr(0, std::min<size_t>(16, job_id.size())) +
                 " proof=" + std::to_string(proof_bytes.size()) + "B id=" +
-                std::to_string(id));
+                std::to_string(id) +
+                (nonce ? (" nonce=" + std::to_string(nonce)) : ""));
+    share_log("submit-wire",
+              "nonce=" + std::to_string(nonce) +
+              " job_id=" + job_id.substr(0, std::min<size_t>(16, job_id.size())) +
+              " proof_bytes=" + std::to_string(proof_bytes.size()) +
+              " stratum_id=" + std::to_string(id));
     stratum_log("share submitting job=" + job_id.substr(0, std::min<size_t>(12, job_id.size())) +
                 " proof=" + std::to_string(proof_bytes.size()) + "B id=" + std::to_string(id));
-    return send_line(line);
+    if (!send_line(line)) {
+        share_log("submit-fail",
+                  "nonce=" + std::to_string(nonce) +
+                  " stratum_id=" + std::to_string(id) +
+                  " reason=send_line_failed");
+        return false;
+    }
+    return true;
 }
 
 std::array<uint8_t, 16> PearlStratumClient::job_id_bytes(const std::string& job_id) {
