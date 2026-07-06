@@ -136,6 +136,16 @@ WorkerOrchestrator::WorkerOrchestrator(const Config& cfg) : cfg_(cfg) {
     if (cfg_.pool_endpoints.empty()) {
         cfg_.pool_endpoints.push_back({cfg_.pool_host, cfg_.pool_port, cfg_.use_tls});
     }
+    if (cfg_.stratum_endpoints.empty()) {
+        cfg_.stratum_endpoints.push_back({"prl.kryptex.network", 7048, false});
+    }
+    if (const char* env = std::getenv("PROPMINER_USE_STRATUM"); env && env[0] == '1') {
+        use_stratum_.store(true);
+    }
+    if (const char* env = std::getenv("PROPMINER_POOL_MODE"); env) {
+        if (std::strcmp(env, "stratum") == 0) use_stratum_.store(true);
+        if (std::strcmp(env, "grpc") == 0) use_stratum_.store(false);
+    }
 }
 
 WorkerOrchestrator::~WorkerOrchestrator() {
@@ -190,9 +200,16 @@ std::string WorkerOrchestrator::pool_status_line() const {
             }
             return "hashrate: pool disconnected (retrying)";
         case PoolState::Connecting:
-            return "hashrate: connecting to pool " + active_pool().host + "...";
+            if (use_stratum_.load() && !cfg_.stratum_endpoints.empty()) {
+                return "hashrate: connecting Stratum " + cfg_.stratum_endpoints[0].host + ":" +
+                       std::to_string(cfg_.stratum_endpoints[0].port) + "...";
+            }
+            return "hashrate: connecting gRPC pool " + active_pool().host + "...";
         case PoolState::Registering:
-            return "hashrate: registering with pool " + active_pool().host + "...";
+            if (use_stratum_.load()) {
+                return "hashrate: authorizing with Stratum pool...";
+            }
+            return "hashrate: registering with gRPC pool " + active_pool().host + "...";
         case PoolState::Streaming:
         case PoolState::AwaitingJob:
             return "hashrate: connected, awaiting first job from pool...";
@@ -395,58 +412,136 @@ void WorkerOrchestrator::handle_pool_event(const proto::PoolEvent& evt) {
     }
 }
 
-void WorkerOrchestrator::network_thread_func() {
+bool WorkerOrchestrator::run_grpc_session() {
+    if (!ensure_connected_and_registered()) {
+        return false;
+    }
+
+    proto::AuthEvent auth;
+    {
+        std::lock_guard<std::mutex> lk(session_mtx_);
+        auth.miner_id = miner_id_;
+        auth.session_token = session_token_;
+    }
+    set_pool_state(PoolState::Streaming);
+    if (!client_->start_mining_stream(auth)) {
+        last_pool_error_ = client_->last_error();
+        std::cerr << "mining stream failed: " << last_pool_error_ << std::endl;
+        reset_pool_session();
+        return false;
+    }
+    std::cerr << "[orchestrator] gRPC mining stream open, awaiting JobAssignment\n";
+    set_pool_state(PoolState::AwaitingJob);
     int stream_idle_polls = 0;
-    while (!stop_flag_) {
-        if (!ensure_connected_and_registered()) {
-            const int wait_ms = backoff_ms(reconnect_attempt_++);
-            std::cerr << "[orchestrator] pool connect/register failed; retry in "
-                      << (wait_ms / 1000) << "s"
-                      << (last_pool_error_.empty() ? "" : " (" + last_pool_error_ + ")")
-                      << std::endl;
-            set_pool_state(PoolState::Disconnected);
-            std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
-            continue;
-        }
 
-        proto::AuthEvent auth;
-        {
-            std::lock_guard<std::mutex> lk(session_mtx_);
-            auth.miner_id = miner_id_;
-            auth.session_token = session_token_;
-        }
-        set_pool_state(PoolState::Streaming);
-        if (!client_->start_mining_stream(auth)) {
-            last_pool_error_ = client_->last_error();
-            std::cerr << "mining stream failed: " << last_pool_error_ << std::endl;
-            reset_pool_session();
-            const int wait_ms = backoff_ms(reconnect_attempt_++);
-            std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
-            continue;
-        }
-        std::cerr << "[orchestrator] mining stream open, awaiting JobAssignment\n";
-        set_pool_state(PoolState::AwaitingJob);
-        stream_idle_polls = 0;
-
-        while (!stop_flag_ && client_->connected()) {
-            proto::PoolEvent evt;
-            if (client_->receive_event(evt)) {
-                stream_idle_polls = 0;
-                handle_pool_event(evt);
-                if (pool_reconnect_requested_.exchange(false)) break;
-            } else if (!client_->connected()) {
-                break;
-            } else {
-                ++stream_idle_polls;
-                if (stream_idle_polls % 12 == 0) {
-                    std::cerr << "[orchestrator] streaming, no pool event yet ("
-                              << (stream_idle_polls * 5) << "s)\n";
-                }
+    while (!stop_flag_ && client_->connected()) {
+        proto::PoolEvent evt;
+        if (client_->receive_event(evt)) {
+            stream_idle_polls = 0;
+            handle_pool_event(evt);
+            if (pool_reconnect_requested_.exchange(false)) break;
+        } else if (!client_->connected()) {
+            break;
+        } else {
+            ++stream_idle_polls;
+            if (stream_idle_polls % 12 == 0) {
+                std::cerr << "[orchestrator] gRPC streaming, no pool event yet ("
+                          << (stream_idle_polls * 5) << "s)\n";
             }
         }
-        last_pool_error_ = client_ ? client_->last_error() : "stream closed";
-        reset_pool_session();
+    }
+    last_pool_error_ = client_ ? client_->last_error() : "gRPC stream closed";
+    reset_pool_session();
+    set_pool_state(PoolState::Disconnected);
+    return true;
+}
+
+void WorkerOrchestrator::run_stratum_session() {
+    set_pool_state(PoolState::Connecting);
+    for (const auto& ep : cfg_.stratum_endpoints) {
+        if (stop_flag_) break;
+
+        PearlStratumClient::Options opts;
+        opts.host = ep.host;
+        opts.port = ep.port;
+        opts.wallet = cfg_.wallet_address;
+        opts.worker = cfg_.worker_name;
+        opts.password = "x";
+        opts.user_agent = cfg_.miner_version;
+        if (const char* t = std::getenv("PROPMINER_GRPC_TIMEOUT_MS"); t && t[0]) {
+            opts.connect_timeout_ms = std::max(5000, std::atoi(t));
+        }
+
+        stratum_client_ = std::make_unique<PearlStratumClient>(opts);
+        stratum_client_->set_callbacks(
+            [this](const proto::JobAssignment& ja, const std::string& job_id) {
+                {
+                    std::lock_guard<std::mutex> lk(stratum_job_mtx_);
+                    current_stratum_job_id_ = job_id;
+                }
+                publish_job_from_assignment(ja);
+            },
+            [this](uint32_t nbits) {
+                for (auto& w : workers_) w->set_target_nbits(nbits);
+                auto entry = bus_.drain_latest();
+                if (entry.ctx) entry.ctx->set_target_nbits(nbits);
+            },
+            [](bool accepted, const std::string& msg) {
+                std::cout << "share " << (accepted ? "Accepted" : msg) << std::endl;
+            });
+
+        std::cerr << "[orchestrator] connecting Stratum " << ep.host << ":" << ep.port
+                  << " (Kryptex direct mining :7048)\n";
+        set_pool_state(PoolState::Registering);
+        if (!stratum_client_->connect()) {
+            last_pool_error_ = stratum_client_->last_error();
+            std::cerr << "[orchestrator] Stratum connect failed: " << last_pool_error_ << "\n";
+            stratum_client_.reset();
+            continue;
+        }
+
+        reconnect_attempt_ = 0;
+        last_pool_error_.clear();
+        set_pool_state(PoolState::AwaitingJob);
+        while (!stop_flag_ && stratum_client_->connected()) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+        last_pool_error_ = stratum_client_ ? stratum_client_->last_error() : "stratum disconnected";
+        stratum_client_->disconnect();
+        stratum_client_.reset();
+    }
+    set_pool_state(PoolState::Disconnected);
+    const int wait_ms = backoff_ms(reconnect_attempt_++);
+    std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
+}
+
+void WorkerOrchestrator::network_thread_func() {
+    while (!stop_flag_) {
+        if (use_stratum_.load()) {
+            run_stratum_session();
+            continue;
+        }
+
+        if (run_grpc_session()) {
+            grpc_fail_cycles_ = 0;
+            continue;
+        }
+
+        const int wait_ms = backoff_ms(reconnect_attempt_++);
+        std::cerr << "[orchestrator] gRPC pool connect/register failed; retry in "
+                  << (wait_ms / 1000) << "s"
+                  << (last_pool_error_.empty() ? "" : " (" + last_pool_error_ + ")")
+                  << std::endl;
         set_pool_state(PoolState::Disconnected);
+        grpc_fail_cycles_++;
+        if (grpc_fail_cycles_ >= 1 && !cfg_.stratum_endpoints.empty()) {
+            use_stratum_.store(true);
+            std::cerr << "[orchestrator] gRPC unavailable on all endpoints; "
+                         "switching to Kryptex Stratum :7048 fallback\n";
+            grpc_fail_cycles_ = 0;
+            continue;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
     }
 }
 
@@ -491,9 +586,30 @@ void WorkerOrchestrator::share_sender_thread_func() {
                 std::cerr << "share dropped: VerifyShare failed\n";
                 continue;
             }
-            auto proof = builder.build(raw, *raw.sigma_ctx);
+            std::vector<uint8_t> proof;
+            if (use_stratum_.load()) {
+                proof = builder.build_stratum_plain_proof(raw, *raw.sigma_ctx);
+            } else {
+                proof = builder.build(raw, *raw.sigma_ctx);
+            }
             if (proof.empty()) {
                 std::cerr << "share dropped: stale target or build failed\n";
+                continue;
+            }
+            if (use_stratum_.load() && stratum_client_ && stratum_client_->connected()) {
+                std::string job_id;
+                {
+                    std::lock_guard<std::mutex> lk(stratum_job_mtx_);
+                    job_id = current_stratum_job_id_;
+                }
+                if (job_id.empty()) {
+                    std::cerr << "share dropped: no stratum job_id\n";
+                    continue;
+                }
+                if (!stratum_client_->submit_plain_proof(job_id, proof)) {
+                    std::cerr << "stratum share send failed: " << stratum_client_->last_error()
+                              << std::endl;
+                }
                 continue;
             }
             proto::MinerEvent evt;
@@ -745,9 +861,10 @@ int WorkerOrchestrator::run() {
 
     if (!bench_mode) {
         std::cerr << "[orchestrator] Production mine mode: "
-                  << cfg_.pool_endpoints.size() << " pool endpoint(s), first="
-                  << cfg_.pool_endpoints[0].host << ":" << cfg_.pool_endpoints[0].port
-                  << " (awaiting first job before GPU work begins)\n";
+                  << cfg_.pool_endpoints.size() << " gRPC endpoint(s), "
+                  << cfg_.stratum_endpoints.size() << " Stratum fallback(s)"
+                  << (use_stratum_.load() ? " [Stratum-first]" : " [gRPC-first]")
+                  << "\n";
     }
 
     const auto gpu_cards = enumerate_gpu_cards();

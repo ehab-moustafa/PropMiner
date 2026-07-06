@@ -7,6 +7,7 @@
 #include "pearl_blake3.h"
 #include "merkle_utils.h"
 #include "pow_target_utils.h"
+#include "bincode_encoder.h"
 #include "protobuf_encoder.h"
 #include "sigma_context.h"
 
@@ -271,6 +272,46 @@ std::vector<uint8_t> ShareBuilder::build(const ShareFound& share,
 
     return ProtobufEncoder::encode_share_submission(
         encoded, cfg_, a_proof, b_proof, audit_siblings);
+}
+
+std::vector<uint8_t> ShareBuilder::build_stratum_plain_proof(
+    const ShareFound& share,
+    const SigmaContext& ctx) const {
+    if (share.a_opened_leaf_data.empty()) {
+        throw std::runtime_error(
+            "ShareFound.a_opened_leaf_data missing; cannot build A proof");
+    }
+    const std::vector<uint8_t>& a_leaf_data = share.a_opened_leaf_data;
+
+    OwnedProof a_proof = mining_.a_proof_from_leaf_cvs(
+        share.a_leaf_cvs,
+        a_leaf_data,
+        ctx.job().job_key.data(),
+        cfg_.m,
+        cfg_.k,
+        share.a_row_indices);
+
+    OwnedProof b_proof = mining_.proof_for_handle(
+        *ctx.b_merkle_tree(), share.b_col_indices);
+
+    std::array<uint8_t, 32> hashA{};
+    std::memcpy(hashA.data(), a_proof.root.data(), 32);
+    std::array<uint8_t, 32> hashB{};
+    std::memcpy(hashB.data(), b_proof.root.data(), 32);
+
+    auto claimed = compute_claimed_hash(share, ctx.job().job_key.data(),
+                                        hashA.data(), hashB.data());
+
+    const uint32_t live_nbits = share.installed_target_nbits
+        ? share.installed_target_nbits
+        : share.job.target_nbits;
+    if (!claimed_hash_clears_target(claimed.data(), live_nbits,
+                                    cfg_.difficulty_adjustment_factor())) {
+        return {};
+    }
+
+    return BincodeEncoder::encode_plain_proof(
+        cfg_, a_proof, b_proof, share.a_row_indices, share.b_col_indices);
 }
 
 std::vector<uint32_t> ShareBuilder::derive_audit_indices(

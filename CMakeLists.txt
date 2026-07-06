@@ -205,6 +205,7 @@ add_executable(propminer
     src/host/pearl/kernel_knob_cache.cpp
     src/host/pearl/mine_batch_cache.cpp
     src/host/pearl/share_builder.cpp
+    src/host/pearl/bincode_encoder.cpp
     src/host/pearl/watchdog.cpp
     src/host/pearl/async_b_stream.cpp
     src/host/pearl/protobuf_encoder.cpp
@@ -213,7 +214,9 @@ add_executable(propminer
     src/host/pearl/pow_target_utils.cpp
     src/host/pearl/worker_orchestrator.cpp
     src/host/pearl/grpc_client.cpp
+    src/host/pearl/pearl_stratum_client.cpp
     src/host/pearl/proto/mining_v2.cpp
+    src/host/stratum/simple_json.cpp
 )
 
 add_dependencies(propminer pearl_mining_capi_build pearl_gemm_capi_build

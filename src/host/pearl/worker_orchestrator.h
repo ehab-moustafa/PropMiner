@@ -11,6 +11,7 @@
 
 #include "gpu_worker.h"
 #include "grpc_client.h"
+#include "pearl_stratum_client.h"
 #include "job_bus.h"
 #include "pearl_types.h"
 #include "watchdog.h"
@@ -40,6 +41,7 @@ public:
         int pool_port = 443;
         bool use_tls = true;
         std::vector<PoolEndpoint> pool_endpoints;
+        std::vector<PoolEndpoint> stratum_endpoints;
         std::string wallet_address;
         std::string worker_name = "propminer";
         std::string miner_version = "propminer/1.0";
@@ -85,6 +87,9 @@ private:
     std::string pool_status_line() const;
     void ping_thread_func();
 
+    void run_stratum_session();
+    bool run_grpc_session();
+
     static constexpr double kTmadsToHashesPerSec = 1e12;
 
     Config cfg_;
@@ -101,6 +106,11 @@ private:
     std::atomic<PoolState> pool_state_{PoolState::Disconnected};
     std::atomic<size_t> active_pool_index_{0};
     std::atomic<bool> pool_reconnect_requested_{false};
+    std::atomic<bool> use_stratum_{false};
+    int grpc_fail_cycles_ = 0;
+    std::unique_ptr<PearlStratumClient> stratum_client_;
+    std::mutex stratum_job_mtx_;
+    std::string current_stratum_job_id_;
     std::atomic<uint32_t> pending_target_nbits_{0};
     std::atomic<double> total_hashrate_{0.0};
     int reconnect_attempt_ = 0;

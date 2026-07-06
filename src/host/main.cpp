@@ -328,7 +328,11 @@ static void append_pool_endpoint(pearl::WorkerOrchestrator::Config& cfg,
         fprintf(stderr, "[main] Invalid pool endpoint: %s\n", pool_str.c_str());
         std::exit(1);
     }
-    cfg.pool_endpoints.push_back(ep);
+    if (ep.port == 7048) {
+        cfg.stratum_endpoints.push_back(ep);
+    } else {
+        cfg.pool_endpoints.push_back(ep);
+    }
 }
 
 static void parse_pool_list(const std::string& pool_str,
@@ -345,6 +349,26 @@ static void parse_pool_list(const std::string& pool_str,
         cfg.pool_host = cfg.pool_endpoints[0].host;
         cfg.pool_port = cfg.pool_endpoints[0].port;
         cfg.use_tls = cfg.pool_endpoints[0].use_tls;
+    }
+}
+
+static void parse_stratum_list(const std::string& pool_str,
+                               pearl::WorkerOrchestrator::Config& cfg) {
+    size_t start = 0;
+    while (start < pool_str.size()) {
+        size_t comma = pool_str.find(',', start);
+        if (comma == std::string::npos) comma = pool_str.size();
+        const std::string part = pool_str.substr(start, comma - start);
+        if (!part.empty()) {
+            pearl::WorkerOrchestrator::PoolEndpoint ep;
+            if (!parse_pool_endpoint(part, ep)) {
+                fprintf(stderr, "[main] Invalid stratum endpoint: %s\n", part.c_str());
+                std::exit(1);
+            }
+            ep.use_tls = false;
+            cfg.stratum_endpoints.push_back(ep);
+        }
+        start = comma + 1;
     }
 }
 
@@ -458,14 +482,12 @@ int main(int argc, char* argv[]) {
             cfg.pool_endpoints.push_back({cfg.pool_host, cfg.pool_port, cfg.use_tls});
         }
     }
+    if (const char* st = std::getenv("PROPMINER_STRATUM_POOL"); st && st[0]) {
+        parse_stratum_list(st, cfg);
+    }
 
-    if (cfg.pool_port == 7048) {
-        fprintf(stderr,
-            "[main] ERROR: port 7048 is Kryptex Stratum (SRBMiner/PeakMiner), not gRPC.\n"
-            "[main] PropMiner uses Pearl V2 gRPC on port 443: "
-            "PROPMINER_POOL=prl.kryptex.network:443\n"
-            "[main] Stratum :7048 support is planned; gRPC :443 is required today.\n");
-        return 1;
+    if (cfg.pool_endpoints.empty() && !cfg.stratum_endpoints.empty()) {
+        fprintf(stderr, "[main] Stratum-only mode (no gRPC endpoints configured)\n");
     }
 
     cfg.speed_test_seconds = bench_seconds;

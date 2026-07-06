@@ -6,7 +6,9 @@
 #
 # Optional env:
 #   PROPMINER_POOL              — default prl.kryptex.network:443,prl-eu.kryptex.network:443
-#   PROPMINER_POOL_FALLBACK     — extra comma-separated pool(s) appended to PROPMINER_POOL
+#   PROPMINER_STRATUM_POOL        — Stratum fallback (default prl.kryptex.network:7048 per Kryptex docs)
+#   PROPMINER_USE_STRATUM=1       — Skip gRPC; use Stratum only
+#   PROPMINER_POOL_MODE=stratum   — Same as USE_STRATUM=1
 #   PROPMINER_GPUS              — default 0
 #   PROPMINER_WORKER            — worker name if not embedded in wallet (max 32 alnum)
 #   PROPMINER_RESTART_ON_EXIT   — 1 (default) restart on crash; 0 exit container
@@ -123,7 +125,8 @@ echo "[mine] GPU info:" | propminer_log
 nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total \
     --format=csv,noheader | propminer_log || true
 
-echo "[mine] mode=production pools=${POOL} gpus=${GPUS}" | propminer_log
+export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048}"
+echo "[mine] mode=production grpc_pools=${POOL} stratum_fallback=${PROPMINER_STRATUM_POOL} gpus=${GPUS}" | propminer_log
 echo "[mine] wallet=${WALLET} worker=${WORKER:-<from-wallet-or-default>}" | propminer_log
 echo "[mine] profile: --rtx5090 aggressive prod (N=max VRAM, cluster_m=${PEARL_GEMM_CONSUMER_CLUSTER_M})" \
     | propminer_log
