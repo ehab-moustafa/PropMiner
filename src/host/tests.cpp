@@ -196,21 +196,16 @@ static void test_pow_target_stratum_nbits_roundtrip() {
     const uint32_t nbits = difficulty_to_nbits_pdif(32768.0);
     EXPECT(nbits == 0x1b01fffeu);
 
+    const auto target = nbits_to_target_le(nbits);
+    // ARC-compatible LE layout: 0x01fffe << 192 → bytes 24..26.
+    EXPECT(target[24] == 0xfe);
+    EXPECT(target[25] == 0xff);
+    EXPECT(target[26] == 0x01);
+    EXPECT(target[5] == 0 && target[6] == 0 && target[7] == 0);
+
     const std::string target_hex = nbits_to_target_hex_be(nbits);
     EXPECT(target_hex.size() == 64u);
     EXPECT(hex_target_to_nbits(target_hex) == nbits);
-
-    // Legacy bug: reversed byte order corrupted nbits to an impossibly hard target.
-    std::string reversed;
-    reversed.reserve(64);
-    for (int i = 31; i >= 0; --i) {
-        const auto target = nbits_to_target_le(nbits);
-        char buf[3];
-        std::snprintf(buf, sizeof(buf), "%02x",
-                      static_cast<unsigned char>(target[static_cast<size_t>(i)]));
-        reversed += buf;
-    }
-    EXPECT(hex_target_to_nbits(reversed) != nbits);
 }
 
 static void test_stratum_share_vs_network_nbits() {

@@ -89,10 +89,11 @@ std::string nbits_to_target_hex_be(uint32_t nbits) {
     const auto target = nbits_to_target_le(nbits);
     std::string hex;
     hex.reserve(64);
-    for (size_t i = 0; i < target.size(); ++i) {
+    // Big-endian wire/display order (MSB byte first).
+    for (int i = 31; i >= 0; --i) {
         char buf[3];
         std::snprintf(buf, sizeof(buf), "%02x",
-                      static_cast<unsigned char>(target[i]));
+                      static_cast<unsigned char>(target[static_cast<size_t>(i)]));
         hex += buf;
     }
     return hex;
@@ -122,16 +123,37 @@ uint32_t hex_target_to_nbits(const std::string& target_hex) {
 }
 
 std::array<uint8_t, 32> nbits_to_target_le(uint32_t nbits) {
-    int exp = static_cast<int>(nbits >> 24);
-    uint32_t mant = nbits & 0xFFFFFFu;
+    const int exp = static_cast<int>(nbits >> 24);
+    const uint32_t mant = nbits & 0xFFFFFFu;
     std::array<uint8_t, 32> t{};
-    for (int i = 0; i < 3; ++i) {
-        int pos = 32 - exp + i;
-        if (pos >= 0 && pos < 32) {
-            t[static_cast<size_t>(pos)] =
-                static_cast<uint8_t>(mant >> (8 * (2 - i)));
-        }
+    if (exp <= 3) {
+        const uint64_t v = static_cast<uint64_t>(mant >> (8 * (3 - exp)));
+        std::memcpy(t.data(), &v, sizeof(v));
+        return t;
     }
+    // ARC/Bitcoin compact target: mantissa * 256^(exp-3), stored as uint256 LE.
+    // The legacy placement at bytes (32-exp..) broke GPU uint32 MSW-first
+    // comparisons and made share targets impossibly hard (gpu_hits_30s=0).
+#if defined(__SIZEOF_INT128__)
+    unsigned __int128 val = static_cast<unsigned __int128>(mant);
+    val <<= static_cast<unsigned>(8 * (exp - 3));
+    for (int i = 0; i < 32; ++i) {
+        t[static_cast<size_t>(i)] =
+            static_cast<uint8_t>(static_cast<uint64_t>(val >> (8 * i)) & 0xFF);
+    }
+#else
+    uint64_t lo = mant;
+    uint64_t hi = 0;
+    const int shift_bytes = exp - 3;
+    if (shift_bytes >= 8) {
+        hi = lo << (8 * (shift_bytes - 8));
+        lo = 0;
+    } else if (shift_bytes > 0) {
+        lo <<= (8 * shift_bytes);
+    }
+    std::memcpy(t.data(), &lo, sizeof(lo));
+    std::memcpy(t.data() + 8, &hi, sizeof(hi));
+#endif
     return t;
 }
 

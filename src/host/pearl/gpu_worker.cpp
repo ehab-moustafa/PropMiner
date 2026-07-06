@@ -371,10 +371,11 @@ void GpuWorker::upload_pow_target(HalfBuffers& half, uint32_t nbits) {
                "pow_target h2d");
     if (share_trace_enabled() || std::getenv("PROPMINER_DEBUG_POW_TARGET")) {
         std::fprintf(stderr,
-                     "[gpu] pow_target upload nbits=%s daf=%llu words[7..0]=%08x...%08x\n",
+                     "[gpu] pow_target upload nbits=%s daf=%llu "
+                     "words[7,6,1,0]=%08x %08x %08x %08x\n",
                      nbits_hex(nbits).c_str(),
                      static_cast<unsigned long long>(daf),
-                     words[7], words[0]);
+                     words[7], words[6], words[1], words[0]);
     }
 }
 
