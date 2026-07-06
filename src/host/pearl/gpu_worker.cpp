@@ -109,9 +109,6 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
     // separate copy stream while the other half runs the GEMM graph.
     check(cuMemAlloc(&seed_dev, sizeof(uint64_t)), "seed_dev alloc");
     seed_dev_ptr = reinterpret_cast<void*>(seed_dev);
-    check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_seed_host),
-                           sizeof(uint64_t), cudaHostAllocDefault),
-             "half pinned_seed_host");
 
     size_t a_leaves = (a_bytes + K1024 - 1) / K1024;
     a_leaf_cv_bytes = a_leaves * K32;
@@ -132,6 +129,10 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
             throw std::runtime_error(std::string(msg) + ": " + cudaGetErrorString(e));
         }
     };
+
+    check_rt(cudaHostAlloc(reinterpret_cast<void**>(&pinned_seed_host),
+                           sizeof(uint64_t), cudaHostAllocDefault),
+             "half pinned_seed_host");
 
     constexpr size_t kMaxShareRows = 32;
     pinned_a_slice_bytes = kMaxShareRows * static_cast<size_t>(cfg.k);
