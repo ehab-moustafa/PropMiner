@@ -360,10 +360,20 @@ void GpuWorker::set_matmuls_per_poll(int mpp) {
 
 void GpuWorker::upload_pow_target(HalfBuffers& half, uint32_t nbits) {
     if (!half.pow_target || !half.stream) return;
+    if (nbits == 0) {
+        std::fprintf(stderr, "[gpu] WARN: upload_pow_target skipped (nbits=0)\n");
+        return;
+    }
     const uint64_t daf = cfg_.difficulty_adjustment_factor();
     auto words = target_le_to_pow_u32(adjusted_pow_target_le(nbits, daf));
     check_cuda(cuMemcpyHtoDAsync(half.pow_target, words.data(), 32, half.stream),
                "pow_target h2d");
+    if (std::getenv("PROPMINER_DEBUG_POW_TARGET")) {
+        std::fprintf(stderr,
+                     "[gpu] pow_target upload nbits=0x%08x daf=%llu words[7..0]=%08x...%08x\n",
+                     nbits, static_cast<unsigned long long>(daf),
+                     words[7], words[0]);
+    }
 }
 
 void GpuWorker::upload_pow_target_both_halves(uint32_t nbits) {
@@ -390,8 +400,14 @@ void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
     // on the second half it reuses the already-installed buffers owned by ctx.
     ctx.install(half.stream, half.workspace, device_index_, merkle_copy_stream_);
 
+    const uint32_t nbits = ctx.job().target_nbits ? ctx.job().target_nbits
+                                                  : target_nbits_.load();
+    if (nbits != target_nbits_.load()) {
+        target_nbits_.store(nbits);
+    }
     // PoW target: nbits * DAF -> 32-byte LE uint32 array on device.
-    upload_pow_target(half, target_nbits_.load());
+    upload_pow_target(half, nbits);
+    check_cuda(cuStreamSynchronize(half.stream), "pow_target sync after upload");
 
     PearlCapiWorkspaceParams p{};
     p.m = cfg_.m; p.n = cfg_.n; p.k = cfg_.k; p.r = cfg_.r;

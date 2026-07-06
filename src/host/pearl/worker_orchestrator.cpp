@@ -384,8 +384,8 @@ void WorkerOrchestrator::publish_job_from_assignment(const proto::JobAssignment&
     bus_.publish(ctx);
 
     for (auto& w : workers_) {
-        w->set_sigma(ctx);
         w->set_target_nbits(ja.target_nbits);
+        w->set_sigma(ctx);
     }
 }
 
