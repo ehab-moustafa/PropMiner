@@ -667,7 +667,7 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
         stratum_log("submit dropped superseded job_id=" +
                     job_id.substr(0, std::min<size_t>(12, job_id.size())) +
                     " current=" +
-                    current_job_id_.substr(0, std::min<size_t>(12, current_job_id_.size()));
+                    current_job_id_.substr(0, std::min<size_t>(12, current_job_id_.size())));
         share_log("submit-drop", "nonce=" + std::to_string(nonce) + " reason=superseded_job");
         return false;
     }
