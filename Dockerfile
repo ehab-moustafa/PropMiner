@@ -1,7 +1,8 @@
 # PropMiner RTX 5090 Docker images.
 #
 # Targets:
-#   bootstrap (Salad default) — CUDA runtime + scripts; binaries from GitHub Release.
+#   bootstrap (Salad optional)  — CUDA runtime + scripts; binaries from GitHub Release.
+#   salad-release (CI export)   — SRBMiner-style tarball for ubuntu:24.04 + wget.
 #   runtime                   — slim image with prebuilt binaries baked in.
 #   devel                     — full source + nvcc/cmake/rust for on-box tuning.
 #   release-artifacts         — CI export only (propminer + .so → GitHub Release).
@@ -134,6 +135,22 @@ RUN BASE="https://developer.download.nvidia.com/compute/cuda/redist" && \
 COPY scripts/link_cuda_redist_libs.sh /tmp/link_cuda_redist_libs.sh
 RUN chmod +x /tmp/link_cuda_redist_libs.sh \
     && /tmp/link_cuda_redist_libs.sh /root/cuda128/usr/local/cuda-12.8/targets/x86_64-linux/lib /root/cuda128/usr/local/cuda/lib64
+
+# ── Salad SRBMiner-style bundle (ubuntu:24.04 + wget this tarball) ─────────
+FROM ubuntu:24.04 AS salad-pack
+WORKDIR /pack
+COPY scripts/salad/run.sh PropMiner-Salad/run.sh
+COPY scripts/link_cuda_redist_libs.sh /tmp/link_cuda_redist_libs.sh
+COPY --from=release-prep /root/PropMiner/build_runtime/propminer PropMiner-Salad/propminer
+COPY --from=release-prep /root/PropMiner/build_runtime/libpearl_gemm_capi.so PropMiner-Salad/libpearl_gemm_capi.so
+COPY --from=release-prep /root/PropMiner/build_runtime/libpearl_mining_capi.so PropMiner-Salad/libpearl_mining_capi.so
+COPY --from=release-prep /root/PropMiner/build_runtime/VERSION PropMiner-Salad/VERSION
+COPY --from=cuda128-runtime /root/cuda128/usr/local/cuda-12.8/targets/x86_64-linux/lib PropMiner-Salad/lib
+RUN chmod +x PropMiner-Salad/run.sh PropMiner-Salad/propminer \
+    && bash /tmp/link_cuda_redist_libs.sh /pack/PropMiner-Salad/lib /pack/PropMiner-Salad/lib
+
+FROM scratch AS salad-release
+COPY --from=salad-pack /pack/PropMiner-Salad /PropMiner-Salad
 
 # ── Runtime stage (default) ─────────────────────────────────────────────────
 FROM ubuntu:24.04 AS runtime

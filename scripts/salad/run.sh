@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# PropMiner Salad runner (SRBMiner-style extracted bundle).
+# Run from PropMiner-Salad/ after: tar xf PropMiner-Salad-Linux.tar.gz
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="${PROPMINER_LOG_DIR:-/tmp/propminer}"
+mkdir -p "${LOG_DIR}"
+
+log() {
+    echo "$*" | tee -a "${LOG_DIR}/summary.txt"
+}
+
+setup_wsl2_env() {
+    export NVIDIA_VISIBLE_DEVICES="${NVIDIA_VISIBLE_DEVICES:-all}"
+    export NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+    export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-EAGER}"
+    export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
+    export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-2}"
+    export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
+
+    export LD_LIBRARY_PATH="${ROOT}/lib:${ROOT}:${LD_LIBRARY_PATH:-}"
+
+    if [[ -e /dev/dxg ]]; then
+        log "[env] WSL2 detected (/dev/dxg)"
+        local wsl_libs=()
+        local so
+        for so in \
+            /usr/lib/x86_64-linux-gnu/libdxcore.so \
+            /usr/lib/wsl/drivers/*/libnvdxgdmal.so.1 \
+            /usr/lib/wsl/drivers/*/libcuda_loader.so \
+            /usr/lib/wsl/drivers/*/libnvidia-ml_loader.so \
+            /usr/lib/wsl/drivers/*/libcuda.so.1.1; do
+            local f
+            for f in ${so}; do
+                [[ -f "${f}" ]] && wsl_libs+=("${f}")
+            done
+        done
+        if [[ ${#wsl_libs[@]} -gt 0 ]]; then
+            export LD_PRELOAD
+            LD_PRELOAD="$(IFS=:; echo "${wsl_libs[*]}")"
+            log "[env] LD_PRELOAD set for WSL2"
+        fi
+        export LD_LIBRARY_PATH="${ROOT}/lib:${ROOT}:/usr/lib/wsl/drivers:${LD_LIBRARY_PATH}"
+    elif [[ -e /dev/nvidia0 ]]; then
+        log "[env] Native Linux NVIDIA detected"
+    else
+        log "[env] No GPU device nodes; trying bundled CUDA libs"
+    fi
+}
+
+WALLET="${PROPMINER_WALLET:-}"
+WORKER="${PROPMINER_WORKER:-}"
+if [[ -z "${WORKER}" && "${WALLET}" == *.* ]]; then
+    WORKER="${WALLET#*.}"
+    WALLET="${WALLET%%.*}"
+    log "[mine] Parsed wallet.worker -> wallet=${WALLET} worker=${WORKER}"
+fi
+
+if [[ -z "${WALLET}" ]]; then
+    echo "ERROR: set PROPMINER_WALLET (e.g. krxXXXX)" >&2
+    exit 1
+fi
+
+if [[ -n "${PROPMINER_POOL:-}" ]]; then
+    POOL="${PROPMINER_POOL}"
+    if [[ -n "${PROPMINER_POOL_FALLBACK:-}" ]]; then
+        POOL="${POOL},${PROPMINER_POOL_FALLBACK}"
+    fi
+else
+    POOL="${PROPMINER_POOL_FALLBACK:-prl.kryptex.network:443,prl-eu.kryptex.network:443}"
+fi
+
+GPUS="${PROPMINER_GPUS:-0}"
+RESTART_ON_EXIT="${PROPMINER_RESTART_ON_EXIT:-1}"
+export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048}"
+
+setup_wsl2_env
+
+log "===== PropMiner Salad (SRB-style bundle) ====="
+log "version=$(cat "${ROOT}/VERSION" 2>/dev/null || echo unknown)"
+log "$(date)"
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null | log || true
+log "pool=${POOL} stratum=${PROPMINER_STRATUM_POOL} wallet=${WALLET} worker=${WORKER:-<default>}"
+
+MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --pool "${POOL}" --wallet "${WALLET}")
+if [[ -n "${WORKER}" ]]; then
+    MINER_ARGS+=(--worker "${WORKER}")
+fi
+
+run_once() {
+    (cd "${ROOT}" && LD_LIBRARY_PATH="${LD_LIBRARY_PATH}" LD_PRELOAD="${LD_PRELOAD:-}" \
+        ./propminer "${MINER_ARGS[@]}")
+}
+
+if [[ "${RESTART_ON_EXIT}" == "0" ]]; then
+    run_once
+    exit $?
+fi
+
+while true; do
+    set +e
+    run_once
+    rc=$?
+    set -e
+    if [[ "${rc}" -eq 0 && -n "${PROPMINER_ONCE:-}" ]]; then
+        log "[mine] clean exit (PROPMINER_ONCE=1)"
+        exit 0
+    fi
+    log "[mine] propminer exited rc=${rc}; restart in 10s"
+    sleep 10
+done
