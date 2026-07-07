@@ -154,8 +154,9 @@ echo "[salad] wallet=${WALLET_RESOLVED} worker=${WORKER_RESOLVED:-<default>}"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null || true
 
 run_once() {
+    # Avoid pipefail + set -e killing the restart loop when propminer exits non-zero.
     (cd "${PM_DIR}" && LD_LIBRARY_PATH="${LD_LIBRARY_PATH}" LD_PRELOAD="${LD_PRELOAD:-}" \
-        ./propminer "${MINER_ARGS[@]}" 2>&1 | tee -a /tmp/propminer.log)
+        ./propminer "${MINER_ARGS[@]}") >> /tmp/propminer.log 2>&1
 }
 
 if [[ "${RESTART_ON_EXIT}" == "0" ]]; then
