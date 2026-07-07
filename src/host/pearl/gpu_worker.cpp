@@ -445,9 +445,9 @@ void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
     // on the second half it reuses the already-installed buffers owned by ctx.
     ctx.install(half.stream, half.workspace, device_index_, merkle_copy_stream_);
 
-    const uint32_t nbits = ctx.job().target_nbits ? ctx.job().target_nbits
-                                                  : target_nbits_.load();
-    if (nbits != target_nbits_.load()) {
+    const uint32_t nbits = target_nbits_.load() ? target_nbits_.load()
+                                                  : ctx.job().target_nbits;
+    if (nbits != 0 && nbits != target_nbits_.load()) {
         target_nbits_.store(nbits);
     }
     // PoW target: nbits * DAF -> 32-byte LE uint32 array on device.
@@ -750,24 +750,33 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
 
     std::vector<uint32_t> a_rows, b_cols;
     try {
-        expand_hash_tile_indices(hdr, ctx.job().config, a_rows, b_cols);
+        if (hash_tile_use_pattern_expansion()) {
+            expand_hash_tile_indices(hdr, ctx.job().config, a_rows, b_cols);
+        } else {
+            hdr.extract_indices(a_rows, b_cols);
+        }
     } catch (const std::exception& ex) {
         share_log("rebuild-fail", "nonce=" + std::to_string(job.nonce) +
                                   " reason=hash_tile_indices err=" + ex.what());
         return false;
     }
     if (share_trace_enabled()) {
-        std::vector<uint32_t> legacy_rows, legacy_cols;
+        std::vector<uint32_t> pat_rows, pat_cols, ext_rows, ext_cols;
         try {
-            hdr.extract_indices(legacy_rows, legacy_cols);
-            if (legacy_rows.size() != a_rows.size() ||
-                legacy_cols.size() != b_cols.size()) {
+            expand_hash_tile_indices(hdr, ctx.job().config, pat_rows, pat_cols);
+            hdr.extract_indices(ext_rows, ext_cols);
+            if (pat_rows.size() != a_rows.size() || pat_cols.size() != b_cols.size() ||
+                ext_rows.size() != a_rows.size() || ext_cols.size() != b_cols.size()) {
                 share_trace("hash-tile-indices",
                             "nonce=" + std::to_string(job.nonce) +
-                            " pattern=" + std::to_string(a_rows.size()) + "x" +
+                            " mode=" + (hash_tile_use_pattern_expansion() ? "pattern"
+                                                                         : "extract") +
+                            " active=" + std::to_string(a_rows.size()) + "x" +
                             std::to_string(b_cols.size()) +
-                            " extract=" + std::to_string(legacy_rows.size()) + "x" +
-                            std::to_string(legacy_cols.size()));
+                            " pattern=" + std::to_string(pat_rows.size()) + "x" +
+                            std::to_string(pat_cols.size()) +
+                            " extract=" + std::to_string(ext_rows.size()) + "x" +
+                            std::to_string(ext_cols.size()));
             }
         } catch (...) {
         }

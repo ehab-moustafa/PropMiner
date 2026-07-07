@@ -87,6 +87,15 @@ inline double resolve_stratum_share_diff_double() {
     return static_cast<double>(resolve_stratum_share_diff());
 }
 
+// Canonical pattern expansion (2×64) vs header extract_indices (Kryptex default).
+// Headless GPU PoW checks per-thread transcripts; extract mode matches what
+// previously passed local verify + Kryptex pool accept. Set PROPMINER_HASH_TILE_PATTERN=1
+// when the kernel aggregates the full committed hash tile.
+inline bool hash_tile_use_pattern_expansion() {
+    const char* v = std::getenv("PROPMINER_HASH_TILE_PATTERN");
+    return v && (v[0] == '1' || v[0] == 'y' || v[0] == 'Y');
+}
+
 // graph_batch must divide batch evenly for the CUDA graph launch path.
 inline void normalize_batch_and_graph(int& batch, int& graph_batch) {
     if (graph_batch > batch) {

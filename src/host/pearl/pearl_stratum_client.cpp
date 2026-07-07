@@ -835,17 +835,18 @@ proto::JobAssignment PearlStratumClient::make_job(const std::string& job_id,
     if (sigma.size() >= kSigmaHeaderBytes) {
         std::memcpy(ja.sigma.data(), sigma.data(), kSigmaHeaderBytes);
     }
-    uint32_t share_nbits = share_target_nbits();
+    const uint32_t share_nbits = share_target_nbits();
     ja.network_target_nbits = network_nbits_from_sigma(ja.sigma);
-    if (ja.network_target_nbits == 0) {
-        ja.network_target_nbits = share_nbits;
-    }
     if (!target_hex.empty()) {
-        // Object notify (Kryptex/suprnova): pool verifies jackpot hash vs this target.
+        // Object notify wire target is the block/network jackpot target, not
+        // Stratum share difficulty (mining.set_difficulty / password x;d=N).
         const uint32_t wire_nbits = hex_target_to_nbits(target_hex);
         if (wire_nbits != 0) {
-            share_nbits = wire_nbits;
+            ja.network_target_nbits = wire_nbits;
         }
+    }
+    if (ja.network_target_nbits == 0) {
+        ja.network_target_nbits = share_nbits;
     }
     ja.target_nbits = share_nbits;
     if (last_difficulty_ <= 0.0) {

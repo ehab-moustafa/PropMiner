@@ -40,8 +40,8 @@ struct Rtx5090Profile {
     static constexpr int kMaxMineBatch = 32;
     static constexpr int kDefaultBatch = kDefaultMineBatch;  // legacy alias
 
-    // Kryptex/stratum prod default; override via PEARL_GEMM_CONSUMER_CLUSTER_M.
-    static constexpr int kProdDefaultClusterM = 4;
+    // Default 1 until hash-tile pattern matches clustered kernel transcripts.
+    static constexpr int kProdDefaultClusterM = 1;
 
     // Stratum share difficulty when pool has not sent vardiff yet (also PROPMINER_STRATUM_DIFF).
     // Lower = easier shares, more frequent submits (Salad: helps before job supersede).
