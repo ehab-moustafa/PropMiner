@@ -155,7 +155,7 @@ nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>
 
 run_once() {
     (cd "${PM_DIR}" && LD_LIBRARY_PATH="${LD_LIBRARY_PATH}" LD_PRELOAD="${LD_PRELOAD:-}" \
-        ./propminer "${MINER_ARGS[@]}")
+        ./propminer "${MINER_ARGS[@]}" 2>&1 | tee -a /tmp/propminer.log)
 }
 
 if [[ "${RESTART_ON_EXIT}" == "0" ]]; then
