@@ -119,16 +119,16 @@ struct Rtx5090Profile {
         return (cap_n > 0 && cap_n < kDefaultN) ? cap_n : kDefaultN;
     }
 
-    // Kryptex / HeroMiners-family stratum: network-committed shape M=N=131072,
-    // K=4096, noise_rank=256 (matches ARC WorkerOrchestrator mainnet profile).
-    // config_bytes rank and plain-proof m/n must match or the pool rejects every
-    // share (Invalid share). Escape hatches: PROPMINER_STRATUM_M/N/K/RANK.
+    // Kryptex stratum: K=4096 and noise_rank=256 are network-committed in
+    // config_bytes (rank byte wrong → every share Invalid). M/N are the miner's
+    // working set within §7.1; RTX 5090 uses M=8192 N=131072 (ARC GpuShape table
+    // uses 4096×131072 for efficiency — not 131072² which is ~512× slower/iter).
+    // PROPMINER_STRATUM_M/N=131072 for strict HeroMiners-style full shape.
     static constexpr int kStratumPoolK = 4096;
     static constexpr int kStratumPoolR = 256;
-    static constexpr int kStratumPoolM = 131072;
     static constexpr int kStratumPoolN = 131072;
-    static constexpr int kStratumLargeM = kStratumPoolM;
-    static constexpr int kStratumLargeN = kStratumPoolN;
+    static constexpr int kStratumLargeM = 131072;
+    static constexpr int kStratumLargeN = 131072;
 };
 
 // Stratum pool PlainProof preamble must pass §7.1 (k >= 1024, etc.).
@@ -137,7 +137,7 @@ inline MiningConfig stratum_pool_mining_config(size_t vram_budget_bytes = 0,
                                               int cap_n = 0) {
     (void)vram_budget_bytes;
     MiningConfig cfg;
-    cfg.m = Rtx5090Profile::kStratumPoolM;
+    cfg.m = Rtx5090Profile::kDefaultM;
     cfg.n = Rtx5090Profile::kStratumPoolN;
     cfg.k = Rtx5090Profile::kStratumPoolK;
     cfg.r = Rtx5090Profile::kStratumPoolR;

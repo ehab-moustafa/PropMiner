@@ -1266,6 +1266,16 @@ int WorkerOrchestrator::run() {
             if (!status.empty()) {
                 std::cout << status << std::endl;
             }
+            static int mine_wait_sec = 0;
+            mine_wait_sec += 5;
+            if (metrics.tmad_per_sec == 0.0 && metrics.protocol_hps == 0.0 &&
+                mine_wait_sec >= 30 && (mine_wait_sec % 30 == 0)) {
+                std::cerr << "[mine] " << mine_wait_sec
+                          << "s awaiting first batch (M=" << tuned_config.m
+                          << " N=" << tuned_config.n << " K=" << tuned_config.k
+                          << " r=" << tuned_config.r << " iters=" << bench_iters
+                          << "; GPU util>0 is normal — large K matmuls take time)\n";
+            }
         }
         if (cfg_.speed_test_seconds > 0) {
             static int elapsed = 0;
