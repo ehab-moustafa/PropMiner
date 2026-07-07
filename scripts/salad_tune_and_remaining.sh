@@ -8,8 +8,7 @@ export PROPMINER_BUILD_DIR="${ROOT}/build_remote_test"
 export PROPMINER_SKIP_KNOB_TUNE=1
 export PROPMINER_SKIP_GEFORCE=1
 export PROPMINER_BUILD_GEFORCE=0
-export PROPMINER_BENCH_BATCH=1
-export PEARL_GEMM_CONSUMER_CLUSTER_M=2
+export PROPMINER_USE_STRATUM=1
 
 LOG="${ROOT}/results/salad_tune_remaining.log"
 exec > >(tee -a "${LOG}") 2>&1
@@ -31,14 +30,15 @@ echo "[gate] GPU self-test production shape..."
 PROP_MINER_SELF_TEST_PROD=1 "${PM}" --self-test --rtx5090 --gpus 0
 
 echo ""
-echo "== tune_prod (cluster + batch; knob sweep skipped) =="
+echo "== tune_prod (batch + graph_batch + cluster; knob sweep skipped) =="
 PROPMINER_SKIP_KNOB_TUNE=1 "${ROOT}/scripts/tune_prod_5090.sh"
 
 echo ""
-echo "== run_remaining tail: bench + compare (skip rebuild/tune/geforce) =="
+echo "== validation bench (uses autotune cache if present) =="
 STAMP="$(date +%Y%m%d_%H%M%S)"
 BENCH_LOG="${ROOT}/results/benchmark_prod_${STAMP}.log"
-PROPMINER_BENCH_JSON=1 PROPMINER_BENCH_BATCH=1 "${PM}" --bench 300 --rtx5090 --gpus 0 \
+PROPMINER_BENCH_JSON=1 PROPMINER_USE_TUNE_CACHE=1 PROPMINER_AUTOTUNE=0 \
+    "${PM}" --bench 300 --rtx5090 --gpus 0 \
     | tee "${BENCH_LOG}"
 
 JSON_LINE="$(grep '"tmad_per_sec"' "${BENCH_LOG}" | tail -1 || true)"
@@ -56,3 +56,4 @@ echo ""
 echo "Caches:"
 ls -la "${HOME}/.cache/propminer/" 2>/dev/null || true
 echo "===== salad_tune_and_remaining COMPLETE $(date) ====="
+echo "Next: PROPMINER_MODE=mine PROPMINER_USE_TUNE_CACHE=1 PROPMINER_AUTOTUNE=0"

@@ -1,5 +1,6 @@
 #include "mine_batch_cache.h"
 
+#include "env_tuning.h"
 #include "rtx5090_profile.h"
 
 #include <cstdio>
@@ -130,11 +131,8 @@ void MineBatchCache::clear() {
 }
 
 int MineBatchCache::resolve(int device_index, int m, int n, int fallback) {
-    if (const char* env = std::getenv("PROPMINER_BATCH")) {
-        if (env[0] != '\0') {
-            const int b = std::max(1, std::atoi(env));
-            return b;
-        }
+    if (mine_batch_env_set()) {
+        return resolve_mine_batch();
     }
     MineBatchCache cache;
     if (auto cached = cache.load(device_index, m, n)) {

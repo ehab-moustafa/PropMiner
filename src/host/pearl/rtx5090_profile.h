@@ -33,20 +33,21 @@ struct Rtx5090Profile {
     static constexpr int kDefaultK = 128;
     static constexpr int kDefaultR = 128;
 
-    // Batch size tuned to amortize launch overhead without excessive latency.
-    // kDefaultMineBatch is the Salad/WSL2-safe startup default (v1.38: batch=1
-    // beat batch=4 in short benches; batch=4 is a practical mine default).
-    // kMaxMineBatch is the upper sweep bound for offline tuning.
-    static constexpr int kDefaultMineBatch = 4;
-    static constexpr int kMaxMineBatch = 20;
+    // Matmuls queued per GPU poll (cargo volume per execution).
+    static constexpr int kDefaultMineBatch = 32;
+    // CUDA graph capture depth (staging queue per graph launch).
+    static constexpr int kDefaultGraphBatch = 8;
+    static constexpr int kMaxMineBatch = 32;
     static constexpr int kDefaultBatch = kDefaultMineBatch;  // legacy alias
 
-    // Production mine: cluster_m=1 keeps GPU transcript byte-identical with CPU
-    // jackpot verify. cluster_m=2+ requires tuned rows/cols alignment.
-    static constexpr int kProdDefaultClusterM = 1;
+    // Kryptex/stratum prod default; override via PEARL_GEMM_CONSUMER_CLUSTER_M.
+    static constexpr int kProdDefaultClusterM = 4;
+
+    // Stratum share difficulty when pool has not sent vardiff yet (also PROPMINER_STRATUM_DIFF).
+    static constexpr long long kDefaultStratumShareDiff = 262144;
 
     static constexpr int kMineBatchCandidates[] = {
-        1, 2, 4, 6, 8, 10, 12, 16, 20,
+        1, 2, 4, 6, 8, 10, 12, 16, 20, 24, 32,
     };
 
     // Bench/tune/mine share production N (pick_n_for_vram). Override only via PROPMINER_N_CAP.

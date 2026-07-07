@@ -116,16 +116,26 @@ std::optional<TuningResult> TuneCache::load(int device_index) const {
         std::string val = line.substr(sep + 1);
         TuningResult r;
         int use_graph_int = 1;
-        if (std::sscanf(val.c_str(),
-                        "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%lf",
-                        &r.config.m, &r.config.n, &r.config.k, &r.config.r,
-                        &r.config.bM, &r.config.bN, &r.config.bK,
-                        &r.batch_size,
-                        &use_graph_int,
-                        &r.cluster_m,
-                        &r.carveout_percent,
-                        &r.hashrate) == 12) {
+        int graph_batch = 0;
+        const int n = std::sscanf(val.c_str(),
+                                  "%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%lf",
+                                  &r.config.m, &r.config.n, &r.config.k, &r.config.r,
+                                  &r.config.bM, &r.config.bN, &r.config.bK,
+                                  &r.batch_size,
+                                  &graph_batch,
+                                  &use_graph_int,
+                                  &r.cluster_m,
+                                  &r.carveout_percent,
+                                  &r.hashrate);
+        if (n == 14) {
             r.use_graph = (use_graph_int != 0);
+            r.graph_batch_size =
+                graph_batch > 0 ? graph_batch : r.batch_size;
+            return r;
+        }
+        if (n == 12) {
+            r.use_graph = (use_graph_int != 0);
+            r.graph_batch_size = r.use_graph ? r.batch_size : 1;
             return r;
         }
         return std::nullopt;
@@ -162,6 +172,8 @@ void TuneCache::save(int device_index, const TuningResult& result) {
       << result.config.r << ","
       << result.config.bM << "," << result.config.bN << "," << result.config.bK << ","
       << result.batch_size << ","
+      << (result.graph_batch_size > 0 ? result.graph_batch_size : result.batch_size)
+      << ","
       << (result.use_graph ? 1 : 0) << ","
       << result.cluster_m << ","
       << result.carveout_percent << ","

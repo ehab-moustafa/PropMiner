@@ -16,7 +16,9 @@ setup_wsl2_env() {
     export NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
     export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-EAGER}"
     export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
-    export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-1}"
+    export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
+    export PROPMINER_AUTOTUNE="${PROPMINER_AUTOTUNE:-0}"
+    export PROPMINER_STRATUM_DIFF="${PROPMINER_STRATUM_DIFF:-262144}"
     export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
 
     export LD_LIBRARY_PATH="${ROOT}/lib:${ROOT}:${LD_LIBRARY_PATH:-}"
@@ -72,10 +74,11 @@ else
     POOL=""
 fi
 
-GPUS="${PROPMINER_GPUS:-0}"
 RESTART_ON_EXIT="${PROPMINER_RESTART_ON_EXIT:-1}"
 export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
-export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl-eu.kryptex.network:7048,prl.kryptex.network:7048}"
+export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048,prl-eu.kryptex.network:7048}"
+export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
+export PROPMINER_AUTOTUNE="${PROPMINER_AUTOTUNE:-0}"
 export PROPMINER_STRATUM_PASSWORD="${PROPMINER_STRATUM_PASSWORD:-x}"
 export PROPMINER_VERBOSE_STRATUM="${PROPMINER_VERBOSE_STRATUM:-1}"
 export PROPMINER_VERBOSE_SHARES="${PROPMINER_VERBOSE_SHARES:-1}"
@@ -93,7 +96,10 @@ log "$(date)"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null | log || true
 log "pool=${POOL:-<stratum-only>} stratum=${PROPMINER_STRATUM_POOL} pool-user=${WALLET_ARG} (wallet.worker)"
 
-MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --wallet "${WALLET_ARG}")
+MINER_ARGS=(--rtx5090 --wallet "${WALLET_ARG}")
+if [[ -n "${PROPMINER_GPUS:-}" ]]; then
+    MINER_ARGS+=(--gpus "${PROPMINER_GPUS}")
+fi
 if [[ -n "${POOL}" ]]; then
     MINER_ARGS+=(--pool "${POOL}")
 fi

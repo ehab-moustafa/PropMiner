@@ -6,18 +6,9 @@
 #
 # Optional env:
 #   PROPMINER_POOL              — default prl.kryptex.network:443,prl-eu.kryptex.network:443
-#   PROPMINER_STRATUM_DIFF        — append ;d=N to stratum password (5090: try 262144)
-#   PROPMINER_STRATUM_PASSWORD    — override stratum password (default x or x;d=N)
-#   PROPMINER_USE_STRATUM=1       — Skip gRPC; use Stratum only
-#   PROPMINER_POOL_MODE=stratum   — Same as USE_STRATUM=1
-#   PROPMINER_GPUS              — default 0
-#   PROPMINER_WORKER            — worker name if not embedded in wallet (max 32 alnum)
-#   PROPMINER_RESTART_ON_EXIT   — 1 (default) restart on crash; 0 exit container
-#   PROPMINER_BATCH               — mine matmuls per poll (default: cache or 4)
-#   PROPMINER_USE_TUNE_CACHE=1    — apply ~/.cache/propminer/autotune.json (default on)
-#   PROPMINER_STRICT_KNOB_CACHE=1  — fail if kernel_knobs.json mismatches built .so
-#   PEARL_GEMM_CONSUMER_CLUSTER_M   — default 1 for prod (set 2/4 only with PROPMINER_ALLOW_CLUSTER_M=1)
-#   PROPMINER_BATCH_TUNE=1        — run batch sweep at startup (slow; prefer tune script)
+#   PROPMINER_AUTOTUNE=0|1|2|force  Runtime autotune sweep + autotune.json cache
+#   PROPMINER_USE_TUNE_CACHE=1      Load autotune.json (batch/graph_batch/cluster)
+#   PROPMINER_BATCH / GRAPH_BATCH / CLUSTER_M — manual override only (optional)
 #   PROPMINER_USE_RELEASE=1       — download binaries from GitHub Release (bootstrap image)
 #   PROPMINER_RELEASE_TAG=continuous — rolling release tag (default)
 #   PROPMINER_AUTO_UPDATE=1         — check for new release on each mine restart
@@ -29,13 +20,11 @@ source "${ROOT}/scripts/setup_cuda_env.sh"
 source "${ROOT}/scripts/download_release.sh"
 
 # Aggressive RTX 5090 production defaults (override via env if needed).
-export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
-export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-1}"
-
-# Kryptex Pearl is Stratum-only (prl.kryptex.network:7048 TCP / :8048 SSL) — there
-# is no gRPC :443 endpoint. Default to Stratum so we don't waste a connect cycle
-# failing gRPC first. Override with PROPMINER_POOL_MODE=grpc for other pools.
 export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
+export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
+export PROPMINER_AUTOTUNE="${PROPMINER_AUTOTUNE:-0}"
+export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048,prl-eu.kryptex.network:7048}"
+export PROPMINER_STRATUM_DIFF="${PROPMINER_STRATUM_DIFF:-262144}"
 
 WALLET="${PROPMINER_WALLET:-}"
 if [[ -n "${PROPMINER_POOL:-}" ]]; then
@@ -44,9 +33,8 @@ if [[ -n "${PROPMINER_POOL:-}" ]]; then
         POOL="${POOL},${PROPMINER_POOL_FALLBACK}"
     fi
 else
-    POOL="${PROPMINER_POOL_FALLBACK:-prl.kryptex.network:443,prl-eu.kryptex.network:443}"
+    POOL=""
 fi
-GPUS="${PROPMINER_GPUS:-0}"
 WORKER="${PROPMINER_WORKER:-}"
 RESTART_ON_EXIT="${PROPMINER_RESTART_ON_EXIT:-1}"
 EXTRA_ARGS=()
@@ -135,8 +123,8 @@ echo "[mine] GPU info:" | propminer_log
 nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total \
     --format=csv,noheader | propminer_log || true
 
-export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048}"
-echo "[mine] mode=production grpc_pools=${POOL} stratum_fallback=${PROPMINER_STRATUM_POOL} gpus=${GPUS}" | propminer_log
+export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048,prl-eu.kryptex.network:7048}"
+echo "[mine] mode=production stratum=${PROPMINER_STRATUM_POOL} gpus=${PROPMINER_GPUS:-all}" | propminer_log
 echo "[mine] wallet=${WALLET} worker=${WORKER:-<from-wallet-or-default>}" | propminer_log
 echo "[mine] profile: --rtx5090 aggressive prod (N=max VRAM, cluster_m=${PEARL_GEMM_CONSUMER_CLUSTER_M})" \
     | propminer_log
@@ -147,7 +135,13 @@ if [[ -n "${PROPMINER_BATCH:-}" ]]; then
 fi
 echo "[mine] Starting miner (runs until container is stopped)..." | propminer_log
 
-MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --pool "${POOL}" --wallet "${WALLET}")
+MINER_ARGS=(--rtx5090 --wallet "${WALLET}")
+if [[ -n "${PROPMINER_GPUS:-}" ]]; then
+    MINER_ARGS+=(--gpus "${PROPMINER_GPUS}")
+fi
+if [[ -n "${POOL}" ]]; then
+    MINER_ARGS+=(--pool "${POOL}")
+fi
 if [[ -n "${WORKER}" ]]; then
     MINER_ARGS+=(--worker "${WORKER}")
 fi

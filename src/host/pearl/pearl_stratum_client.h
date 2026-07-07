@@ -16,8 +16,13 @@
 #include "simple_json.h"
 #include "pow_target_utils.h"
 #include "proto/mining_v2.h"
+#include "rtx5090_profile.h"
 
 namespace pearl {
+
+// Default share difficulty when pool has not sent vardiff / notify target yet.
+inline constexpr double kStratumDefaultShareDiff =
+    static_cast<double>(Rtx5090Profile::kDefaultStratumShareDiff);
 
 // Pearl Stratum client (Kryptex :7048 / ARC-compatible object notify+submit).
 class PearlStratumClient {

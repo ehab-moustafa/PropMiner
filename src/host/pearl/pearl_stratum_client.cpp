@@ -1,6 +1,7 @@
 #include "pearl_stratum_client.h"
 
 #include "pearl_challenge.h"
+#include "env_tuning.h"
 #include "pow_target_utils.h"
 #include "share_trace.h"
 
@@ -149,8 +150,6 @@ bool share_result_accepted(const propminer::JsonValue& parsed, std::string* err_
     return true;
 }
 
-constexpr double kStratumDefaultShareDiff = 32768.0;
-
 double parse_password_difficulty(const std::string& password) {
     const std::string key = ";d=";
     size_t pos = password.find(key);
@@ -179,12 +178,13 @@ PearlStratumClient::PearlStratumClient(const Options& opts) : opts_(opts) {
             use_object_submit_ = false;
         }
     }
-    if (const char* d = std::getenv("PROPMINER_STRATUM_DIFF"); d && d[0]) {
-        const double req = std::atof(d);
-        if (req > 0.0) last_difficulty_ = req;
-    }
-    if (const double pw_diff = parse_password_difficulty(opts_.password); pw_diff > 0.0) {
-        last_difficulty_ = pw_diff;
+    if (stratum_diff_env_set()) {
+        last_difficulty_ = resolve_stratum_share_diff_double();
+    } else {
+        const double pw_diff = parse_password_difficulty(opts_.password);
+        if (pw_diff > 0.0) {
+            last_difficulty_ = pw_diff;
+        }
     }
     std::string build = "unknown";
     if (const char* v = std::getenv("PROP_MINER_GIT_SHA"); v && v[0]) {
@@ -212,11 +212,7 @@ PearlStratumClient::~PearlStratumClient() { disconnect(); }
 
 double PearlStratumClient::effective_share_difficulty() const {
     if (last_difficulty_ > 0.0) return last_difficulty_;
-    if (const char* d = std::getenv("PROPMINER_STRATUM_DIFF"); d && d[0]) {
-        const double req = std::atof(d);
-        if (req > 0.0) return req;
-    }
-    return kStratumDefaultShareDiff;
+    return resolve_stratum_share_diff_double();
 }
 
 uint32_t PearlStratumClient::share_target_nbits() const {

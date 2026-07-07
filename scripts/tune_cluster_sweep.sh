@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# RTX 5090 cluster_m sweep + full runtime autotune comparison.
+# DEPRECATED — use ./scripts/tune_runtime_prod.sh or PROPMINER_MODE=tune-prod
+# (unified batch + graph_batch + cluster autotune).
 #
 # Usage:
 #   ./scripts/tune_cluster_sweep.sh [seconds_per_cluster] [cluster_repeats] [autotune_seconds]

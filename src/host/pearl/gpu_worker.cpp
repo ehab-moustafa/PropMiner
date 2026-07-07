@@ -394,6 +394,10 @@ void GpuWorker::set_matmuls_per_poll(int mpp) {
     if (mpp > 0) matmuls_per_poll_.store(mpp);
 }
 
+void GpuWorker::set_graph_batch(int gb) {
+    if (gb > 0) graph_batch_.store(gb);
+}
+
 void GpuWorker::upload_pow_target(HalfBuffers& half, uint32_t nbits) {
     if (!half.pow_target || !half.stream) return;
     if (nbits == 0) {
@@ -524,7 +528,7 @@ void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
 }
 
 void GpuWorker::prepare_graph(HalfBuffers& half) {
-    int batch = matmuls_per_poll_.load();
+    const int batch = graph_batch_.load();
     if (batch <= 0 || half.workspace == nullptr) return;
     if (bench_no_graph_enabled()) {
         half.graph_ready = false;
@@ -556,7 +560,9 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
     half.batch_seed_start = seed_lo_start;
     half.batch_mined_target_nbits = half.pow_target_nbits;
     const char* half_tag = (&half == &ping_) ? "ping" : "pong";
-    const bool use_graph = half.graph_ready && count == half.graph_batch_count;
+    const int graph_batch = half.graph_batch_count;
+    const bool can_graph = half.graph_ready && graph_batch > 0 &&
+                           (count % graph_batch) == 0;
     // Clear host headers (ARC INVARIANT 1).
     for (int i = 0; i < count; ++i) {
         std::memset(half.host_headers[i], 0, half.header_size);
@@ -568,10 +574,20 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
     }
 
     bool launched_graph = false;
-    if (use_graph) {
+    if (can_graph) {
         try {
-            gemm_.iter_batch_graph_launch(half.workspace, half.stream,
-                                          seed_lo_start);
+            for (int off = 0; off < count; off += graph_batch) {
+                gemm_.iter_batch_graph_launch(half.workspace, half.stream,
+                                              seed_lo_start +
+                                              static_cast<uint64_t>(off));
+                check_cuda(cuStreamSynchronize(half.stream),
+                           "graph sub-batch sync");
+                for (int i = 0; i < graph_batch; ++i) {
+                    std::memcpy(half.host_headers[off + i],
+                                half.host_headers[i],
+                                half.header_size);
+                }
+            }
             launched_graph = true;
         } catch (const std::exception& ex) {
             std::fprintf(stderr,
@@ -592,6 +608,7 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
                 " path=" + (launched_graph ? "graph" : "iter_batch") +
                 " batch_seed_start=" + u64_hex(seed_lo_start) +
                 " count=" + std::to_string(count) +
+                " graph_batch=" + std::to_string(graph_batch) +
                 " target=" + nbits_hex(half.batch_mined_target_nbits));
     // Record completion so the host can spin-wait without blocking the driver.
     if (half.batch_done_event) {
@@ -1042,7 +1059,7 @@ void GpuWorker::run() {
             if (!logged_first_hashrate_ && hr > 0.0) {
                 logged_first_hashrate_ = true;
                 const HashrateMetrics metrics = hashrate_metrics_from_rates(
-                    cfg_, tmads, hr, ms, batch);
+                    cfg_, tmads, hr, ms, batch, graph_batch_.load());
                 std::fprintf(stderr,
                     "[gpu] first batch completed in %.0f ms (%s)\n",
                     ms, gpu_timed ? "gpu" : "wall");

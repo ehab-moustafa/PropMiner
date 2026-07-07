@@ -61,6 +61,16 @@ namespace {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
     }
+
+    std::vector<int> graph_batch_candidates(int batch) {
+        static constexpr int kCand[] = {1, 2, 4, 8, 16, 32};
+        std::vector<int> out;
+        for (int g : kCand) {
+            if (g <= batch && batch % g == 0) out.push_back(g);
+        }
+        if (out.empty()) out.push_back(std::max(1, batch));
+        return out;
+    }
 }
 
 GpuTuner::GpuTuner(int device_index) : device_index_(device_index) {}
@@ -124,13 +134,14 @@ MiningConfig GpuTuner::shape_for_vram(size_t free_bytes,
 
 double GpuTuner::benchmark_config(const MiningConfig& cfg,
                                   int batch,
+                                  int graph_batch,
                                   bool use_graph,
                                   int cluster_m,
                                   int carveout_percent,
                                   double seconds,
                                   int min_iters) const {
 #if defined(PROP_MINER_HOST_ONLY_TESTS)
-    (void)cfg; (void)batch; (void)use_graph; (void)cluster_m;
+    (void)cfg; (void)batch; (void)graph_batch; (void)use_graph; (void)cluster_m;
     (void)carveout_percent; (void)seconds; (void)min_iters;
     return 0.0;
 #else
@@ -152,6 +163,13 @@ double GpuTuner::benchmark_config(const MiningConfig& cfg,
 
         GpuWorker worker(device_index_, 0, cfg, /*sink=*/nullptr);
         worker.set_matmuls_per_poll(batch);
+        if (use_graph) {
+            const int gb = (graph_batch > 0 && graph_batch <= batch &&
+                            batch % graph_batch == 0)
+                               ? graph_batch
+                               : batch;
+            worker.set_graph_batch(gb);
+        }
 
         Job job;
         job.sigma.fill(0xab);
@@ -193,6 +211,7 @@ double GpuTuner::benchmark_config(const MiningConfig& cfg,
 
 double GpuTuner::benchmark_stable(const MiningConfig& cfg,
                                   int batch,
+                                  int graph_batch,
                                   bool use_graph,
                                   int cluster_m,
                                   int carveout_percent,
@@ -202,7 +221,7 @@ double GpuTuner::benchmark_stable(const MiningConfig& cfg,
     std::vector<double> rates;
     rates.reserve(repeats);
     for (int i = 0; i < repeats; ++i) {
-        double r = benchmark_config(cfg, batch, use_graph, cluster_m,
+        double r = benchmark_config(cfg, batch, graph_batch, use_graph, cluster_m,
                                     carveout_percent, seconds, min_iters);
         if (r > 0.0) rates.push_back(r);
     }
@@ -245,18 +264,25 @@ TuningResult GpuTuner::tune_shapes(const std::vector<MiningConfig>& candidates,
 
         for (int batch : batches) {
             for (bool use_graph : graph_opts) {
-                for (int cluster_m : cluster_ms) {
-                    for (int carveout : carveouts) {
-                        double rate = benchmark_stable(
-                            base, batch, use_graph, cluster_m, carveout,
-                            seconds_per_candidate, repeats);
-                        if (rate > best.hashrate) {
-                            best.config = base;
-                            best.batch_size = batch;
-                            best.use_graph = use_graph;
-                            best.cluster_m = cluster_m;
-                            best.carveout_percent = carveout;
-                            best.hashrate = rate;
+                const std::vector<int> graph_batches =
+                    use_graph ? graph_batch_candidates(batch)
+                              : std::vector<int>{1};
+                for (int graph_batch : graph_batches) {
+                    for (int cluster_m : cluster_ms) {
+                        for (int carveout : carveouts) {
+                            double rate = benchmark_stable(
+                                base, batch, graph_batch, use_graph, cluster_m,
+                                carveout, seconds_per_candidate, repeats);
+                            if (rate > best.hashrate) {
+                                best.config = base;
+                                best.batch_size = batch;
+                                best.graph_batch_size =
+                                    use_graph ? graph_batch : 1;
+                                best.use_graph = use_graph;
+                                best.cluster_m = cluster_m;
+                                best.carveout_percent = carveout;
+                                best.hashrate = rate;
+                            }
                         }
                     }
                 }
@@ -291,22 +317,27 @@ TuningResult GpuTuner::tune_mine_batch(const MiningConfig& cfg,
         if (batch > Rtx5090Profile::kMaxMineBatch) continue;
         const double timeout =
             std::max(seconds_per_candidate, 10.0 * static_cast<double>(batch));
-        const double rate = benchmark_stable(
-            cfg, batch, true, cluster_m, carveout, timeout, repeats, batch);
-        const double tmad = tmad_from_tuner_ops_per_sec(rate);
-        std::fprintf(stderr,
-            "[batch-tune] GPU %d: M=%d N=%d batch=%d -> %.2f TMAD/s (pool TH/s) "
-            "(%.0fs window)\n",
-            device_index_, cfg.m, cfg.n, batch, tmad, timeout);
-        if (rate > best.hashrate) {
-            best.batch_size = batch;
-            best.hashrate = rate;
+        for (int graph_batch : graph_batch_candidates(batch)) {
+            const double rate = benchmark_stable(
+                cfg, batch, graph_batch, true, cluster_m, carveout, timeout,
+                repeats, batch);
+            const double tmad = tmad_from_tuner_ops_per_sec(rate);
+            std::fprintf(stderr,
+                "[batch-tune] GPU %d: M=%d N=%d batch=%d graph_batch=%d "
+                "-> %.2f TMAD/s (%.0fs window)\n",
+                device_index_, cfg.m, cfg.n, batch, graph_batch, tmad, timeout);
+            if (rate > best.hashrate) {
+                best.batch_size = batch;
+                best.graph_batch_size = graph_batch;
+                best.hashrate = rate;
+            }
         }
     }
 
     std::fprintf(stderr,
-        "[batch-tune] GPU %d: selected batch=%d graph=yes cluster_m=%d -> %.2f TMAD/s\n",
-        device_index_, best.batch_size, cluster_m,
+        "[batch-tune] GPU %d: selected batch=%d graph_batch=%d cluster_m=%d "
+        "-> %.2f TMAD/s\n",
+        device_index_, best.batch_size, best.graph_batch_size, cluster_m,
         tmad_from_tuner_ops_per_sec(best.hashrate));
 #else
     (void)seconds_per_candidate;
@@ -339,7 +370,7 @@ TuningResult GpuTuner::tune_cluster_sweep(const MiningConfig& cfg,
         const double timeout =
             std::max(seconds_per_candidate, 10.0 * static_cast<double>(batch));
         const double rate = benchmark_stable(
-            cfg, batch, true, cluster_m, carveout, timeout, repeats, batch);
+            cfg, batch, batch, true, cluster_m, carveout, timeout, repeats, batch);
         std::fprintf(stderr,
             "[cluster-tune] GPU %d: M=%d N=%d batch=%d cluster_m=%d "
             "-> %.2f TMAD/s (%.0fs x %d repeats)\n",
@@ -400,16 +431,34 @@ TuningResult GpuTuner::tune(double seconds_per_candidate, int repeats) {
     best = tune_shapes(candidates, seconds_per_candidate, repeats);
 
     std::fprintf(stderr,
-        "[autotune] GPU %d: selected M=%d N=%d K=%d batch=%d graph=%s "
-        "cluster_m=%d carveout=%d repeats=%d -> %.2f TMAD/s\n",
+        "[autotune] GPU %d: selected M=%d N=%d K=%d batch=%d graph_batch=%d "
+        "graph=%s cluster_m=%d carveout=%d repeats=%d -> %.2f TMAD/s\n",
         device_index_, best.config.m, best.config.n, best.config.k,
-        best.batch_size, best.use_graph ? "yes" : "no",
+        best.batch_size, best.graph_batch_size,
+        best.use_graph ? "yes" : "no",
         best.cluster_m, best.carveout_percent, best.repeats,
         tmad_from_tuner_ops_per_sec(best.hashrate));
 #else
     (void)seconds_per_candidate;
 #endif
 
+    return best;
+}
+
+TuningResult GpuTuner::tune_production(const MiningConfig& cfg,
+                                       double seconds_per_candidate,
+                                       int repeats) {
+    TuningResult best = tune_shapes({cfg}, seconds_per_candidate, repeats);
+#if !defined(PROP_MINER_HOST_ONLY_TESTS)
+    std::fprintf(stderr,
+        "[autotune] GPU %d production shape: M=%d N=%d K=%d batch=%d "
+        "graph_batch=%d graph=%s cluster_m=%d -> %.2f TMAD/s\n",
+        device_index_, cfg.m, cfg.n, cfg.k, best.batch_size,
+        best.graph_batch_size, best.use_graph ? "yes" : "no", best.cluster_m,
+        tmad_from_tuner_ops_per_sec(best.hashrate));
+#else
+    (void)cfg;
+#endif
     return best;
 }
 

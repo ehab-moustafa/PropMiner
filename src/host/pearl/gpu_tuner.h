@@ -13,7 +13,8 @@ namespace pearl {
 // averaged over repeated measurements with worst-case outlier rejection.
 struct TuningResult {
     MiningConfig config;
-    int batch_size = 8;
+    int batch_size = 32;
+    int graph_batch_size = 8;
     bool use_graph = true;
     int cluster_m = 1;
     int carveout_percent = -1;
@@ -30,6 +31,12 @@ public:
     //   repeats: how many independent measurements to take per candidate; the
     //            slowest repeat is discarded before averaging.
     TuningResult tune(double seconds_per_candidate = 5.0, int repeats = 3);
+
+    // Fixed M/N/K sweep (Stratum / production shape): batch, graph_batch,
+    // cluster_m, carveout, CUDA graphs on/off.
+    TuningResult tune_production(const MiningConfig& cfg,
+                                 double seconds_per_candidate = 5.0,
+                                 int repeats = 3);
 
     // Fine-grained search over matrix shapes.  Called automatically by tune().
     TuningResult tune_shapes(const std::vector<MiningConfig>& candidates,
@@ -56,12 +63,14 @@ private:
     int device_index_;
 
     // Evaluate one configuration.  Returns 0 on failure.
-    double benchmark_config(const MiningConfig& cfg, int batch, bool use_graph,
+    double benchmark_config(const MiningConfig& cfg, int batch, int graph_batch,
+                            bool use_graph,
                             int cluster_m, int carveout_percent,
                             double seconds, int min_iters = 0) const;
 
     // Repeatably measure a candidate and return the trimmed-mean hashrate.
-    double benchmark_stable(const MiningConfig& cfg, int batch, bool use_graph,
+    double benchmark_stable(const MiningConfig& cfg, int batch, int graph_batch,
+                            bool use_graph,
                             int cluster_m, int carveout_percent,
                             double seconds, int repeats,
                             int min_iters = 0) const;

@@ -15,10 +15,12 @@
 #include "kernel_knob_cache.h"
 #include "mine_batch_cache.h"
 #include "pearl_capi_wrapper.h"
+#include "pearl_stratum_client.h"
 #include "pow_target_utils.h"
 #include "rtx5090_profile.h"
 #include "share_builder.h"
 #include "env_flags.h"
+#include "env_tuning.h"
 #include "share_trace.h"
 #include "tune_cache.h"
 
@@ -48,6 +50,7 @@ namespace {
             }
             if (total.batch == 0) {
                 total.batch = w->matmuls_per_poll();
+                total.graph_batch = w->graph_batch();
             }
         }
         if (batch_ms_count > 0) {
@@ -76,6 +79,34 @@ namespace {
             return 1;
         }
         return 1;
+    }
+
+    bool mining_shape_matches(const MiningConfig& want, const MiningConfig& cached) {
+        return want.m == cached.m && want.n == cached.n && want.k == cached.k;
+    }
+
+    bool apply_tune_result(const TuningResult& r,
+                           MiningConfig& cfg,
+                           int& batch,
+                           int& graph_batch,
+                           int& cluster_m,
+                           int& carveout,
+                           bool fix_shape) {
+        if (fix_shape && !mining_shape_matches(cfg, r.config)) {
+            return false;
+        }
+        if (!fix_shape) {
+            cfg = r.config;
+        }
+        batch = std::max(1, r.batch_size);
+        graph_batch = r.graph_batch_size > 0 ? r.graph_batch_size : batch;
+        if (!r.use_graph) {
+            graph_batch = batch;
+        }
+        cluster_m = normalize_cluster_m(r.cluster_m);
+        carveout = r.carveout_percent;
+        normalize_batch_and_graph(batch, graph_batch);
+        return true;
     }
 
     bool bench_json_enabled() {
@@ -150,11 +181,12 @@ namespace {
         if (const char* env = std::getenv("PROPMINER_STRATUM_PASSWORD"); env && env[0]) {
             pw = env;
         }
-        if (const char* d = std::getenv("PROPMINER_STRATUM_DIFF"); d && d[0]) {
-            const long long diff = std::atoll(d);
-            if (diff > 0 && pw.find("d=") == std::string::npos) {
-                pw += ";d=" + std::to_string(diff);
-            }
+        long long diff = resolve_stratum_share_diff();
+        if (pw.find("d=") != std::string::npos) {
+            diff = 0;
+        }
+        if (diff > 0) {
+            pw += ";d=" + std::to_string(diff);
         }
         return pw;
     }
@@ -179,9 +211,11 @@ WorkerOrchestrator::WorkerOrchestrator(const Config& cfg) : cfg_(cfg) {
     }
     if (cfg_.stratum_endpoints.empty()) {
         cfg_.stratum_endpoints.push_back({"prl.kryptex.network", 7048, false});
+        cfg_.stratum_endpoints.push_back({"prl-eu.kryptex.network", 7048, false});
     }
-    if (const char* env = std::getenv("PROPMINER_USE_STRATUM"); env && env[0] == '1') {
-        use_stratum_.store(true);
+    use_stratum_.store(true);
+    if (const char* env = std::getenv("PROPMINER_USE_STRATUM"); env && env[0]) {
+        if (env[0] == '0') use_stratum_.store(false);
     }
     if (const char* env = std::getenv("PROPMINER_POOL_MODE"); env) {
         if (std::strcmp(env, "stratum") == 0) use_stratum_.store(true);
@@ -819,14 +853,11 @@ int WorkerOrchestrator::run() {
                   << " (K=128 is rejected as invalid proof on Kryptex)\n";
     }
     const int profile_n = cfg_.mining_config.n;
-    int tuned_batch = cfg_.batch_size;
+    int tuned_batch = Rtx5090Profile::kDefaultMineBatch;
+    int tuned_graph_batch = Rtx5090Profile::kDefaultGraphBatch;
     int tuned_cluster_m = Rtx5090Profile::kProdDefaultClusterM;
     int tuned_carveout = -1;
-
-    const char* cluster_env = std::getenv("PEARL_GEMM_CONSUMER_CLUSTER_M");
-    if (cluster_env && cluster_env[0]) {
-        tuned_cluster_m = normalize_cluster_m(std::max(1, std::atoi(cluster_env)));
-    }
+    bool tuning_applied = false;
 
     GemmCapi capi;
     if (const int kv = capi.validate_kernel_selection(); kv != 0) {
@@ -862,65 +893,65 @@ int WorkerOrchestrator::run() {
     const char* autotune_env = std::getenv("PROPMINER_AUTOTUNE");
     const bool force_autotune =
         autotune_env && std::strcmp(autotune_env, "force") == 0;
-
-    // Offline tune cache: cluster/carveout only (N and batch stay on production path).
-    if (cfg_.use_tune_cache && !cfg_.autotune && cfg_.speed_test_seconds == 0) {
-        TuneCache tune_cache;
-        for (int idx : indices) {
-            if (auto cached = tune_cache.load(idx)) {
-                tuned_cluster_m = normalize_cluster_m(cached->cluster_m);
-                tuned_carveout = cached->carveout_percent;
-                std::cerr << "[orchestrator] Tune cache GPU " << idx
-                          << ": cluster_m=" << tuned_cluster_m
-                          << " carveout=" << tuned_carveout
-                          << " (N=" << tuned_config.n
-                          << ", batch via mine_batch cache)\n";
-            }
-        }
-    }
-
-    MiningConfig::warn_if_cluster_m_mismatch(tuned_cluster_m);
+    const bool want_autotune =
+        cfg_.autotune && cfg_.speed_test_seconds == 0;
+    const bool want_tune_cache =
+        cfg_.use_tune_cache && cfg_.speed_test_seconds == 0;
+    const bool fix_mining_shape = use_stratum_.load();
 
     TuneCache tune_cache;
-    if (cfg_.autotune && cfg_.speed_test_seconds == 0 && !use_stratum_.load()) {
-        // Try the persistent cache first so reconnects pick up the last good
-        // config without re-benchmarking.
+    if (want_autotune || want_tune_cache) {
         bool cache_hit = false;
         if (!force_autotune) {
             for (int idx : indices) {
                 if (auto cached = tune_cache.load(idx)) {
-                    tuned_cluster_m = normalize_cluster_m(cached->cluster_m);
-                    tuned_carveout = cached->carveout_percent;
-                    cache_hit = true;
-                    std::cerr << "[orchestrator] Using cached autotune dispatch for GPU "
-                              << idx << " (cluster_m=" << tuned_cluster_m
-                              << " carveout=" << tuned_carveout
-                              << "; N/batch unchanged from production path)"
-                              << std::endl;
+                    if (apply_tune_result(*cached, tuned_config, tuned_batch,
+                                          tuned_graph_batch, tuned_cluster_m,
+                                          tuned_carveout, fix_mining_shape)) {
+                        cache_hit = true;
+                        tuning_applied = true;
+                        std::cerr << "[orchestrator] Tune cache GPU " << idx
+                                  << ": batch=" << tuned_batch
+                                  << " graph_batch=" << tuned_graph_batch
+                                  << " cluster_m=" << tuned_cluster_m
+                                  << " carveout=" << tuned_carveout
+                                  << " (from " << TuneCache::cache_path()
+                                  << ")\n";
+                    } else {
+                        std::cerr << "[orchestrator] Tune cache GPU " << idx
+                                  << ": ignored (M/N/K mismatch with current job "
+                                  << "shape M=" << tuned_config.m
+                                  << " N=" << tuned_config.n
+                                  << " K=" << tuned_config.k << ")\n";
+                    }
                 }
             }
         } else {
             std::cerr << "[orchestrator] PROPMINER_AUTOTUNE=force: "
-                         "ignoring runtime autotune cache\n";
+                         "ignoring autotune cache\n";
         }
 
-        if (!cache_hit) {
-            std::cerr << "[orchestrator] Running per-GPU autotune..." << std::endl;
+        if (want_autotune && !cache_hit) {
+            std::cerr << "[orchestrator] Running per-GPU autotune"
+                      << (fix_mining_shape ? " (fixed Stratum shape)" : "")
+                      << "...\n";
             for (int idx : indices) {
                 GpuTuner tuner(idx);
-                auto result = tuner.tune(5.0, 3);
-                if (result.hashrate > 0.0) {
-                    tuned_config = result.config;
-                    tuned_batch = result.batch_size;
-                    tuned_cluster_m = normalize_cluster_m(result.cluster_m);
-                    tuned_carveout = result.carveout_percent;
+                TuningResult result = fix_mining_shape
+                    ? tuner.tune_production(tuned_config, 5.0, 3)
+                    : tuner.tune(5.0, 3);
+                if (result.hashrate > 0.0 &&
+                    apply_tune_result(result, tuned_config, tuned_batch,
+                                      tuned_graph_batch, tuned_cluster_m,
+                                      tuned_carveout, fix_mining_shape)) {
                     tune_cache.save(idx, result);
+                    tuning_applied = true;
                 }
             }
         }
 
         if (tuned_config.m == Rtx5090Profile::kDefaultM &&
-            tuned_config.n < profile_n) {
+            tuned_config.n < profile_n && !fix_mining_shape) {
             std::cerr << "[orchestrator] RTX 5090: clamping autotune N "
                       << tuned_config.n << " -> " << profile_n << "\n";
             tuned_config.n = profile_n;
@@ -931,40 +962,54 @@ int WorkerOrchestrator::run() {
                       << tuned_batch << " -> " << Rtx5090Profile::kMaxMineBatch
                       << "\n";
             tuned_batch = Rtx5090Profile::kMaxMineBatch;
+            normalize_batch_and_graph(tuned_batch, tuned_graph_batch);
         }
-    } else if (cfg_.speed_test_seconds == 0 &&
-               tuned_config.m == Rtx5090Profile::kDefaultM) {
+    }
+
+    if (!tuning_applied) {
         tuned_batch = MineBatchCache::resolve(
             indices.empty() ? 0 : indices[0],
             tuned_config.m, tuned_config.n,
-            cfg_.batch_size > 0 ? cfg_.batch_size : Rtx5090Profile::kDefaultMineBatch);
-
-        const char* batch_tune_env = std::getenv("PROPMINER_BATCH_TUNE");
-        if (batch_tune_env && batch_tune_env[0] == '1' && !std::getenv("PROPMINER_BATCH")) {
-            std::cerr << "[orchestrator] Running mine batch autotune..." << std::endl;
-            for (int idx : indices) {
-                GpuTuner tuner(idx);
-                auto result = tuner.tune_mine_batch(tuned_config, 12.0, 2);
-                if (result.hashrate > 0.0) {
-                    tuned_batch = result.batch_size;
-                    MineBatchResult cached;
-                    cached.m = tuned_config.m;
-                    cached.n = tuned_config.n;
-                    cached.batch = tuned_batch;
-                    cached.hashrate = result.hashrate;
-                    cached.use_graph = result.use_graph;
-                    MineBatchCache cache;
-                    cache.save(idx, cached);
-                }
-            }
+            Rtx5090Profile::kDefaultMineBatch);
+        tuned_graph_batch = resolve_graph_batch();
+        tuned_cluster_m = normalize_cluster_m(resolve_cluster_m());
+        normalize_batch_and_graph(tuned_batch, tuned_graph_batch);
+        if (tuned_config.m == Rtx5090Profile::kDefaultM) {
+            log_resolved_tuning("[orchestrator]");
         }
+    } else if (manual_tuning_env_set()) {
+        if (mine_batch_env_set()) {
+            tuned_batch = resolve_mine_batch();
+        }
+        if (graph_batch_env_set()) {
+            tuned_graph_batch = resolve_graph_batch();
+        }
+        if (cluster_m_env_set()) {
+            tuned_cluster_m = normalize_cluster_m(resolve_cluster_m());
+        }
+        normalize_batch_and_graph(tuned_batch, tuned_graph_batch);
+        std::cerr << "[orchestrator] Manual tuning env override applied "
+                     "on top of autotune cache\n";
+    } else {
+        std::cerr << "[orchestrator] Autotune dispatch: batch=" << tuned_batch
+                  << " graph_batch=" << tuned_graph_batch
+                  << " cluster_m=" << tuned_cluster_m;
+        if (tuned_carveout >= 0) {
+            std::cerr << " carveout=" << tuned_carveout << "%";
+        }
+        std::cerr << "\n";
     }
+
+    MiningConfig::warn_if_cluster_m_mismatch(tuned_cluster_m);
 
     const bool bench_mode = cfg_.speed_test_seconds > 0;
     if (!bench_mode && tuned_config.m == Rtx5090Profile::kDefaultM) {
         if (tuned_cluster_m > 1) {
             const char* allow = std::getenv("PROPMINER_ALLOW_CLUSTER_M");
-            if (!allow || allow[0] != '1') {
+            const bool explicit_allow = allow && allow[0] == '1';
+            const bool prod_default_cluster =
+                tuned_cluster_m == Rtx5090Profile::kProdDefaultClusterM;
+            if (!explicit_allow && !prod_default_cluster) {
                 std::cerr << "[orchestrator] WARN: cluster_m=" << tuned_cluster_m
                           << " disabled for share safety (gpu-hit + verify-fail). "
                           << "Set PROPMINER_ALLOW_CLUSTER_M=1 to override.\n";
@@ -1001,7 +1046,8 @@ int WorkerOrchestrator::run() {
                   << " waves~" << ((ctas + Rtx5090Profile::kSMCount - 1)
                                     / Rtx5090Profile::kSMCount)
                   << " tail_slots=" << tail
-                  << " batch=" << tuned_batch << "\n";
+                  << " batch=" << tuned_batch
+                  << " graph_batch=" << tuned_graph_batch << "\n";
     }
 
     if (!bench_mode) {
@@ -1050,6 +1096,7 @@ int WorkerOrchestrator::run() {
         auto w = std::make_unique<GpuWorker>(idx, static_cast<int>(workers_.size()),
                                              tuned_config, this);
         w->set_matmuls_per_poll(tuned_batch);
+        w->set_graph_batch(tuned_graph_batch);
         if (bench_ctx) {
             w->set_sigma(bench_ctx);
             w->set_target_nbits(bench_target_nbits);

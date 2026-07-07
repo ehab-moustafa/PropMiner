@@ -20,6 +20,7 @@ struct HashrateMetrics {
     double iters_per_sec = 0.0;
     double batch_ms = 0.0;
     int batch = 0;
+    int graph_batch = 0;
     int m = 0;
     int n = 0;
     int k = 0;
@@ -34,12 +35,14 @@ inline HashrateMetrics hashrate_metrics_from_rates(const MiningConfig& cfg,
                                                  double tmad_per_sec,
                                                  double protocol_hps,
                                                  double batch_ms,
-                                                 int batch) {
+                                                 int batch,
+                                                 int graph_batch = 0) {
     HashrateMetrics m{};
     m.tmad_per_sec = tmad_per_sec;
     m.protocol_hps = protocol_hps;
     m.batch_ms = batch_ms;
     m.batch = batch;
+    m.graph_batch = graph_batch > 0 ? graph_batch : batch;
     m.m = cfg.m;
     m.n = cfg.n;
     m.k = cfg.k;
@@ -117,7 +120,10 @@ inline void print_hashrate_metrics_line(FILE* out,
         std::fprintf(out, " | matmuls/s=%.3f", m.iters_per_sec);
     }
     if (m.batch > 0) {
-        std::fprintf(out, " | graph_batch=%d", m.batch);
+        std::fprintf(out, " | batch=%d", m.batch);
+    }
+    if (m.graph_batch > 0) {
+        std::fprintf(out, " | graph_batch=%d", m.graph_batch);
     }
     if (m.m > 0 && m.n > 0 && m.k > 0) {
         std::fprintf(out, " | M=%d N=%d K=%d", m.m, m.n, m.k);

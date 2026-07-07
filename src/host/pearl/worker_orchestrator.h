@@ -14,6 +14,7 @@
 #include "pearl_stratum_client.h"
 #include "job_bus.h"
 #include "pearl_types.h"
+#include "rtx5090_profile.h"
 #include "watchdog.h"
 
 namespace pearl {
@@ -47,10 +48,11 @@ public:
         std::string miner_version = "propminer/1.0";
         std::vector<int> gpu_indices; // empty = all
         MiningConfig mining_config;
-        int batch_size = 8;           // matmuls per poll
+        int batch_size = Rtx5090Profile::kDefaultMineBatch;       // PROPMINER_BATCH
+        int graph_batch_size = Rtx5090Profile::kDefaultGraphBatch; // PROPMINER_GRAPH_BATCH
         int speed_test_seconds = 0;   // >0 => benchmark and exit
-        bool autotune = true;         // run per-GPU autotune at startup
-        bool use_tune_cache = false;  // apply autotune.json cluster/carveout without live sweep
+        bool autotune = false;        // PROPMINER_AUTOTUNE=1 to sweep at startup
+        bool use_tune_cache = true;   // PROPMINER_USE_TUNE_CACHE=0 to disable
         bool enable_watchdog = true;  // reset GPU context on TDR/timeout
         bool disable_cpu_mining = true; // PropMiner has no CPU mining path
     };

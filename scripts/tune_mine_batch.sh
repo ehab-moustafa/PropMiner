@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Mine-mode batch sweep at production RTX 5090 shape (M=8192, N from VRAM).
+# DEPRECATED — use ./scripts/tune_runtime_prod.sh or PROPMINER_MODE=tune-prod
+# (unified batch + graph_batch + cluster autotune).
 #
 # Usage:
 #   ./scripts/tune_mine_batch.sh [seconds_per_candidate] [repeats]

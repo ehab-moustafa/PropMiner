@@ -4,9 +4,8 @@
 #   test      — quick self-test only
 #   mine      — connect to pool and mine until stopped (requires PROPMINER_WALLET)
 #   tune      — offline kernel-knob sweep (KBLOCK/STAGES/SWIZZLE/MIN_BLOCKS)
-#   batch-tune — offline mine batch sweep at production N
-#   cluster-tune — cluster_m {1,2,4} sweep + full runtime autotune
-#   tune-prod    — full 5090 prod tune (knobs + cluster + batch)
+#   tune-prod — unified runtime autotune (batch + graph_batch + cluster + carveout)
+#   salad-tune — tune-prod + validation bench (Salad/WSL2, no nvcc)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,7 +29,7 @@ if [[ "${PROPMINER_USE_RELEASE:-0}" == "1" ]]; then
     fi
 fi
 
-MODE_RAW="${PROPMINER_MODE:-full}"
+MODE_RAW="${PROPMINER_MODE:-mine}"
 MODE="$(printf '%s' "${MODE_RAW}" | tr '[:upper:]' '[:lower:]')"
 
 echo "[entrypoint] PROPMINER_MODE=${MODE_RAW} -> ${MODE}" >&2
@@ -56,11 +55,10 @@ case "${MODE}" in
     tune|knob-tune|knobs)
         exec ./scripts/tune_blackwell_knobs.sh "$@"
         ;;
-    batch-tune|batch_tune)
-        exec ./scripts/tune_mine_batch.sh "$@"
-        ;;
-    cluster-tune|cluster_tune)
-        exec ./scripts/tune_cluster_sweep.sh "$@"
+    batch-tune|batch_tune|cluster-tune|cluster_tune)
+        echo "[entrypoint] WARN: PROPMINER_MODE=${MODE_RAW} is deprecated." >&2
+        echo "[entrypoint] Use PROPMINER_MODE=tune-prod (batch + graph_batch + cluster in one sweep)." >&2
+        exec ./scripts/tune_prod_5090.sh "$@"
         ;;
     tune-prod|tune_prod|prod-tune)
         exec ./scripts/tune_prod_5090.sh "$@"
@@ -76,7 +74,7 @@ case "${MODE}" in
         ;;
     *)
         echo "[entrypoint] ERROR: unknown PROPMINER_MODE='${MODE_RAW}'." >&2
-        echo "[entrypoint] Valid values: full, test, mine, tune, batch-tune, cluster-tune, tune-prod, remaining, verify-geforce, salad-tune." >&2
+        echo "[entrypoint] Valid values: full, test, mine, tune, tune-prod, salad-tune, remaining, verify-geforce." >&2
         exit 1
         ;;
 esac

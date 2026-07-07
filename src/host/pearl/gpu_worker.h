@@ -12,6 +12,7 @@
 #include "cuda_compat.h"
 #include "pearl_capi_wrapper.h"
 #include "pearl_types.h"
+#include "rtx5090_profile.h"
 #include "sigma_context.h"
 
 namespace pearl {
@@ -49,8 +50,12 @@ public:
     // Live pool share target (may differ from device pow_target mid-batch).
     uint32_t target_nbits() const { return target_nbits_.load(); }
 
-    // Set matmuls per poll (batch size). Tuned by benchmark.
+    // Matmuls per poll (total batch size).
     void set_matmuls_per_poll(int mpp);
+    // CUDA graph capture depth (sub-launches when batch > graph_batch).
+    void set_graph_batch(int gb);
+
+    int graph_batch() const { return graph_batch_.load(); }
 
     double hashrate() const;
     double tmads_per_sec() const { return tmads_per_sec_.load(); }
@@ -190,7 +195,8 @@ private:
     std::shared_ptr<SigmaContext> sigma_;
     std::atomic<uint32_t> target_nbits_{0};
     std::atomic<bool> target_dirty_{false};
-    std::atomic<int> matmuls_per_poll_{8};
+    std::atomic<int> matmuls_per_poll_{Rtx5090Profile::kDefaultMineBatch};
+    std::atomic<int> graph_batch_{Rtx5090Profile::kDefaultGraphBatch};
 
     std::atomic<uint64_t> total_iters_{0};
     std::atomic<double> hashrate_{0.0};
