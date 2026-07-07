@@ -136,6 +136,52 @@ inline void print_hashrate_metrics_line(FILE* out,
     std::fputc('\n', out);
 }
 
+// Emit a one-time health verdict comparing measured throughput against the
+// GPU's power budget so a throttled / power-capped / shared instance is obvious
+// at a glance. `sys` may be null (no telemetry) — then only the compute verdict
+// is printed. Heuristics are tuned for a single RTX 5090 (~300-360 TMAD/s,
+// ~35-40% of rated INT8 at ~450-500 W).
+inline void print_hashrate_health(FILE* out, const char* prefix,
+                                  const HashrateMetrics& m,
+                                  const SystemSnapshot* sys) {
+    // Compute-side verdict from TOPS%.
+    const char* compute = "unknown";
+    if (m.tops_pct >= 33.0)      compute = "GOOD (near single-5090 ceiling)";
+    else if (m.tops_pct >= 22.0) compute = "OK (some headroom)";
+    else if (m.tops_pct > 0.0)   compute = "LOW (large headroom)";
+
+    std::fprintf(out, "%shealth: TOPS=%.1f%% -> compute=%s",
+                 prefix, m.tops_pct, compute);
+
+    if (sys && sys->gpu_power_w >= 0 && sys->gpu_power_limit_w > 0) {
+        const double pct = 100.0 * sys->gpu_power_w / sys->gpu_power_limit_w;
+        const char* pwr = "ok";
+        if (pct < 45.0)      pwr = "SEVERELY CAPPED";
+        else if (pct < 70.0) pwr = "capped/low";
+        std::fprintf(out, " | power=%d/%dW (%.0f%% -> %s)",
+                     sys->gpu_power_w, sys->gpu_power_limit_w, pct, pwr);
+    }
+    if (sys && sys->sm_clock_mhz >= 0) {
+        std::fprintf(out, " | sm_clock=%dMHz", sys->sm_clock_mhz);
+    }
+    std::fputc('\n', out);
+
+    // Actionable hint: distinguish instance throttle vs kernel headroom.
+    if (sys && sys->gpu_power_w >= 0 && sys->gpu_power_limit_w > 0 &&
+        (100.0 * sys->gpu_power_w / sys->gpu_power_limit_w) < 70.0 &&
+        m.tops_pct > 0.0 && m.tops_pct < 33.0) {
+        std::fprintf(out,
+            "%shealth: HINT low power AND low TOPS -> instance is likely "
+            "power-capped/shared; a full-power GPU is the biggest win.\n",
+            prefix);
+    } else if (m.tops_pct > 0.0 && m.tops_pct < 22.0) {
+        std::fprintf(out,
+            "%shealth: HINT low TOPS at healthy power -> tune batch/graph_batch/"
+            "cluster_m or improve the GEMM kernel.\n",
+            prefix);
+    }
+}
+
 inline void print_hashrate_metrics_json(FILE* out,
                                         const HashrateMetrics& m,
                                         const MiningConfig& cfg,

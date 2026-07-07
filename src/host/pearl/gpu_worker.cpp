@@ -1131,6 +1131,7 @@ void GpuWorker::run() {
                     "[gpu] first batch completed in %.0f ms (%s)\n",
                     ms, gpu_timed ? "gpu" : "wall");
                 print_hashrate_metrics_line(stderr, "[gpu] ", metrics, &sys);
+                print_hashrate_health(stderr, "[gpu] ", metrics, &sys);
             }
         }
 
