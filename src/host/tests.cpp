@@ -11,6 +11,7 @@
 #include "pearl/pow_target_utils.h"
 #include "pearl/pearl_types.h"
 #include "pearl/rtx5090_profile.h"
+#include "pearl/share_diagnostics.h"
 #include "pearl/kernel_knob_cache.h"
 #include "pearl/mine_batch_cache.h"
 #include "pearl/proto/mining_v2.h"
@@ -229,6 +230,21 @@ static void test_stratum_share_vs_network_nbits() {
     std::memcpy(sigma.data() + 72, &network, sizeof(network));
     EXPECT(network_nbits_from_sigma(sigma) == network);
     EXPECT(network != share_nbits);
+}
+
+static void test_share_pool_reject_parsing() {
+    const PoolRejectInfo invalid =
+        parse_pool_reject("[-1,\"Invalid share\",null]");
+    EXPECT(invalid.kind == ShareRejectKind::InvalidShare);
+    EXPECT(invalid.pool_message == "Invalid share");
+
+    const PoolRejectInfo duplicate =
+        parse_pool_reject("[-1,\"Duplicate share\",null]");
+    EXPECT(duplicate.kind == ShareRejectKind::DuplicateShare);
+
+    const PoolRejectInfo stale =
+        parse_pool_reject("[-1,\"Job not found\",null]");
+    EXPECT(stale.kind == ShareRejectKind::JobNotFound);
 }
 
 static void test_hashrate_metrics_math() {
@@ -554,6 +570,7 @@ int main() {
     test_pow_target_stratum_nbits_roundtrip();
     test_tighter_target_nbits();
     test_stratum_share_vs_network_nbits();
+    test_share_pool_reject_parsing();
     test_hashrate_metrics_math();
     test_mining_config_conservative();
     test_rtx5090_wave_alignment();

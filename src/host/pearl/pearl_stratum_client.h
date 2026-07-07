@@ -16,6 +16,7 @@
 #include "simple_json.h"
 #include "pow_target_utils.h"
 #include "proto/mining_v2.h"
+#include "share_diagnostics.h"
 #include "rtx5090_profile.h"
 
 namespace pearl {
@@ -25,6 +26,13 @@ inline constexpr double kStratumDefaultShareDiff =
     static_cast<double>(Rtx5090Profile::kDefaultStratumShareDiff);
 
 // Pearl Stratum client (Kryptex :7048 / ARC-compatible object notify+submit).
+enum class SubmitResult {
+    Sent,
+    SupersededJob,
+    NotConnected,
+    SendFailed,
+};
+
 class PearlStratumClient {
 public:
     struct Options {
@@ -51,9 +59,9 @@ public:
     void set_callbacks(JobCallback job_cb, VardiffCallback vardiff_cb,
                        ShareResultCallback share_cb);
 
-    bool submit_plain_proof(const std::string& job_id,
-                            const std::vector<uint8_t>& proof_bytes,
-                            uint64_t nonce = 0);
+    SubmitResult submit_plain_proof(const std::string& job_id,
+                                    const std::vector<uint8_t>& proof_bytes,
+                                    uint64_t nonce = 0);
 
     std::string job_id_for_sigma(const std::array<uint8_t, kSigmaHeaderBytes>& sigma) const;
 

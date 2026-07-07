@@ -212,6 +212,7 @@ add_executable(propminer
     src/host/pearl/host_signal_header.cpp
     src/host/pearl/job_bus.cpp
     src/host/pearl/pow_target_utils.cpp
+    src/host/pearl/share_diagnostics.cpp
     src/host/pearl/worker_orchestrator.cpp
     src/host/pearl/system_telemetry.cpp
     src/host/pearl/grpc_client.cpp

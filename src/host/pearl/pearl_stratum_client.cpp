@@ -3,6 +3,7 @@
 #include "pearl_challenge.h"
 #include "env_tuning.h"
 #include "pow_target_utils.h"
+#include "share_diagnostics.h"
 #include "share_trace.h"
 
 #include <arpa/inet.h>
@@ -622,12 +623,16 @@ void PearlStratumClient::flush_all_pending_submits(const char* reason) {
     for (const auto& [id, ps] : pending) {
         const auto waited = std::chrono::duration_cast<std::chrono::seconds>(
             now - ps.sent_at).count();
+        share_drop(ShareDropKind::ConnectionLost,
+                   "nonce=" + std::to_string(ps.nonce) +
+                   " stratum_id=" + std::to_string(id) +
+                   " waited_sec=" + std::to_string(waited) +
+                   " trigger=" + (reason ? reason : "unknown"));
         pool_diag_log("pool-no-response",
                       "nonce=" + std::to_string(ps.nonce) +
                       " stratum_id=" + std::to_string(id) +
                       " waited_sec=" + std::to_string(waited) +
-                      " reason=" + (reason ? reason : "unknown") +
-                      " (Kryptex :7048 often sends no mining.submit ack)");
+                      " reason=" + (reason ? reason : "unknown"));
     }
 }
 
@@ -649,15 +654,14 @@ void PearlStratumClient::flush_stale_pending_submits() {
     for (const auto& [id, pending] : stale) {
         const auto waited = std::chrono::duration_cast<std::chrono::seconds>(
             now - pending.sent_at).count();
+        share_drop(ShareDropKind::PoolAckTimeout,
+                   "nonce=" + std::to_string(pending.nonce) +
+                   " stratum_id=" + std::to_string(id) +
+                   " waited_sec=" + std::to_string(waited));
         pool_diag_log("pool-no-response",
                       "nonce=" + std::to_string(pending.nonce) +
                       " stratum_id=" + std::to_string(id) +
-                      " waited_sec=" + std::to_string(waited) +
-                      " (Kryptex :7048 often sends no mining.submit ack)");
-        if (connected_.load() && share_cb_) {
-            share_cb_(true, "silent-kryptex nonce=" + std::to_string(pending.nonce) +
-                            " stratum_id=" + std::to_string(id));
-        }
+                      " waited_sec=" + std::to_string(waited));
     }
 }
 
@@ -672,7 +676,7 @@ void PearlStratumClient::receive_loop() {
         if (st == ReadStatus::Closed) {
             if (running_.load()) {
                 flush_all_pending_submits("connection_lost");
-                stratum_log("stratum connection lost");
+                stratum_log("Connection dropped — pool socket closed; reconnecting...");
                 connected_ = false;
             }
             break;
@@ -771,7 +775,14 @@ void PearlStratumClient::handle_message(const std::string& line) {
             pending_submit_nonces_.erase(it);
         }
     }
-    if (share_cb_) share_cb_(accepted, accepted ? "Accepted" : err);
+    if (share_cb_) {
+        if (accepted) {
+            share_cb_(true, "Accepted");
+        } else {
+            const PoolRejectInfo rej = parse_pool_reject(err);
+            share_cb_(false, rej.human_summary + " raw=" + rej.raw_error);
+        }
+    }
     pool_diag_log("pool-response",
                   std::string(accepted ? "accepted" : "rejected") +
                   " nonce=" + std::to_string(nonce) +
@@ -910,10 +921,10 @@ int PearlStratumClient::cert_version_for_job(const std::string& job_id) const {
     return 1;
 }
 
-bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
-                                             const std::vector<uint8_t>& proof_bytes,
-                                             uint64_t nonce) {
-    if (!connected_.load()) return false;
+SubmitResult PearlStratumClient::submit_plain_proof(const std::string& job_id,
+                                                    const std::vector<uint8_t>& proof_bytes,
+                                                    uint64_t nonce) {
+    if (!connected_.load()) return SubmitResult::NotConnected;
 
     int64_t job_age_ms = -1;
     bool superseded = false;
@@ -931,8 +942,10 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
                     job_id.substr(0, std::min<size_t>(12, job_id.size())) +
                     " current=" +
                     current_job_id_.substr(0, std::min<size_t>(12, current_job_id_.size())));
-        share_log("submit-drop", "nonce=" + std::to_string(nonce) + " reason=superseded_job");
-        return false;
+        share_drop(ShareDropKind::SupersededJob,
+                   "nonce=" + std::to_string(nonce) +
+                   " job_id=" + job_id.substr(0, std::min<size_t>(16, job_id.size())));
+        return SubmitResult::SupersededJob;
     }
     if (job_age_ms >= 0) {
         stratum_log("submit job_age_ms=" + std::to_string(job_age_ms) +
@@ -978,13 +991,13 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
                 " proof=" + std::to_string(proof_bytes.size()) + "B id=" + std::to_string(id) +
                 " nonce=" + std::to_string(nonce) + " awaiting_ack=45s");
     if (!send_line(line)) {
-        share_log("submit-fail",
-                  "nonce=" + std::to_string(nonce) +
-                  " stratum_id=" + std::to_string(id) +
-                  " reason=send_line_failed");
-        return false;
+        share_drop(ShareDropKind::SendFailed,
+                   "nonce=" + std::to_string(nonce) +
+                   " stratum_id=" + std::to_string(id) +
+                   " err=" + last_error_);
+        return SubmitResult::SendFailed;
     }
-    return true;
+    return SubmitResult::Sent;
 }
 
 std::array<uint8_t, 16> PearlStratumClient::job_id_bytes(const std::string& job_id) {
