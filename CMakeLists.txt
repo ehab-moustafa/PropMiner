@@ -261,6 +261,8 @@ add_executable(propminer_ref_tests
     src/host/pearl/protobuf_encoder.cpp
     src/host/pearl/proto/mining_v2.cpp
     src/host/pearl/host_signal_header.cpp
+    src/host/pearl/share_diagnostics.cpp
+    src/host/stratum/simple_json.cpp
 )
 target_include_directories(propminer_ref_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host
