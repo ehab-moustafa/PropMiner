@@ -45,14 +45,14 @@ inline bool tune_cache_env_enabled() {
     return v[0] != '0';
 }
 
-inline bool manual_tuning_env_set() {
-    return mine_batch_env_set() || graph_batch_env_set() || cluster_m_env_set();
-}
-
 inline bool mine_batch_env_set() { return env_is_set("PROPMINER_BATCH"); }
 inline bool graph_batch_env_set() { return env_is_set("PROPMINER_GRAPH_BATCH"); }
 inline bool cluster_m_env_set() { return env_is_set("PEARL_GEMM_CONSUMER_CLUSTER_M"); }
 inline bool stratum_diff_env_set() { return env_is_set("PROPMINER_STRATUM_DIFF"); }
+
+inline bool manual_tuning_env_set() {
+    return mine_batch_env_set() || graph_batch_env_set() || cluster_m_env_set();
+}
 
 inline int resolve_mine_batch() {
     return env_int_or("PROPMINER_BATCH", Rtx5090Profile::kDefaultMineBatch);
