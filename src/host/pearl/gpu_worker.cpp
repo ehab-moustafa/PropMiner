@@ -15,7 +15,9 @@
 #include "pow_target_utils.h"
 #include "share_builder.h"
 #include "env_flags.h"
+#include "env_tuning.h"
 #include "share_trace.h"
+#include "system_telemetry.h"
 #include "watchdog.h"
 
 // For cuda runtime helpers (events, graph).  CUstream and cudaStream_t are
@@ -1060,10 +1062,16 @@ void GpuWorker::run() {
                 logged_first_hashrate_ = true;
                 const HashrateMetrics metrics = hashrate_metrics_from_rates(
                     cfg_, tmads, hr, ms, batch, graph_batch_.load());
+                SystemTelemetry telemetry;
+                SystemSnapshot sys = telemetry.sample(device_index_, 0);
+                const char* stratum_env = std::getenv("PROPMINER_USE_STRATUM");
+                if (!stratum_env || stratum_env[0] != '0') {
+                    sys.pool_share_diff = resolve_stratum_share_diff_double();
+                }
                 std::fprintf(stderr,
                     "[gpu] first batch completed in %.0f ms (%s)\n",
                     ms, gpu_timed ? "gpu" : "wall");
-                print_hashrate_metrics_line(stderr, "[gpu] ", metrics);
+                print_hashrate_metrics_line(stderr, "[gpu] ", metrics, &sys);
             }
         }
 

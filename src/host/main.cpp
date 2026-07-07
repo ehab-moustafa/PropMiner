@@ -274,7 +274,7 @@ static void print_usage(const char* prog) {
         "\nPropMiner v2.0 — Pearl NoisyGEMM GPU Miner (0%% dev fee)\n"
         "\nUsage: %s [OPTIONS]\n"
         "\nOptions:\n"
-        "  --pool HOST:PORT[,HOST2:PORT2]  Pool address(es) with failover (default: prl.kryptex.network:443)\n"
+        "  --pool HOST:PORT[,HOST2:PORT2]  gRPC pool (optional; Kryptex uses Stratum by default)\n"
         "  --wallet ADDRESS     Your Pearl wallet address (required)\n"
         "  --worker NAME        Worker name (default: propminer)\n"
         "  --gpus INDEXES       GPU indices, comma-separated (default: all)\n"
@@ -293,7 +293,7 @@ static void print_usage(const char* prog) {
         "  Env: PEARL_GEMM_CONSUMER_CLUSTER_M  Cluster M (default 4 on RTX 5090 prod)\n"
         "  Env: PROPMINER_STRATUM_DIFF=N     Stratum share difficulty (default 262144)\n"
         "  Env: PROPMINER_BENCH_BATCH=N      Override bench graph batch\n"
-        "  Env: PROPMINER_BATCH_TUNE=1       Run mine batch sweep at startup (slow)\n"
+        "  Env: PROPMINER_USE_TUNE_CACHE=1   Load autotune.json (default on for mine)\n"
         "  --help               Show this help\n"
         "\nExamples:\n"
         "  %s --wallet krxX2P3Z84.mine-crypto-script\n"
@@ -517,19 +517,14 @@ int main(int argc, char* argv[]) {
     split_wallet_worker(cfg.wallet_address, cfg.worker_name, worker_set);
     warn_kryptex_worker_name(cfg.worker_name);
 
-    // Whether the user explicitly configured a gRPC endpoint (CLI --pool with a
-    // non-7048 port, or PROPMINER_POOL). If not, we do NOT invent a gRPC :443
-    // default: Kryptex Pearl is Stratum-only and a bogus gRPC endpoint just burns
-    // a connect cycle before the fallback kicks in.
-    bool user_grpc_pool = !cfg.pool_endpoints.empty();
+    // gRPC endpoints only when explicitly configured (--pool or PROPMINER_POOL).
+    // Kryptex Pearl is Stratum-only; do not invent a gRPC :443 default.
     if (cfg.pool_endpoints.empty()) {
         if (const char* env = std::getenv("PROPMINER_POOL"); env && env[0]) {
             parse_pool_list(env, cfg);
-            user_grpc_pool = !cfg.pool_endpoints.empty();
         }
         if (const char* fb = std::getenv("PROPMINER_POOL_FALLBACK"); fb && fb[0]) {
             append_pool_endpoint(cfg, fb);
-            user_grpc_pool = user_grpc_pool || !cfg.pool_endpoints.empty();
         }
     }
     if (const char* st = std::getenv("PROPMINER_STRATUM_POOL"); st && st[0]) {
@@ -543,11 +538,6 @@ int main(int argc, char* argv[]) {
     if (!std::getenv("PROPMINER_USE_STRATUM") && !std::getenv("PROPMINER_POOL_MODE")) {
         setenv("PROPMINER_USE_STRATUM", "1", 0);
     }
-    if (!user_grpc_pool && cfg.pool_endpoints.empty()) {
-        // Legacy gRPC fallback only when Stratum is disabled explicitly.
-        cfg.pool_endpoints.push_back({cfg.pool_host, cfg.pool_port, cfg.use_tls});
-    }
-
     if (cfg.pool_endpoints.empty() && !cfg.stratum_endpoints.empty()) {
         fprintf(stderr, "[main] Stratum-only mode (no gRPC endpoints configured)\n");
     }

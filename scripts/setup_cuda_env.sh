@@ -118,3 +118,36 @@ prepare_prebuilt_binaries() {
     fi
     return 0
 }
+
+# Resolve nvidia-smi for hashrate telemetry (gpu%, power, temp, clocks).
+ensure_nvidia_smi() {
+    if [[ -n "${PROPMINER_NVIDIA_SMI:-}" && -x "${PROPMINER_NVIDIA_SMI}" ]]; then
+        export PROPMINER_NVIDIA_SMI
+        echo "[env] nvidia-smi=${PROPMINER_NVIDIA_SMI} (from env)" | propminer_log
+    else
+        local cand found=""
+        for cand in \
+            "$(command -v nvidia-smi 2>/dev/null || true)" \
+            /usr/bin/nvidia-smi \
+            /usr/local/nvidia/bin/nvidia-smi \
+            /usr/lib/wsl/lib/nvidia-smi; do
+            [[ -z "${cand}" ]] && continue
+            if [[ -x "${cand}" ]]; then
+                found="${cand}"
+                break
+            fi
+        done
+        if [[ -z "${found}" ]]; then
+            echo "[env] WARN: nvidia-smi not found — install host NVIDIA utils or set PROPMINER_NVIDIA_SMI" | propminer_log
+            return 1
+        fi
+        export PROPMINER_NVIDIA_SMI="${found}"
+        echo "[env] nvidia-smi=${found}" | propminer_log
+    fi
+    if ! "${PROPMINER_NVIDIA_SMI}" --query-gpu=name,utilization.gpu,power.draw,memory.used,memory.total \
+        --format=csv,noheader 2>/dev/null | head -1 | propminer_log; then
+        echo "[env] WARN: nvidia-smi query failed — telemetry lines may omit gpu/power/temp" | propminer_log
+        return 1
+    fi
+    return 0
+}

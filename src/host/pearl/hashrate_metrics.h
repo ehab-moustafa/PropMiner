@@ -1,6 +1,7 @@
 #pragma once
 
 #include "pearl_types.h"
+#include "system_telemetry.h"
 
 #include <cstdio>
 #include <cmath>
@@ -103,7 +104,8 @@ inline void format_scaled_rate(double rate, char* buf, size_t buflen) {
 
 inline void print_hashrate_metrics_line(FILE* out,
                                         const char* prefix,
-                                        const HashrateMetrics& m) {
+                                        const HashrateMetrics& m,
+                                        const SystemSnapshot* sys = nullptr) {
     char protocol_buf[32];
     format_scaled_rate(m.protocol_hps, protocol_buf, sizeof(protocol_buf));
 
@@ -127,6 +129,9 @@ inline void print_hashrate_metrics_line(FILE* out,
     }
     if (m.m > 0 && m.n > 0 && m.k > 0) {
         std::fprintf(out, " | M=%d N=%d K=%d", m.m, m.n, m.k);
+    }
+    if (sys) {
+        append_system_snapshot_to_line(out, *sys);
     }
     std::fputc('\n', out);
 }

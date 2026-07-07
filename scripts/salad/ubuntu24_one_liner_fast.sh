@@ -33,6 +33,7 @@ export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
 export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048,prl-eu.kryptex.network:7048}"
 export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
 export PROPMINER_AUTOTUNE="${PROPMINER_AUTOTUNE:-0}"
+export PROPMINER_AUTO_UPDATE="${PROPMINER_AUTO_UPDATE:-1}"
 export PROPMINER_STRATUM_PASSWORD="${PROPMINER_STRATUM_PASSWORD:-x}"
 export PROPMINER_VERBOSE_STRATUM="${PROPMINER_VERBOSE_STRATUM:-1}"
 export PROPMINER_VERBOSE_SHARES="${PROPMINER_VERBOSE_SHARES:-1}"
@@ -74,6 +75,31 @@ link_cuda_redist() {
     fi
 }
 
+ensure_nvidia_smi() {
+    local cand found=""
+    for cand in \
+        "${PROPMINER_NVIDIA_SMI:-}" \
+        "$(command -v nvidia-smi 2>/dev/null || true)" \
+        /usr/bin/nvidia-smi \
+        /usr/local/nvidia/bin/nvidia-smi \
+        /usr/lib/wsl/lib/nvidia-smi; do
+        [[ -z "${cand}" ]] && continue
+        if [[ -x "${cand}" ]]; then
+            found="${cand}"
+            break
+        fi
+    done
+    if [[ -z "${found}" ]]; then
+        echo "[env] WARN: nvidia-smi not found — hashrate lines omit gpu%%, power, temp (Salad host driver required)"
+        return 1
+    fi
+    export PROPMINER_NVIDIA_SMI="${found}"
+    echo "[env] nvidia-smi=${found}"
+    "${found}" --query-gpu=name,utilization.gpu,power.draw,memory.used,memory.total \
+        --format=csv,noheader 2>/dev/null | head -1 || \
+        echo "[env] WARN: nvidia-smi query failed"
+}
+
 setup_runtime_env() {
     export NVIDIA_VISIBLE_DEVICES="${NVIDIA_VISIBLE_DEVICES:-all}"
     export NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
@@ -82,7 +108,6 @@ setup_runtime_env() {
     export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
     export PROPMINER_AUTOTUNE="${PROPMINER_AUTOTUNE:-0}"
     export PROPMINER_STRATUM_DIFF="${PROPMINER_STRATUM_DIFF:-262144}"
-    export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
     export PROPMINER_VERBOSE_SHARES="${PROPMINER_VERBOSE_SHARES:-1}"
     export LD_LIBRARY_PATH="${PM_DIR}:${CUDA_LIB}:${CUDA_LIB64}:${LD_LIBRARY_PATH:-}"
 
@@ -147,6 +172,7 @@ fi
 chmod +x "${PM_DIR}/propminer"
 
 setup_runtime_env
+ensure_nvidia_smi || true
 resolve_wallet
 
 RESTART_ON_EXIT="${PROPMINER_RESTART_ON_EXIT:-1}"
@@ -184,7 +210,7 @@ if [[ "${RESTART_ON_EXIT}" == "0" ]]; then
 fi
 
 while true; do
-    if [[ "${PROPMINER_AUTO_UPDATE:-0}" == "1" ]]; then
+    if [[ "${PROPMINER_AUTO_UPDATE:-1}" == "1" ]]; then
         echo "[release] checking ${RELEASE_URL}"
         REMOTE_VER="$(curl -fsSL "${RELEASE_URL}" | tar -xOzf - VERSION 2>/dev/null || true)"
         LOCAL_VER="$(cat "${PM_DIR}/VERSION" 2>/dev/null || true)"

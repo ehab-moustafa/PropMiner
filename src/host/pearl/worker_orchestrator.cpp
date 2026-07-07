@@ -22,6 +22,7 @@
 #include "env_flags.h"
 #include "env_tuning.h"
 #include "share_trace.h"
+#include "system_telemetry.h"
 #include "tune_cache.h"
 
 namespace pearl {
@@ -206,9 +207,6 @@ namespace {
 }
 
 WorkerOrchestrator::WorkerOrchestrator(const Config& cfg) : cfg_(cfg) {
-    if (cfg_.pool_endpoints.empty()) {
-        cfg_.pool_endpoints.push_back({cfg_.pool_host, cfg_.pool_port, cfg_.use_tls});
-    }
     if (cfg_.stratum_endpoints.empty()) {
         cfg_.stratum_endpoints.push_back({"prl.kryptex.network", 7048, false});
         cfg_.stratum_endpoints.push_back({"prl-eu.kryptex.network", 7048, false});
@@ -259,6 +257,8 @@ std::vector<proto::GpuCard> WorkerOrchestrator::enumerate_gpu_cards() {
 }
 
 const WorkerOrchestrator::PoolEndpoint& WorkerOrchestrator::active_pool() const {
+    static const PoolEndpoint kNoGrpcPool{"", 0, false};
+    if (cfg_.pool_endpoints.empty()) return kNoGrpcPool;
     const size_t idx = active_pool_index_.load() % cfg_.pool_endpoints.size();
     return cfg_.pool_endpoints[idx];
 }
@@ -278,6 +278,9 @@ std::string WorkerOrchestrator::pool_status_line() const {
             if (use_stratum_.load() && !cfg_.stratum_endpoints.empty()) {
                 return "hashrate: connecting Stratum " + cfg_.stratum_endpoints[0].host + ":" +
                        std::to_string(cfg_.stratum_endpoints[0].port) + "...";
+            }
+            if (cfg_.pool_endpoints.empty()) {
+                return "hashrate: no gRPC pool configured (--pool required)";
             }
             return "hashrate: connecting gRPC pool " + active_pool().host + "...";
         case PoolState::Registering:
@@ -332,6 +335,10 @@ void WorkerOrchestrator::start_watchdog_if_needed() {
 
 bool WorkerOrchestrator::ensure_connected_and_registered() {
     if (client_ && client_->connected() && registered_.load()) return true;
+    if (cfg_.pool_endpoints.empty()) {
+        last_pool_error_ = "no gRPC pool configured (--pool or PROPMINER_POOL required)";
+        return false;
+    }
 
     reset_pool_session();
     set_pool_state(PoolState::Connecting);
@@ -847,6 +854,17 @@ int WorkerOrchestrator::run() {
         }
         tuned_config = stratum_pool_mining_config(free_vram);
         cfg_.mining_config = tuned_config;
+        if (tuned_config.k < 1024 || (tuned_config.k % 64) != 0) {
+            std::cerr << "[orchestrator] ERROR: Stratum requires K>=1024 and "
+                         "K%64==0 (PlainProof §7.1); got K="
+                      << tuned_config.k << "\n";
+            return 1;
+        }
+        if (tuned_config.k != Rtx5090Profile::kStratumPoolK) {
+            std::cerr << "[orchestrator] WARN: Stratum K=" << tuned_config.k
+                      << " (prod default K=" << Rtx5090Profile::kStratumPoolK
+                      << ")\n";
+        }
         std::cerr << "[orchestrator] Stratum pool shape (PlainProof §7.1): M="
                   << tuned_config.m << " N=" << tuned_config.n
                   << " K=" << tuned_config.k << " r=" << tuned_config.r
@@ -1052,9 +1070,11 @@ int WorkerOrchestrator::run() {
 
     if (!bench_mode) {
         std::cerr << "[orchestrator] Production mine mode: "
-                  << cfg_.pool_endpoints.size() << " gRPC endpoint(s), "
-                  << cfg_.stratum_endpoints.size() << " Stratum fallback(s)"
-                  << (use_stratum_.load() ? " [Stratum-first]" : " [gRPC-first]")
+                  << cfg_.stratum_endpoints.size() << " Stratum endpoint(s)";
+        if (!cfg_.pool_endpoints.empty()) {
+            std::cerr << ", " << cfg_.pool_endpoints.size() << " gRPC endpoint(s)";
+        }
+        std::cerr << (use_stratum_.load() ? " [Stratum-first]" : " [gRPC-first]")
                   << "\n";
     }
 
@@ -1123,6 +1143,8 @@ int WorkerOrchestrator::run() {
             ? cfg_.speed_test_seconds + bench_grace_sec
             : 0;
 
+    SystemTelemetry sys_telemetry;
+
     while (!stop_flag_) {
         std::this_thread::sleep_for(std::chrono::seconds(5));
         const HashrateMetrics metrics =
@@ -1134,7 +1156,16 @@ int WorkerOrchestrator::run() {
         }
 
         if (metrics.tmad_per_sec > 0.0 || metrics.protocol_hps > 0.0) {
-            print_hashrate_metrics_line(stdout, "hashrate: ", metrics);
+            const int primary_gpu =
+                indices.empty() ? 0 : indices.front();
+            SystemSnapshot sys = sys_telemetry.sample(primary_gpu, 4000);
+            if (use_stratum_.load() && stratum_client_ &&
+                stratum_client_->connected()) {
+                sys.pool_share_diff = stratum_client_->effective_share_difficulty();
+            } else if (use_stratum_.load()) {
+                sys.pool_share_diff = resolve_stratum_share_diff_double();
+            }
+            print_hashrate_metrics_line(stdout, "hashrate: ", metrics, &sys);
             const size_t pending_acks =
                 (use_stratum_.load() && stratum_client_ && stratum_client_->connected())
                     ? stratum_client_->pending_submit_count()
@@ -1187,12 +1218,21 @@ int WorkerOrchestrator::run() {
                 }
 
                 if (finish) {
+                    const int primary_gpu =
+                        indices.empty() ? 0 : indices.front();
+                    SystemSnapshot sys = sys_telemetry.sample(primary_gpu, 0);
+                    if (use_stratum_.load()) {
+                        sys.pool_share_diff =
+                            resolve_stratum_share_diff_double();
+                    }
                     if (final_metrics.protocol_hps > 0.0 ||
                         final_metrics.tmad_per_sec > 0.0) {
                         std::cout << "benchmark complete" << std::endl;
-                        print_hashrate_metrics_line(stdout, "benchmark: ", final_metrics);
+                        print_hashrate_metrics_line(stdout, "benchmark: ",
+                                                    final_metrics, &sys);
                         std::cerr << "[bench] finished after " << elapsed << "s\n";
-                        print_hashrate_metrics_line(stderr, "[bench] ", final_metrics);
+                        print_hashrate_metrics_line(stderr, "[bench] ",
+                                                    final_metrics, &sys);
                         if (bench_json_enabled()) {
                             print_hashrate_metrics_json(
                                 stdout, final_metrics, tuned_config,

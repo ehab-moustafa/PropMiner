@@ -19,7 +19,6 @@ setup_wsl2_env() {
     export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
     export PROPMINER_AUTOTUNE="${PROPMINER_AUTOTUNE:-0}"
     export PROPMINER_STRATUM_DIFF="${PROPMINER_STRATUM_DIFF:-262144}"
-    export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
 
     export LD_LIBRARY_PATH="${ROOT}/lib:${ROOT}:${LD_LIBRARY_PATH:-}"
 
@@ -77,8 +76,7 @@ fi
 RESTART_ON_EXIT="${PROPMINER_RESTART_ON_EXIT:-1}"
 export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
 export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048,prl-eu.kryptex.network:7048}"
-export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
-export PROPMINER_AUTOTUNE="${PROPMINER_AUTOTUNE:-0}"
+export PROPMINER_AUTO_UPDATE="${PROPMINER_AUTO_UPDATE:-1}"
 export PROPMINER_STRATUM_PASSWORD="${PROPMINER_STRATUM_PASSWORD:-x}"
 export PROPMINER_VERBOSE_STRATUM="${PROPMINER_VERBOSE_STRATUM:-1}"
 export PROPMINER_VERBOSE_SHARES="${PROPMINER_VERBOSE_SHARES:-1}"
@@ -89,6 +87,29 @@ if [[ -n "${WORKER}" ]]; then
 fi
 
 setup_wsl2_env
+
+ensure_nvidia_smi() {
+    local cand found=""
+    for cand in \
+        "${PROPMINER_NVIDIA_SMI:-}" \
+        "$(command -v nvidia-smi 2>/dev/null || true)" \
+        /usr/bin/nvidia-smi \
+        /usr/local/nvidia/bin/nvidia-smi \
+        /usr/lib/wsl/lib/nvidia-smi; do
+        [[ -z "${cand}" ]] && continue
+        if [[ -x "${cand}" ]]; then found="${cand}"; break; fi
+    done
+    if [[ -z "${found}" ]]; then
+        log "[env] WARN: nvidia-smi not found — telemetry omits gpu%%, power, temp"
+        return 1
+    fi
+    export PROPMINER_NVIDIA_SMI="${found}"
+    log "[env] nvidia-smi=${found}"
+    "${found}" --query-gpu=name,utilization.gpu,power.draw,memory.used,memory.total \
+        --format=csv,noheader 2>/dev/null | head -1 | log || \
+        log "[env] WARN: nvidia-smi query failed"
+}
+ensure_nvidia_smi || true
 
 log "===== PropMiner Salad (SRB-style bundle) ====="
 log "version=$(cat "${ROOT}/VERSION" 2>/dev/null || echo unknown)"
@@ -115,7 +136,7 @@ if [[ "${RESTART_ON_EXIT}" == "0" ]]; then
 fi
 
 while true; do
-    if [[ "${PROPMINER_AUTO_UPDATE:-0}" == "1" && "${PROPMINER_USE_RELEASE:-0}" == "1" ]]; then
+    if [[ "${PROPMINER_AUTO_UPDATE:-1}" == "1" && "${PROPMINER_USE_RELEASE:-0}" == "1" ]]; then
         TAG="${PROPMINER_RELEASE_TAG:-continuous}"
         REPO="${PROPMINER_RELEASE_REPO:-ehab-moustafa/PropMiner}"
         ASSET="${PROPMINER_RELEASE_ASSET:-PropMiner-Salad-Linux.tar.gz}"

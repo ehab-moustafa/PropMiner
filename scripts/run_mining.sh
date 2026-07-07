@@ -114,14 +114,13 @@ echo "===== PropMiner production mining =====" | propminer_log
 date | propminer_log
 
 setup_cuda_runtime_env
+ensure_nvidia_smi || true
 
 if ! ensure_binaries "${BUILD_DIR}"; then
     exit 1
 fi
 
 echo "[mine] GPU info:" | propminer_log
-nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total \
-    --format=csv,noheader | propminer_log || true
 
 export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048,prl-eu.kryptex.network:7048}"
 echo "[mine] mode=production stratum=${PROPMINER_STRATUM_POOL} gpus=${PROPMINER_GPUS:-all}" | propminer_log
