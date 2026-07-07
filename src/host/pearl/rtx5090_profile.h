@@ -44,13 +44,18 @@ struct Rtx5090Profile {
     static constexpr int kProdDefaultClusterM = 4;
 
     // Stratum share difficulty when pool has not sent vardiff yet (also PROPMINER_STRATUM_DIFF).
-    static constexpr long long kDefaultStratumShareDiff = 262144;
+    // Lower = easier shares, more frequent submits (Salad: helps before job supersede).
+    static constexpr long long kDefaultStratumShareDiff = 32768;
 
     static constexpr int kMineBatchCandidates[] = {
         1, 2, 4, 6, 8, 10, 12, 16, 20, 24, 32,
     };
 
-    // Bench/tune/mine share production N (pick_n_for_vram). Override only via PROPMINER_N_CAP.
+    // Default production N cap (Salad/Kryptex Stratum K=4096 VRAM headroom).
+    // Set PROPMINER_N_CAP=0 for uncapped VRAM pick (up to 262144), or PROPMINER_N_CAP=N.
+    static constexpr int kDefaultProdNCap = 65536;
+
+    // Bench/tune/mine share production N (pick_n_for_vram). Override via PROPMINER_N_CAP.
     static constexpr int kLegacySmallN = 32768;
     static constexpr int kBenchDefaultSeconds = 300;
     static constexpr int kBenchGraceSeconds = 120;
@@ -157,7 +162,7 @@ static_assert(Rtx5090Profile::full_occupancy(Rtx5090Profile::kDefaultM,
 // Return a MiningConfig pre-tuned for RTX 5090.
 //
 // vram_budget_bytes: free VRAM after driver reserve (0 = pick largest candidate).
-// cap_n: when >0, limit N (debug only — set PROPMINER_N_CAP; default is production N).
+// cap_n: when >0, limit N (default kDefaultProdNCap; PROPMINER_N_CAP=0 = uncapped).
 inline MiningConfig rtx5090_mining_config(size_t vram_budget_bytes = 0,
                                           int cap_n = 0) {
     MiningConfig cfg;

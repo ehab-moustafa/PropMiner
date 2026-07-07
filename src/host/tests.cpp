@@ -272,12 +272,17 @@ static void test_rtx5090_wave_alignment() {
     EXPECT(Rtx5090Profile::wave_aligned(8192, 43520));
     EXPECT(!Rtx5090Profile::wave_aligned(8192, 32768));
     EXPECT(Rtx5090Profile::wave_aligned_n_at_least(8192, 32768) >= 43520);
-    // 32 GB minus reserve: production mine should pick N=262144.
+    // 32 GB minus reserve: uncapped (cap_n=0) picks N=262144; default prod cap is 65536.
     constexpr size_t k32GbMinusReserve = (28ULL << 30);
     auto prod_cfg = rtx5090_mining_config(k32GbMinusReserve, 0);
     EXPECT(prod_cfg.m == 8192);
     EXPECT(prod_cfg.n == 262144);
     EXPECT(Rtx5090Profile::tiles(prod_cfg.m, prod_cfg.n) == 65536);
+    auto capped_prod = rtx5090_mining_config(k32GbMinusReserve, 65536);
+    EXPECT(capped_prod.n == 65536);
+    auto stratum_capped = stratum_pool_mining_config(k32GbMinusReserve, 65536);
+    EXPECT(stratum_capped.n == 65536);
+    EXPECT(stratum_capped.k == Rtx5090Profile::kStratumPoolK);
     auto cfg = rtx5090_mining_config(0);
     EXPECT(cfg.m == 8192);
     EXPECT(cfg.n >= 32768);

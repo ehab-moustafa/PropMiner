@@ -72,8 +72,9 @@ static int run_self_test() {
     const char* prod_env = std::getenv("PROP_MINER_SELF_TEST_PROD");
     const bool prod_mode = prod_env && prod_env[0] == '1';
 
-    MiningConfig cfg = prod_mode ? rtx5090_mining_config()
-                                 : MiningConfig{};
+    MiningConfig cfg = prod_mode
+                           ? rtx5090_mining_config(0, resolve_n_cap())
+                           : MiningConfig{};
     if (!prod_mode) {
         cfg.m = 2048;
         cfg.n = 4096;
@@ -221,9 +222,10 @@ static int run_runtime_autotune(const std::vector<int>& gpu_indices,
         const bool stratum =
             (std::getenv("PROPMINER_USE_STRATUM") &&
              std::getenv("PROPMINER_USE_STRATUM")[0] == '1');
+        const int n_cap = resolve_n_cap();
         const MiningConfig cfg = stratum
-            ? stratum_pool_mining_config(vram_free)
-            : rtx5090_mining_config(vram_free);
+            ? stratum_pool_mining_config(vram_free, n_cap)
+            : rtx5090_mining_config(vram_free, n_cap);
         fprintf(stderr,
                 "[autotune] Production-shape sweep at M=%d N=%d K=%d "
                 "(batch x graph_batch x cluster x carveout; %gs x %d repeats)\n",
@@ -282,16 +284,16 @@ static void print_usage(const char* prog) {
         "  --self-test          Mine tiny problem + verify first share, then exit\n"
         "  --tune-autotune S    Production autotune (batch/graph_batch/cluster), exit\n"
         "  --config M,N,K,R     Override default mining dimensions\n"
-        "  --rtx5090            RTX 5090 profile (M=8192, N up to 262144 from VRAM)\n"
+        "  --rtx5090            RTX 5090 profile (M=8192, N default cap 65536)\n"
         "  --no-watchdog        Disable GPU watchdog/auto-recovery thread\n"
         "  --disable-cpu        Explicitly disable CPU mining (default; no-op)\n"
         "  --tls 0/1            Use TLS (default: 1)\n"
         "  Env: PROPMINER_AUTOTUNE=0|1|2|force  Runtime autotune + knob cache (5090)\n"
-        "  Env: PROPMINER_N_CAP=N          Debug: cap N (default: production VRAM pick)\n"
+        "  Env: PROPMINER_N_CAP=N          Cap N (default 65536; 0 = uncapped VRAM pick)\n"
         "  Env: PROPMINER_BATCH=N            Matmuls per poll (default 32; env or cache)\n"
         "  Env: PROPMINER_GRAPH_BATCH=N      CUDA graph depth (default 8; must divide batch)\n"
         "  Env: PEARL_GEMM_CONSUMER_CLUSTER_M  Cluster M (default 4 on RTX 5090 prod)\n"
-        "  Env: PROPMINER_STRATUM_DIFF=N     Stratum share difficulty (default 262144)\n"
+        "  Env: PROPMINER_STRATUM_DIFF=N     Stratum share difficulty (default 32768)\n"
         "  Env: PROPMINER_BENCH_BATCH=N      Override bench graph batch\n"
         "  Env: PROPMINER_USE_TUNE_CACHE=1   Load autotune.json (default on for mine)\n"
         "  --help               Show this help\n"
@@ -577,11 +579,7 @@ int main(int argc, char* argv[]) {
             cudaMemGetInfo(&vram_free, &total);
             if (vram_free > (512ULL << 20)) vram_free -= (512ULL << 20);
         }
-        int n_cap = 0;
-        if (const char* cap_env = std::getenv("PROPMINER_N_CAP");
-            cap_env && cap_env[0] != '\0') {
-            n_cap = std::atoi(cap_env);
-        }
+        const int n_cap = pearl::resolve_n_cap();
         cfg.mining_config = pearl::rtx5090_mining_config(vram_free, n_cap);
         if (bench_seconds == 0 && !user_overrode_config) {
             cfg.batch_size = pearl::MineBatchCache::resolve(
@@ -610,7 +608,8 @@ int main(int argc, char* argv[]) {
                 ctas, (ctas + pearl::Rtx5090Profile::kSMCount - 1)
                           / pearl::Rtx5090Profile::kSMCount,
                 tail,
-                n_cap > 0 ? " (PROPMINER_N_CAP)" : "");
+                pearl::n_cap_env_set() ? " (PROPMINER_N_CAP)"
+                                       : (n_cap > 0 ? " (default N cap)" : ""));
 
         pearl::GemmCapi capi;
         if (const int kv = capi.validate_kernel_selection(); kv != 0) {

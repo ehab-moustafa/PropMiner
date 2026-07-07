@@ -9,6 +9,7 @@ export PROPMINER_SKIP_KNOB_TUNE=1
 export PROPMINER_SKIP_GEFORCE=1
 export PROPMINER_BUILD_GEFORCE=0
 export PROPMINER_USE_STRATUM=1
+export PROPMINER_N_CAP="${PROPMINER_N_CAP:-65536}"
 
 LOG="${ROOT}/results/salad_tune_remaining.log"
 exec > >(tee -a "${LOG}") 2>&1

@@ -24,7 +24,8 @@ export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
 export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
 export PROPMINER_AUTOTUNE="${PROPMINER_AUTOTUNE:-0}"
 export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048,prl-eu.kryptex.network:7048}"
-export PROPMINER_STRATUM_DIFF="${PROPMINER_STRATUM_DIFF:-262144}"
+export PROPMINER_STRATUM_DIFF="${PROPMINER_STRATUM_DIFF:-32768}"
+export PROPMINER_N_CAP="${PROPMINER_N_CAP:-65536}"
 
 WALLET="${PROPMINER_WALLET:-}"
 if [[ -n "${PROPMINER_POOL:-}" ]]; then
@@ -106,7 +107,7 @@ for arg in "${EXTRA_ARGS[@]}"; do
 done
 
 if [[ -n "${PROPMINER_AUTOTUNE:-}" && "${PROPMINER_AUTOTUNE}" != "0" ]]; then
-    echo "[mine] WARN: PROPMINER_AUTOTUNE=${PROPMINER_AUTOTUNE} may shrink N below 262144." \
+    echo "[mine] WARN: PROPMINER_AUTOTUNE=${PROPMINER_AUTOTUNE} may change N/batch from defaults." \
         | propminer_log
 fi
 

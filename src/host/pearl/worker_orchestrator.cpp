@@ -852,7 +852,7 @@ int WorkerOrchestrator::run() {
                 cudaMemGetInfo(&free_vram, &total);
             }
         }
-        tuned_config = stratum_pool_mining_config(free_vram);
+        tuned_config = stratum_pool_mining_config(free_vram, resolve_n_cap());
         cfg_.mining_config = tuned_config;
         if (tuned_config.k < 1024 || (tuned_config.k % 64) != 0) {
             std::cerr << "[orchestrator] ERROR: Stratum requires K>=1024 and "
