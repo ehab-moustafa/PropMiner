@@ -589,6 +589,7 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
                                               static_cast<uint64_t>(off));
                 check_cuda(cuStreamSynchronize(half.stream),
                            "graph sub-batch sync");
+                if (watchdog_) watchdog_->heartbeat();
                 for (int i = 0; i < graph_batch; ++i) {
                     std::memcpy(half.host_headers[off + i],
                                 half.host_headers[i],

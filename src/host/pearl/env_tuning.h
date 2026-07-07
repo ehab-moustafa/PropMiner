@@ -101,10 +101,9 @@ inline bool hash_tile_use_pattern_expansion() {
 // K=4096 R=256). One matmul at this shape can take many seconds on CUDA; ARC
 // forces MatmulsPerPoll=1 and uses a 300s progress watchdog (not 9s).
 inline bool is_canonical_stratum_shape(const MiningConfig& cfg) {
-    return cfg.m >= Rtx5090Profile::kStratumPoolM &&
-           cfg.n >= Rtx5090Profile::kStratumPoolN &&
-           cfg.k == Rtx5090Profile::kStratumPoolK &&
-           cfg.r == Rtx5090Profile::kStratumPoolR;
+    return cfg.m >= Rtx5090Profile::kStratumLargeM &&
+           cfg.n >= Rtx5090Profile::kStratumLargeN &&
+           cfg.k == Rtx5090Profile::kStratumPoolK;
 }
 
 // Watchdog fires when elapsed > period_ms * 3. ARC default budget is 300s

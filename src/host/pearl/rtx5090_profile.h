@@ -119,31 +119,24 @@ struct Rtx5090Profile {
         return (cap_n > 0 && cap_n < kDefaultN) ? cap_n : kDefaultN;
     }
 
-    // Kryptex / HeroMiners-family stratum canonical committed shape.
-    // ARC (Akoya) forces m=n=131072, k=4096, noise_rank=256 for the stratum
-    // pool family; M/N/K/R are validated by the pool against its network mining
-    // params, and a mismatch rejects every share (config_r / config_k / code 23).
-    // See ARC-miner WorkerOrchestrator.cs:360-386. K=4096 satisfies k>=16*rank.
+    // Kryptex / Pearl stratum (§7.1): miner chooses m,n,k,noise_rank within bounds;
+    // the pool validates sanity + internal consistency, not a fixed shape.
+    // Defaults: M=8192, N from VRAM, K=4096, R=128 (PropMiner kernels ship R≤256).
+    // Optional large tuple via PROPMINER_STRATUM_M/N (e.g. 131072) for throughput.
     static constexpr int kStratumPoolK = 4096;
-    static constexpr int kStratumPoolR = 256;
-    static constexpr int kStratumPoolM = 131072;
-    static constexpr int kStratumPoolN = 131072;
+    static constexpr int kStratumPoolR = 128;
+    static constexpr int kStratumLargeM = 131072;
+    static constexpr int kStratumLargeN = 131072;
 };
 
 // Stratum pool PlainProof preamble must pass §7.1 (k >= 1024, etc.).
 // Local Akoya gRPC path may use K=128; Kryptex rejects that as invalid proof.
 inline MiningConfig stratum_pool_mining_config(size_t vram_budget_bytes = 0,
                                               int cap_n = 0) {
-    (void)vram_budget_bytes;
-    (void)cap_n;
     MiningConfig cfg;
-    // Canonical stratum committed shape (must match the pool's network params).
-    cfg.m = Rtx5090Profile::kStratumPoolM;
-    cfg.n = Rtx5090Profile::kStratumPoolN;
+    cfg.m = Rtx5090Profile::kDefaultM;
     cfg.k = Rtx5090Profile::kStratumPoolK;
     cfg.r = Rtx5090Profile::kStratumPoolR;
-    // Escape hatches (mirror ARC AKOYA_MAINNET_M/N / STRATUM_RANK). Overriding
-    // these will make the pool REJECT shares unless they match network params.
     if (const char* menv = std::getenv("PROPMINER_STRATUM_M"); menv && menv[0]) {
         const int req = std::atoi(menv);
         if (req >= Rtx5090Profile::kTileM && req % Rtx5090Profile::kTileM == 0)
@@ -153,6 +146,8 @@ inline MiningConfig stratum_pool_mining_config(size_t vram_budget_bytes = 0,
         const int req = std::atoi(nenv);
         if (req >= Rtx5090Profile::kTileN && req % Rtx5090Profile::kTileN == 0)
             cfg.n = req;
+    } else {
+        cfg.n = Rtx5090Profile::pick_n_for_vram(vram_budget_bytes, cap_n, cfg.k);
     }
     if (const char* kenv = std::getenv("PROPMINER_STRATUM_K"); kenv && kenv[0]) {
         const int req = std::atoi(kenv);
@@ -160,8 +155,10 @@ inline MiningConfig stratum_pool_mining_config(size_t vram_budget_bytes = 0,
     }
     if (const char* renv = std::getenv("PROPMINER_STRATUM_RANK"); renv && renv[0]) {
         const int req = std::atoi(renv);
-        // R must be a multiple of the tile K-block (128) and divide K.
-        if ((req == 128 || req == 256) && cfg.k % req == 0) cfg.r = req;
+        if ((req == 64 || req == 128 || req == 256) && cfg.k % req == 0 &&
+            cfg.k >= 16 * req) {
+            cfg.r = req;
+        }
     }
     cfg.bM = Rtx5090Profile::kTileM;
     cfg.bN = Rtx5090Profile::kTileN;
@@ -180,16 +177,11 @@ static_assert(Rtx5090Profile::full_occupancy(Rtx5090Profile::kDefaultM,
                                              Rtx5090Profile::kDefaultN),
               "Default RTX 5090 shape must launch enough CTAs to fill all SMs");
 
-// Canonical stratum shape must be tile-aligned and satisfy the transcript
-// reduction constraints (R multiple of tile-K, K a multiple of R, k>=16*rank).
-static_assert(Rtx5090Profile::kStratumPoolM % Rtx5090Profile::kTileM == 0,
-              "Stratum M must be a multiple of tile M");
-static_assert(Rtx5090Profile::kStratumPoolN % Rtx5090Profile::kTileN == 0,
-              "Stratum N must be a multiple of tile N");
+// Stratum defaults must satisfy Pearl §7.1 (k bounds vs rank).
 static_assert(Rtx5090Profile::kStratumPoolK % Rtx5090Profile::kTileK == 0,
               "Stratum K must be a multiple of tile K");
 static_assert(Rtx5090Profile::kStratumPoolR % Rtx5090Profile::kTileK == 0,
-              "Stratum noise_rank must be a multiple of tile K (kernel reduce_every_k)");
+              "Stratum noise_rank must be a multiple of tile K");
 static_assert(Rtx5090Profile::kStratumPoolK % Rtx5090Profile::kStratumPoolR == 0,
               "Stratum K must be an integer multiple of noise_rank");
 static_assert(Rtx5090Profile::kStratumPoolK >= 16 * Rtx5090Profile::kStratumPoolR,
