@@ -1,5 +1,6 @@
 #include "bincode_encoder.h"
 
+#include <cstdlib>
 #include <cstring>
 
 namespace pearl {
@@ -71,8 +72,13 @@ std::vector<uint8_t> BincodeEncoder::encode_plain_proof(
     // ARC StratumSession.WriteMatrixMerkleProof uses share.HashA/HashB as wire roots.
     write_matrix_merkle_proof(out, a_proof, hash_a, a_row_indices);
     write_matrix_merkle_proof(out, b_proof, hash_b, b_col_indices);
-    if (cert_version >= 2) {
-        out.push_back(0x00);  // PlainProof V2: moe: None (dense share)
+    // Kryptex object-notify cert_version=2 is a proof *version* label, not the
+    // MoE-fork PlainProof shape. ARC BincodeSerializer has no moe suffix; only
+    // append when PROPMINER_PLAINPROOF_MOE_SUFFIX=1 (future MoE pools).
+    (void)cert_version;
+    if (const char* env = std::getenv("PROPMINER_PLAINPROOF_MOE_SUFFIX");
+        env && (env[0] == '1' || env[0] == 'y' || env[0] == 'Y')) {
+        out.push_back(0x00);  // moe: Option::None
     }
     return out;
 }

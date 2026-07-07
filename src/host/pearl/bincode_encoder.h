@@ -11,8 +11,9 @@ namespace pearl {
 // Bincode PlainProof encoder for Stratum mining.submit (ARC-compatible).
 class BincodeEncoder {
 public:
-    // cert_version >= 2 (MoE fork only): append moe: Option::None (0x00).
-    // Kryptex/suprnova object-notify cert_version=2 still uses dense V1 layout.
+    // cert_version is logged/diagnostic only. Kryptex cert_version=2 uses the
+    // dense ARC PlainProof (no moe suffix). Set PROPMINER_PLAINPROOF_MOE_SUFFIX=1
+    // only for MoE-fork pools that expect the trailing Option::None byte.
     static std::vector<uint8_t> encode_plain_proof(
         const MiningConfig& cfg,
         const OwnedProof& a_proof,
