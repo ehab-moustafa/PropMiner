@@ -53,7 +53,7 @@ struct Rtx5090Profile {
 
     // Default production N cap (Salad/Kryptex Stratum K=4096 VRAM headroom).
     // Set PROPMINER_N_CAP=0 for uncapped VRAM pick (up to 262144), or PROPMINER_N_CAP=N.
-    static constexpr int kDefaultProdNCap = 65536;
+    static constexpr int kDefaultProdNCap = 131072;
 
     // Bench/tune/mine share production N (pick_n_for_vram). Override via PROPMINER_N_CAP.
     static constexpr int kLegacySmallN = 32768;
