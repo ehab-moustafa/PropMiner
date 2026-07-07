@@ -578,7 +578,14 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
     bool launched_graph = false;
     if (can_graph) {
         try {
-            for (int off = 0; off < count; off += graph_batch) {
+            // The captured graph always writes its headers into the first
+            // `graph_batch` pinned slots [0..graph_batch). After each sub-launch
+            // we copy those into their true per-nonce slots [off..off+graph_batch).
+            // The off=0 destination overlaps the scratch region, so we MUST run
+            // off=0 LAST — otherwise a later sub-batch clobbers slots [0..gb) and
+            // every winner with batch_idx < graph_batch rebuilds against the wrong
+            // nonce's tile indices (silent gpu_cpu_jackpot_mismatch drop).
+            for (int off = count - graph_batch; off >= 0; off -= graph_batch) {
                 gemm_.iter_batch_graph_launch(half.workspace, half.stream,
                                               seed_lo_start +
                                               static_cast<uint64_t>(off));
