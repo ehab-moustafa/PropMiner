@@ -804,9 +804,12 @@ bool PearlStratumClient::parse_notify_object(const std::string& params_json) {
     if (obj["cert_version"].is_number()) {
         cert_version = static_cast<int>(obj["cert_version"].to_int());
     }
-    // Kryptex object notify carries the *network* target in `target` — never use
-    // it for share PoW (nbits ~0x1a07ffff). Share difficulty comes from d= / vardiff.
-    auto ja = make_job(job_id, obj["header"].to_string(), "", height, cert_version);
+    // Kryptex / suprnova object notify: `target` is the share threshold (U256 BE).
+    std::string target_hex;
+    if (obj["target"].is_string()) {
+        target_hex = obj["target"].to_string();
+    }
+    auto ja = make_job(job_id, obj["header"].to_string(), target_hex, height, cert_version);
     if (job_cb_) job_cb_(ja, job_id);
     return true;
 }
@@ -836,22 +839,19 @@ proto::JobAssignment PearlStratumClient::make_job(const std::string& job_id,
     if (sigma.size() >= kSigmaHeaderBytes) {
         std::memcpy(ja.sigma.data(), sigma.data(), kSigmaHeaderBytes);
     }
-    const uint32_t share_nbits = share_target_nbits();
-    ja.target_nbits = share_nbits;
+    uint32_t share_nbits = share_target_nbits();
     ja.network_target_nbits = network_nbits_from_sigma(ja.sigma);
     if (ja.network_target_nbits == 0) {
         ja.network_target_nbits = share_nbits;
     }
     if (!target_hex.empty()) {
+        // Object notify (Kryptex/suprnova): pool verifies jackpot hash vs this target.
         const uint32_t wire_nbits = hex_target_to_nbits(target_hex);
-        if (wire_nbits != share_nbits && wire_nbits == ja.network_target_nbits) {
-            static std::atomic<bool> warned{false};
-            if (!warned.exchange(true)) {
-                stratum_log("stratum: ignoring wire network target for share PoW "
-                            "(use PROPMINER_STRATUM_DIFF or mining.set_difficulty)");
-            }
+        if (wire_nbits != 0) {
+            share_nbits = wire_nbits;
         }
     }
+    ja.target_nbits = share_nbits;
     if (last_difficulty_ <= 0.0) {
         static std::atomic<bool> warned_default{false};
         if (!warned_default.exchange(true)) {
