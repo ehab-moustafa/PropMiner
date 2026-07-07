@@ -443,6 +443,10 @@ void PearlStratumClient::flush_stale_pending_submits() {
                       " stratum_id=" + std::to_string(id) +
                       " waited_sec=" + std::to_string(waited) +
                       " (Kryptex :7048 often sends no mining.submit ack)");
+        if (connected_.load() && share_cb_) {
+            share_cb_(true, "silent-kryptex nonce=" + std::to_string(pending.nonce) +
+                            " stratum_id=" + std::to_string(id));
+        }
     }
 }
 
