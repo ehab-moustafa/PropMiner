@@ -133,28 +133,13 @@ std::array<uint8_t, 32> nbits_to_target_le(uint32_t nbits) {
         return t;
     }
     // ARC/Bitcoin compact target: mantissa * 256^(exp-3), stored as uint256 LE.
-    // The legacy placement at bytes (32-exp..) broke GPU uint32 MSW-first
-    // comparisons and made share targets impossibly hard (gpu_hits_30s=0).
-#if defined(__SIZEOF_INT128__)
-    unsigned __int128 val = static_cast<unsigned __int128>(mant);
-    val <<= static_cast<unsigned>(8 * (exp - 3));
-    for (int i = 0; i < 32; ++i) {
-        t[static_cast<size_t>(i)] =
-            static_cast<uint8_t>(static_cast<uint64_t>(val >> (8 * i)) & 0xFF);
+    const int off = exp - 3;
+    if (off < 0 || off + 3 > 32) {
+        return t;
     }
-#else
-    uint64_t lo = mant;
-    uint64_t hi = 0;
-    const int shift_bytes = exp - 3;
-    if (shift_bytes >= 8) {
-        hi = lo << (8 * (shift_bytes - 8));
-        lo = 0;
-    } else if (shift_bytes > 0) {
-        lo <<= (8 * shift_bytes);
-    }
-    std::memcpy(t.data(), &lo, sizeof(lo));
-    std::memcpy(t.data() + 8, &hi, sizeof(hi));
-#endif
+    t[static_cast<size_t>(off)] = static_cast<uint8_t>(mant & 0xFFu);
+    t[static_cast<size_t>(off + 1)] = static_cast<uint8_t>((mant >> 8) & 0xFFu);
+    t[static_cast<size_t>(off + 2)] = static_cast<uint8_t>((mant >> 16) & 0xFFu);
     return t;
 }
 
