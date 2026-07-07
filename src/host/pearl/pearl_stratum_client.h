@@ -65,6 +65,9 @@ public:
 
     std::string last_error() const;
 
+    // Active share difficulty (pool vardiff or PROPMINER_STRATUM_DIFF default).
+    double effective_share_difficulty() const;
+
 private:
     enum class ReadStatus { Line, Timeout, Closed };
 
@@ -95,7 +98,6 @@ private:
     static double read_difficulty_param(const propminer::JsonValue& params);
     void flush_stale_pending_submits();
     void flush_all_pending_submits(const char* reason);
-    double effective_share_difficulty() const;
     uint32_t share_target_nbits() const;
 
     Options opts_;
