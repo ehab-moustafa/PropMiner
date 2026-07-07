@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -94,6 +95,43 @@ inline double resolve_stratum_share_diff_double() {
 inline bool hash_tile_use_pattern_expansion() {
     const char* v = std::getenv("PROPMINER_HASH_TILE_PATTERN");
     return v && (v[0] == '1' || v[0] == 'y' || v[0] == 'Y');
+}
+
+// True when mining the HeroMiners/Kryptex committed stratum shape (131072² @
+// K=4096 R=256). One matmul at this shape can take many seconds on CUDA; ARC
+// forces MatmulsPerPoll=1 and uses a 300s progress watchdog (not 9s).
+inline bool is_canonical_stratum_shape(const MiningConfig& cfg) {
+    return cfg.m >= Rtx5090Profile::kStratumPoolM &&
+           cfg.n >= Rtx5090Profile::kStratumPoolN &&
+           cfg.k == Rtx5090Profile::kStratumPoolK &&
+           cfg.r == Rtx5090Profile::kStratumPoolR;
+}
+
+// Watchdog fires when elapsed > period_ms * 3. ARC default budget is 300s
+// (AKOYA_MINE_WATCHDOG_TIMEOUT_SEC). PropMiner default was 3s*3=9s, which
+// false-trips during one legitimate canonical-shape matmul.
+inline int resolve_watchdog_period_ms(bool canonical_stratum_shape) {
+    if (const char* v = std::getenv("PROPMINER_WATCHDOG_PERIOD_MS"); v && v[0]) {
+        return std::max(1000, std::atoi(v));
+    }
+    return canonical_stratum_shape ? 100000 : 3000;  // 300s vs 9s stall budget
+}
+
+// ARC ComputeMpp: floor(10ms / iter_ms), clamped [1, 16]. At canonical shape
+// without a measured iter_ms, use 1 (one matmul per poll).
+inline int stratum_matmuls_per_poll(const MiningConfig& cfg, double iter_ms = 0.0) {
+    if (!is_canonical_stratum_shape(cfg)) {
+        return Rtx5090Profile::kDefaultMineBatch;
+    }
+    if (iter_ms > 0.0 && std::isfinite(iter_ms)) {
+        int mpp = static_cast<int>(10.0 / iter_ms);
+        if (mpp < 1) mpp = 1;
+        if (mpp > Rtx5090Profile::kMaxMineBatch) {
+            mpp = Rtx5090Profile::kMaxMineBatch;
+        }
+        return mpp;
+    }
+    return 1;
 }
 
 // graph_batch must divide batch evenly for the CUDA graph launch path.

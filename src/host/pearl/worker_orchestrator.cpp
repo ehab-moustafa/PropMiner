@@ -355,6 +355,8 @@ void WorkerOrchestrator::note_share_result(bool accepted) {
 
 void WorkerOrchestrator::start_watchdog_if_needed() {
     if (!cfg_.enable_watchdog || watchdog_) return;
+    const bool canonical = is_canonical_stratum_shape(cfg_.mining_config);
+    const int period_ms = resolve_watchdog_period_ms(canonical);
     watchdog_ = std::make_unique<Watchdog>();
     watchdog_->start([this]() {
         std::cerr << "[watchdog] stall detected — republishing current job\n";
@@ -362,7 +364,12 @@ void WorkerOrchestrator::start_watchdog_if_needed() {
         if (entry.ctx) {
             for (auto& w : workers_) w->set_sigma(entry.ctx);
         }
-    });
+    }, period_ms);
+    if (canonical) {
+        std::cerr << "[orchestrator] Canonical stratum watchdog: period_ms="
+                  << period_ms << " (stall budget ~" << (period_ms * 3 / 1000)
+                  << "s; set PROPMINER_WATCHDOG_PERIOD_MS to override)\n";
+    }
     for (auto& w : workers_) {
         w->set_watchdog(watchdog_.get());
     }
@@ -1077,6 +1084,18 @@ int WorkerOrchestrator::run() {
             std::cerr << " carveout=" << tuned_carveout << "%";
         }
         std::cerr << "\n";
+    }
+
+    if (fix_mining_shape && is_canonical_stratum_shape(tuned_config) &&
+        !mine_batch_env_set()) {
+        tuned_batch = stratum_matmuls_per_poll(tuned_config);
+        if (!graph_batch_env_set()) {
+            tuned_graph_batch = tuned_batch;
+        }
+        normalize_batch_and_graph(tuned_batch, tuned_graph_batch);
+        std::cerr << "[orchestrator] Canonical stratum shape: matmuls_per_poll="
+                  << tuned_batch << " graph_batch=" << tuned_graph_batch
+                  << " (ARC-style; avoids false stall on large M*N iteration)\n";
     }
 
     MiningConfig::warn_if_cluster_m_mismatch(tuned_cluster_m);
