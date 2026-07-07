@@ -137,6 +137,11 @@ private:
     // the current batch runs on the compute stream (PCIe Gen5 conveyor belt).
     void upload_next_seed_async(HalfBuffers& half, uint64_t seed_lo);
 
+    // Upload seed_lo to half.seed_dev_ptr on the compute stream (must precede
+    // iter_batch_graph_launch_ex). The captured-graph H2D path freezes the seed
+    // at capture time and breaks multi sub-batch launches (gpu_cpu_jackpot_mismatch).
+    void upload_seed_for_graph(HalfBuffers& half, uint64_t seed_lo);
+
     int sync_and_scan(HalfBuffers& half, int batch);
     bool wait_for_batch(HalfBuffers& half, int timeout_ms);
     bool handle_trigger(HalfBuffers& half,

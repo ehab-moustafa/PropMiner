@@ -545,14 +545,19 @@ void GpuWorker::prepare_graph(HalfBuffers& half) {
         std::memset(half.host_headers[i], 0, half.header_size);
     }
     check_cuda(cuMemsetD8Async(half.sync, 0, 256, half.stream), "sync clear");
-    // ARC-miner pattern: captured H2D seed copy on the compute stream; seed is
-    // written to workspace pinned host at launch time (no async _ex path).
-    gemm_.iter_batch_graph_prepare(half.workspace, half.stream,
-                                   half.host_headers.data(), batch);
+    // Extended graph path: seed H2D is NOT captured. Each sub-launch uploads
+    // seed_lo to half.seed_dev_ptr then calls iter_batch_graph_launch_ex.
+    // The legacy captured-H2D path replays a stale seed for every sub-batch
+    // when count > graph_batch (duplicate headers at off+3, verify failures).
+    upload_seed_for_graph(half, 0);
+    check_cuda(cuStreamSynchronize(half.stream), "graph capture seed sync");
+    gemm_.iter_batch_graph_prepare_ex(half.workspace, half.stream,
+                                      half.host_headers.data(), batch,
+                                      half.seed_dev_ptr);
     half.graph_ready = true;
     half.graph_batch_count = batch;
     std::fprintf(stderr,
-        "[gpu] cuda graph captured (ARC launch path, batch=%d)\n", batch);
+        "[gpu] cuda graph captured (seed_dev launch path, batch=%d)\n", batch);
     share_trace("graph-ready",
                 "gpu=" + std::to_string(device_index_) +
                 " enabled=1 batch=" + std::to_string(batch));
@@ -586,9 +591,9 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
             // every winner with batch_idx < graph_batch rebuilds against the wrong
             // nonce's tile indices (silent gpu_cpu_jackpot_mismatch drop).
             for (int off = count - graph_batch; off >= 0; off -= graph_batch) {
-                gemm_.iter_batch_graph_launch(half.workspace, half.stream,
-                                              seed_lo_start +
-                                              static_cast<uint64_t>(off));
+                upload_seed_for_graph(
+                    half, seed_lo_start + static_cast<uint64_t>(off));
+                gemm_.iter_batch_graph_launch_ex(half.workspace, half.stream);
                 check_cuda(cuStreamSynchronize(half.stream),
                            "graph sub-batch sync");
                 for (int i = 0; i < graph_batch; ++i) {
@@ -642,6 +647,20 @@ void GpuWorker::upload_next_seed_async(HalfBuffers& half, uint64_t seed_lo) {
                 "gpu=" + std::to_string(device_index_) +
                 " half=" + half_tag +
                 " seed_lo=" + u64_hex(seed_lo));
+}
+
+void GpuWorker::upload_seed_for_graph(HalfBuffers& half, uint64_t seed_lo) {
+    if (!half.pinned_seed_host || !half.seed_dev_ptr) {
+        throw std::runtime_error("missing graph seed buffers");
+    }
+    *half.pinned_seed_host = seed_lo;
+    cudaError_t e = cudaMemcpyAsync(half.seed_dev_ptr, half.pinned_seed_host,
+                                    sizeof(uint64_t), cudaMemcpyHostToDevice,
+                                    reinterpret_cast<cudaStream_t>(half.stream));
+    if (e != cudaSuccess) {
+        check_cuda(CUDA_ERROR_UNKNOWN,
+                   (std::string("graph seed h2d: ") + cudaGetErrorString(e)).c_str());
+    }
 }
 
 int GpuWorker::sync_and_scan(HalfBuffers& half, int batch) {
