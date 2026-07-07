@@ -74,9 +74,14 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
     stream = s;
     size_t a_bytes = static_cast<size_t>(cfg.m) * cfg.k;
     // In pure-miner mode the kernel accumulates the transcript in registers and
-    // never materialises C in HBM.  We still allocate a small C buffer because
-    // the C API install_params expects a non-null pointer; it is not read.
-    size_t c_bytes = static_cast<size_t>(cfg.m) * cfg.n * sizeof(uint16_t);
+    // never materialises C in HBM (skip_c_store=true; the headless transcript
+    // launch is even passed C=nullptr). We only need a non-null placeholder so
+    // install_params accepts the pointer — it is NEVER read or written. Do NOT
+    // size this M*N: at the canonical stratum shape (M=N=131072) that is 32 GiB
+    // and OOMs the whole GPU. One CTA tile (with a small floor) is plenty.
+    size_t c_tile = static_cast<size_t>(cfg.bM ? cfg.bM : 128) *
+                    static_cast<size_t>(cfg.bN ? cfg.bN : 256) * sizeof(uint16_t);
+    size_t c_bytes = c_tile < (1u << 20) ? (1u << 20) : c_tile;
     size_t eal_bytes = static_cast<size_t>(cfg.m) * cfg.r;
     size_t ear_r_bytes = static_cast<size_t>(cfg.k) * cfg.r;
     size_t ear_k_bytes = static_cast<size_t>(cfg.r) * cfg.k;
