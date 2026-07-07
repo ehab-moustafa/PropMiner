@@ -338,6 +338,8 @@ PEARL_CAPI_EXPORT int pearl_capi_noise_gen(int R,
       run_noise_generation<64, 64>(params, stream);
     } else if (R == 128) {
       run_noise_generation<128, 64>(params, stream);
+    } else if (R == 256) {
+      run_noise_generation<256, 64>(params, stream);
     } else {
       return -4;
     }

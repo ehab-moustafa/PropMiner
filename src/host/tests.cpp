@@ -343,9 +343,16 @@ static void test_rtx5090_wave_alignment() {
     EXPECT(Rtx5090Profile::tiles(prod_cfg.m, prod_cfg.n) == 65536);
     auto capped_prod = rtx5090_mining_config(k32GbMinusReserve, 131072);
     EXPECT(capped_prod.n == 131072);
+    // Canonical stratum committed shape: M=N=131072, K=4096, R=256 (must match
+    // the pool's network mining params or every share rejects). Independent of
+    // the VRAM budget / cap_n args (those no longer shrink the committed shape).
     auto stratum_capped = stratum_pool_mining_config(k32GbMinusReserve, 131072);
+    EXPECT(stratum_capped.m == 131072);
     EXPECT(stratum_capped.n == 131072);
     EXPECT(stratum_capped.k == Rtx5090Profile::kStratumPoolK);
+    EXPECT(stratum_capped.k == 4096);
+    EXPECT(stratum_capped.r == Rtx5090Profile::kStratumPoolR);
+    EXPECT(stratum_capped.r == 256);
     auto cfg = rtx5090_mining_config(0);
     EXPECT(cfg.m == 8192);
     EXPECT(cfg.n >= 32768);
