@@ -20,6 +20,9 @@ struct PeriodicPattern {
     uint32_t stride1 = 1, length1 = 1;
     uint32_t stride2 = 1, length2 = 1;
 
+    // Canonical sorted indices passed to from_indices (used for proof opens).
+    std::vector<uint32_t> materialized_indices;
+
     static constexpr size_t kSerializedSize = 6;
 
     // Identity pattern: size 1 (single element).
@@ -46,16 +49,6 @@ struct PeriodicPattern {
 };
 
 class HostSignalHeader;
-
-// Open the committed hash-tile rows/cols for a GPU trigger.  The pool verifier
-// expands rows_pattern/cols_pattern from the hash-tile origin (Akoya
-// RowsPattern.IndicesWithOffset); deduplicating register row/col bytes separately
-// (extract_indices) can yield the wrong h×w cross-product when a thread owns
-// more than one pattern cell.
-void expand_hash_tile_indices(const HostSignalHeader& hdr,
-                              const MiningConfig& cfg,
-                              std::vector<uint32_t>& a_rows,
-                              std::vector<uint32_t>& b_cols);
 
 // Pearl mining configuration. Default shape targets H100/RTX 5090 class GPUs.
 struct MiningConfig {
@@ -115,6 +108,16 @@ struct MiningConfig {
         return static_cast<uint32_t>((matrix_bytes + bytes_per_block - 1) / bytes_per_block);
     }
 };
+
+// Open the committed hash-tile rows/cols for a GPU trigger.  The pool verifier
+// expands rows_pattern/cols_pattern from the hash-tile origin (Akoya
+// RowsPattern.IndicesWithOffset); deduplicating register row/col bytes separately
+// (extract_indices) can yield the wrong h×w cross-product when a thread owns
+// more than one pattern cell.
+void expand_hash_tile_indices(const HostSignalHeader& hdr,
+                              const MiningConfig& cfg,
+                              std::vector<uint32_t>& a_rows,
+                              std::vector<uint32_t>& b_cols);
 
 struct Job {
     std::array<uint8_t, kSigmaHeaderBytes> sigma{};

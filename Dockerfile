@@ -88,7 +88,8 @@ RUN --mount=type=cache,id=propminer-ccache,target=/ccache \
     --mount=type=cache,id=propminer-gemm-build,target=/root/PropMiner/third_party/pearl-gemm/csrc/capi/build \
     --mount=type=cache,id=propminer-rust-build,target=/root/PropMiner/build_runtime/pearl_mining_capi \
     cmake -S . -B build_runtime ${CMAKE_BUILD_ARGS} -DPROPMINER_BUILD_HOST=ON \
-    && cmake --build build_runtime --target propminer -j"$(nproc)" \
+    && cmake --build build_runtime --target propminer propminer_ref_tests -j"$(nproc)" \
+    && ./build_runtime/propminer_ref_tests \
     && ccache -s
 
 # Audit: all cubins must be sm_120a only (RTX 5090 native).

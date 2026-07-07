@@ -204,6 +204,14 @@ static void test_expand_hash_tile_indices() {
     expand_hash_tile_indices(h2, cfg, rows, cols);
     EXPECT(rows[0] == 128u);
     EXPECT(rows[1] == 136u);
+
+    // min register col=64 must snap to local origin 64, not 0 (pattern offset 64).
+    hdr[66] = 0;
+    hdr[322] = 64;
+    for (int i = 1; i < 16; ++i) hdr[322 + i] = static_cast<uint8_t>(64 + i);
+    HostSignalHeader h3(hdr);
+    expand_hash_tile_indices(h3, cfg, rows, cols);
+    EXPECT(cols[0] == 576u);  // 512 + 64
 }
 
 static void test_host_signal_header_index_extraction() {

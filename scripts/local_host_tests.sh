@@ -19,6 +19,7 @@ echo "===== PropMiner host-only tests (no GPU) ====="
   src/host/pearl/pearl_types.cpp \
   src/host/pearl/job_key.cpp \
   src/host/pearl/protobuf_encoder.cpp \
+  src/host/pearl/bincode_encoder.cpp \
   src/host/pearl/proto/mining_v2.cpp \
   src/host/pearl/host_signal_header.cpp \
   src/host/pearl/pow_target_utils.cpp \

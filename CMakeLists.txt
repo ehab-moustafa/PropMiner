@@ -258,12 +258,18 @@ add_executable(propminer_ref_tests
     src/host/pearl/pearl_types.cpp
     src/host/pearl/job_key.cpp
     src/host/pearl/protobuf_encoder.cpp
+    src/host/pearl/bincode_encoder.cpp
     src/host/pearl/proto/mining_v2.cpp
     src/host/pearl/host_signal_header.cpp
+    src/host/pearl/pow_target_utils.cpp
 )
 target_include_directories(propminer_ref_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host
     ${CMAKE_CURRENT_SOURCE_DIR}/src/host/pearl
+)
+target_compile_definitions(propminer_ref_tests PRIVATE
+    PROP_MINER_HOST_ONLY_TESTS=1
+    PROP_MINER_DISABLE_RUST_CRYPTO=1
 )
 target_link_libraries(propminer_ref_tests PRIVATE
     pthread

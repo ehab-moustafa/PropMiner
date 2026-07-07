@@ -61,6 +61,7 @@ PeriodicPattern PeriodicPattern::from_indices(const std::vector<uint32_t>& patte
     out.stride0 = shape[0].stride; out.length0 = shape[0].length;
     out.stride1 = shape[1].stride; out.length1 = shape[1].length;
     out.stride2 = shape[2].stride; out.length2 = shape[2].length;
+    out.materialized_indices = pattern;
     return out;
 }
 
@@ -117,6 +118,9 @@ uint64_t MiningConfig::difficulty_adjustment_factor() const {
 }
 
 std::vector<uint32_t> PeriodicPattern::expand_offsets() const {
+    if (!materialized_indices.empty()) {
+        return materialized_indices;
+    }
     std::vector<uint32_t> indices = {0};
     const uint32_t strides[3] = {stride0, stride1, stride2};
     const uint32_t lengths[3] = {length0, length1, length2};
@@ -147,10 +151,19 @@ uint32_t snap_hash_tile_origin(uint8_t min_reg,
         uint32_t cand = min_u - off;
         cand = (cand / grid_step) * grid_step;
         for (uint32_t o : pattern_offs) {
-            if (cand + o == min_u) {
+            if (cand + o != min_u) continue;
+            if (best == UINT32_MAX) {
+                best = cand;
+            } else if (grid_step > 2) {
+                // Wide col tiles (n_step=64): min at a tile boundary (e.g. 64)
+                // can match origin 0 via pattern offset 64; prefer origin 64.
+                best = std::max(best, cand);
+            } else {
+                // Narrow row tiles (m_step=2): prefer the lower origin (e.g. 0
+                // for min_row=8 via pattern offset 8, not origin 8).
                 best = std::min(best, cand);
-                break;
             }
+            break;
         }
     }
     if (best == UINT32_MAX) {
