@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <thread>
@@ -42,16 +43,28 @@ namespace {
     }
 
     // Hot-path batch wait: tight cudaEventQuery spin, then yield (no sleep).
-    bool spin_wait_batch_event(cudaEvent_t event, Watchdog* watchdog) {
+    // Returns true when the batch completes. Returns false if `max_wait_ms` > 0
+    // and the batch has not completed within that wall time — signalling a
+    // wedged GPU stream (100% util, no progress) that the caller must recover
+    // from by restarting the process. `max_wait_ms` <= 0 spins indefinitely.
+    bool spin_wait_batch_event(cudaEvent_t event, Watchdog* watchdog,
+                               int64_t max_wait_ms) {
         constexpr int kSpinTight = 4096;
         constexpr int kYieldEvery = 64;
         int spins = 0;
+        const auto start = std::chrono::steady_clock::now();
         while (true) {
             cudaError_t e = cudaEventQuery(event);
             if (e == cudaSuccess) return true;
             if (e != cudaErrorNotReady) {
                 throw std::runtime_error(
                     std::string("cudaEventQuery: ") + cudaGetErrorString(e));
+            }
+            if (max_wait_ms > 0 && (spins & 0x3FFF) == 0) {
+                const auto waited = std::chrono::duration_cast<
+                    std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - start).count();
+                if (waited > max_wait_ms) return false;
             }
             if (watchdog && (spins & 0x3FFF) == 0) {
                 watchdog->heartbeat();
@@ -729,10 +742,16 @@ bool GpuWorker::wait_for_batch(HalfBuffers& half, int timeout_ms) {
         return false;
     }
     if (timeout_ms <= 0) {
+        const int64_t stall_ms = stall_restart_ms();
         try {
-            return spin_wait_batch_event(half.batch_done_event, watchdog_);
+            // Returns false only on a stall (max_wait_ms exceeded); propagate so
+            // the run loop can restart the process instead of block-syncing on a
+            // wedged stream (which would hang forever).
+            return spin_wait_batch_event(half.batch_done_event, watchdog_,
+                                         stall_ms);
         } catch (const std::exception& ex) {
             std::fprintf(stderr, "[gpu] batch spin-wait failed: %s\n", ex.what());
+            if (stall_ms > 0) return false;  // treat CUDA error as a stall too
             CUDA_CHECK(cudaEventSynchronize(half.batch_done_event));
             return true;
         }
@@ -1026,9 +1045,20 @@ void GpuWorker::run() {
         global_iter += batch;
         total_iters_ += batch;
 
-        // Spin-wait for the previously-launched batch on `other`.
+        // Spin-wait for the previously-launched batch on `other`. A false
+        // return means the batch exceeded PROPMINER_STALL_RESTART_MS — the GPU
+        // stream is wedged (100% util, no progress) and cannot be recovered
+        // in-process. Exit so the supervisor relaunches with a clean context.
         if (!wait_for_batch(*other, 0)) {
-            check_cuda(cuStreamSynchronize(other->stream), "sync batch");
+            const long long stall_ms = stall_restart_ms();
+            std::fprintf(stderr,
+                "[gpu] STALL: batch on gpu=%d exceeded %lld ms with no progress "
+                "(wedged CUDA stream). Exiting for supervisor restart "
+                "(set PROPMINER_STALL_RESTART_MS=0 to disable).\n",
+                device_index_, stall_ms);
+            std::fflush(stderr);
+            // _Exit avoids hanging in CUDA static teardown on a dead context.
+            std::_Exit(42);
         }
         const auto winners = scan_winners(*other, batch);
         gpu_hits_since_log += winners.size();
