@@ -12,7 +12,7 @@ namespace pearl {
 // RTX 5090 production tuning is controlled via environment variables.
 // Defaults below match scripts/salad/kryptex.env.example — change env at runtime
 // without rebuilding; change rtx5090_profile.h when updating shipped defaults.
-// Production N cap default: kDefaultProdNCap (65536); PROPMINER_N_CAP=0 = uncapped.
+// Production N cap default: kDefaultProdNCap (131072); PROPMINER_N_CAP=0 = uncapped.
 
 inline bool env_is_set(const char* name) {
     const char* v = std::getenv(name);
@@ -52,7 +52,7 @@ inline bool cluster_m_env_set() { return env_is_set("PEARL_GEMM_CONSUMER_CLUSTER
 inline bool stratum_diff_env_set() { return env_is_set("PROPMINER_STRATUM_DIFF"); }
 inline bool n_cap_env_set() { return env_is_set("PROPMINER_N_CAP"); }
 
-// Default N=65536 (Salad VRAM headroom with Stratum K=4096). PROPMINER_N_CAP=0 = uncapped.
+// Default N=131072 (~10 GiB VRAM with Stratum K=4096). PROPMINER_N_CAP=0 = uncapped.
 inline int resolve_n_cap() {
     if (const char* v = std::getenv("PROPMINER_N_CAP"); v && v[0]) {
         if (std::strcmp(v, "0") == 0) return 0;

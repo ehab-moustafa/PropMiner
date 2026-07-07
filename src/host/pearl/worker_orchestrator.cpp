@@ -688,6 +688,7 @@ void WorkerOrchestrator::share_sender_thread_func() {
                                      std::to_string(raw.nonce));
                 continue;
             }
+            shares_found_.fetch_add(1);
             // Drop if vardiff tightened while share was queued (ARC ShareTargetGuard).
             {
                 const uint32_t mined = raw.installed_target_nbits
@@ -720,9 +721,10 @@ void WorkerOrchestrator::share_sender_thread_func() {
                                          std::to_string(raw.nonce));
                     continue;
                 }
-                // cert_version in mining.notify is pool metadata; suprnova/Kryptex
-                // PlainProof v1.0 wire has no MoE suffix (ARC-miner path).
-                proof = builder.build_stratum_plain_proof(raw, *raw.sigma_ctx, 1);
+                const int cert_version =
+                    stratum_client_->cert_version_for_job(job_id);
+                proof = builder.build_stratum_plain_proof(
+                    raw, *raw.sigma_ctx, cert_version);
             } else {
                 proof = builder.build(raw, *raw.sigma_ctx);
             }
@@ -805,7 +807,6 @@ void WorkerOrchestrator::heartbeat_thread_func() {
 }
 
 void WorkerOrchestrator::submit(const ShareFound& share) {
-    shares_found_.fetch_add(1);
     share_log("found",
               "nonce=" + std::to_string(share.nonce) +
               " rows=" + std::to_string(share.a_row_indices.size()) +

@@ -26,6 +26,10 @@ public:
     void extract_indices(std::vector<uint32_t>& a_rows,
                          std::vector<uint32_t>& b_cols) const;
 
+    // Minimum register-local row/col byte from the winning thread.
+    uint8_t min_register_row() const;
+    uint8_t min_register_col() const;
+
 private:
     const uint8_t* data_ = nullptr;
     size_t size_ = 0;

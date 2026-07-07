@@ -1,6 +1,9 @@
 #include "pearl_types.h"
 
+#include "host_signal_header.h"
+
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -111,6 +114,86 @@ uint64_t MiningConfig::difficulty_adjustment_factor() const {
     return static_cast<uint64_t>(rows_pattern.size()) *
            static_cast<uint64_t>(cols_pattern.size()) *
            static_cast<uint64_t>(dot_product_length());
+}
+
+std::vector<uint32_t> PeriodicPattern::expand_offsets() const {
+    std::vector<uint32_t> indices = {0};
+    const uint32_t strides[3] = {stride0, stride1, stride2};
+    const uint32_t lengths[3] = {length0, length1, length2};
+    for (int dim = 0; dim < 3; ++dim) {
+        const uint32_t stride = strides[dim];
+        const uint32_t length = lengths[dim];
+        if (length <= 1) continue;
+        std::vector<uint32_t> next;
+        next.reserve(indices.size() * length);
+        for (uint32_t base : indices) {
+            for (uint32_t i = 0; i < length; ++i)
+                next.push_back(base + i * stride);
+        }
+        indices.swap(next);
+    }
+    return indices;
+}
+
+namespace {
+
+uint32_t snap_hash_tile_origin(uint8_t min_reg,
+                               const std::vector<uint32_t>& pattern_offs,
+                               uint32_t grid_step) {
+    const uint32_t min_u = static_cast<uint32_t>(min_reg);
+    uint32_t best = UINT32_MAX;
+    for (uint32_t off : pattern_offs) {
+        if (min_u < off) continue;
+        uint32_t cand = min_u - off;
+        cand = (cand / grid_step) * grid_step;
+        for (uint32_t o : pattern_offs) {
+            if (cand + o == min_u) {
+                best = std::min(best, cand);
+                break;
+            }
+        }
+    }
+    if (best == UINT32_MAX) {
+        return (min_u / grid_step) * grid_step;
+    }
+    return best;
+}
+
+}  // namespace
+
+void expand_hash_tile_indices(const HostSignalHeader& hdr,
+                              const MiningConfig& cfg,
+                              std::vector<uint32_t>& a_rows,
+                              std::vector<uint32_t>& b_cols) {
+    const uint32_t m_step = cfg.rows_pattern.size();
+    const uint32_t n_step = cfg.cols_pattern.size();
+    if (m_step == 0 || n_step == 0) {
+        throw std::runtime_error("invalid rows/cols pattern size");
+    }
+
+    const auto row_offs = cfg.rows_pattern.expand_offsets();
+    const auto col_offs = cfg.cols_pattern.expand_offsets();
+    if (row_offs.empty() || col_offs.empty()) {
+        throw std::runtime_error("empty rows/cols pattern");
+    }
+
+    const uint32_t cta_r =
+        hdr.tile_row_coord() * static_cast<uint32_t>(hdr.mma_tile_m());
+    const uint32_t cta_c =
+        hdr.tile_col_coord() * static_cast<uint32_t>(hdr.mma_tile_n());
+    const uint32_t local_r =
+        snap_hash_tile_origin(hdr.min_register_row(), row_offs, m_step);
+    const uint32_t local_c =
+        snap_hash_tile_origin(hdr.min_register_col(), col_offs, n_step);
+    const uint32_t origin_r = cta_r + local_r;
+    const uint32_t origin_c = cta_c + local_c;
+
+    a_rows.clear();
+    b_cols.clear();
+    a_rows.reserve(row_offs.size());
+    b_cols.reserve(col_offs.size());
+    for (uint32_t r : row_offs) a_rows.push_back(origin_r + r);
+    for (uint32_t c : col_offs) b_cols.push_back(origin_c + c);
 }
 
 MiningConfig MiningConfig::conservative() {

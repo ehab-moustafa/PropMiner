@@ -750,11 +750,27 @@ bool GpuWorker::process_share_trigger_impl(const ShareTriggerJob& job) {
 
     std::vector<uint32_t> a_rows, b_cols;
     try {
-        hdr.extract_indices(a_rows, b_cols);
-    } catch (...) {
+        expand_hash_tile_indices(hdr, ctx.job().config, a_rows, b_cols);
+    } catch (const std::exception& ex) {
         share_log("rebuild-fail", "nonce=" + std::to_string(job.nonce) +
-                                  " reason=extract_indices");
+                                  " reason=hash_tile_indices err=" + ex.what());
         return false;
+    }
+    if (share_trace_enabled()) {
+        std::vector<uint32_t> legacy_rows, legacy_cols;
+        try {
+            hdr.extract_indices(legacy_rows, legacy_cols);
+            if (legacy_rows.size() != a_rows.size() ||
+                legacy_cols.size() != b_cols.size()) {
+                share_trace("hash-tile-indices",
+                            "nonce=" + std::to_string(job.nonce) +
+                            " pattern=" + std::to_string(a_rows.size()) + "x" +
+                            std::to_string(b_cols.size()) +
+                            " extract=" + std::to_string(legacy_rows.size()) + "x" +
+                            std::to_string(legacy_cols.size()));
+            }
+        } catch (...) {
+        }
     }
 
     // The intermediate iters in this batch overwrote dA. Re-derive dA for the

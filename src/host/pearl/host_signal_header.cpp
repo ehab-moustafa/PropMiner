@@ -68,6 +68,24 @@ std::array<uint32_t, 8> HostSignalHeader::header_pow_target() const {
     return words;
 }
 
+uint8_t HostSignalHeader::min_register_row() const {
+    const uint16_t n = num_registers_per_thread();
+    if (n == 0 || n > MAX_REGS) return 0;
+    uint8_t min_r = 255;
+    for (int i = 0; i < n; ++i)
+        min_r = std::min(min_r, data_[OFF_THREAD_ROWS + i]);
+    return min_r;
+}
+
+uint8_t HostSignalHeader::min_register_col() const {
+    const uint16_t n = num_registers_per_thread();
+    if (n == 0 || n > MAX_REGS) return 0;
+    uint8_t min_c = 255;
+    for (int i = 0; i < n; ++i)
+        min_c = std::min(min_c, data_[OFF_THREAD_COLS + i]);
+    return min_c;
+}
+
 void HostSignalHeader::extract_indices(std::vector<uint32_t>& a_rows,
                                        std::vector<uint32_t>& b_cols) const {
     uint16_t n = num_registers_per_thread();

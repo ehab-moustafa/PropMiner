@@ -152,6 +152,60 @@ static void test_reference_claimed_hash_deterministic() {
     EXPECT(!std::all_of(h1.begin(), h1.end(), [](uint8_t b){ return b == 0; }));
 }
 
+static void test_periodic_pattern_expand_offsets() {
+    const auto rows = PeriodicPattern::default_rows().expand_offsets();
+    EXPECT(rows.size() == 2u);
+    EXPECT(rows[0] == 0u);
+    EXPECT(rows[1] == 8u);
+
+    const auto cols = PeriodicPattern::default_cols().expand_offsets();
+    EXPECT(cols.size() == 64u);
+    EXPECT(cols[0] == 0u);
+    EXPECT(cols[1] == 1u);
+    EXPECT(cols[2] == 8u);
+    EXPECT(cols[3] == 9u);
+}
+
+static void test_expand_hash_tile_indices() {
+    std::vector<uint8_t> hdr(1024, 0);
+    auto put32 = [&](int off, uint32_t v) {
+        hdr[off]     = static_cast<uint8_t>(v);
+        hdr[off + 1] = static_cast<uint8_t>(v >> 8);
+        hdr[off + 2] = static_cast<uint8_t>(v >> 16);
+        hdr[off + 3] = static_cast<uint8_t>(v >> 24);
+    };
+    put32(0, 1);
+    put32(40, 1);
+    put32(44, 2);
+    put32(592, 128);
+    put32(596, 256);
+    hdr[64] = 16;
+    for (int i = 0; i < 16; ++i) {
+        hdr[66 + i] = static_cast<uint8_t>((i / 8) * 8);
+        hdr[322 + i] = static_cast<uint8_t>(i);
+    }
+
+    MiningConfig cfg;
+    HostSignalHeader h(hdr);
+    std::vector<uint32_t> rows, cols;
+    expand_hash_tile_indices(h, cfg, rows, cols);
+    EXPECT(rows.size() == cfg.rows_pattern.size());
+    EXPECT(cols.size() == cfg.cols_pattern.size());
+    EXPECT(rows[0] == 128u);
+    EXPECT(rows[1] == 136u);
+    EXPECT(cols[0] == 512u);
+    EXPECT(cols[1] == 513u);
+    EXPECT(cols[2] == 520u);
+
+    // min register row=8 must snap to local origin 0 (pattern rows {0,8}), not 8.
+    hdr[66] = 8;
+    hdr[322] = 0;
+    HostSignalHeader h2(hdr);
+    expand_hash_tile_indices(h2, cfg, rows, cols);
+    EXPECT(rows[0] == 128u);
+    EXPECT(rows[1] == 136u);
+}
+
 static void test_host_signal_header_index_extraction() {
     // Build a synthetic header matching the documented layout.
     // Status = 1 (trigger), tile coord (1, 2), 16 registers/thread.
@@ -272,16 +326,16 @@ static void test_rtx5090_wave_alignment() {
     EXPECT(Rtx5090Profile::wave_aligned(8192, 43520));
     EXPECT(!Rtx5090Profile::wave_aligned(8192, 32768));
     EXPECT(Rtx5090Profile::wave_aligned_n_at_least(8192, 32768) >= 43520);
-    // 32 GB minus reserve: uncapped (cap_n=0) picks N=262144; default prod cap is 65536.
+    // 32 GB minus reserve: uncapped (cap_n=0) picks N=262144; default prod cap is 131072.
     constexpr size_t k32GbMinusReserve = (28ULL << 30);
     auto prod_cfg = rtx5090_mining_config(k32GbMinusReserve, 0);
     EXPECT(prod_cfg.m == 8192);
     EXPECT(prod_cfg.n == 262144);
     EXPECT(Rtx5090Profile::tiles(prod_cfg.m, prod_cfg.n) == 65536);
-    auto capped_prod = rtx5090_mining_config(k32GbMinusReserve, 65536);
-    EXPECT(capped_prod.n == 65536);
-    auto stratum_capped = stratum_pool_mining_config(k32GbMinusReserve, 65536);
-    EXPECT(stratum_capped.n == 65536);
+    auto capped_prod = rtx5090_mining_config(k32GbMinusReserve, 131072);
+    EXPECT(capped_prod.n == 131072);
+    auto stratum_capped = stratum_pool_mining_config(k32GbMinusReserve, 131072);
+    EXPECT(stratum_capped.n == 131072);
     EXPECT(stratum_capped.k == Rtx5090Profile::kStratumPoolK);
     auto cfg = rtx5090_mining_config(0);
     EXPECT(cfg.m == 8192);
@@ -550,6 +604,8 @@ int main() {
     test_reference_merkle_tree();
     test_reference_audit_index_derive();
     test_reference_claimed_hash_deterministic();
+    test_periodic_pattern_expand_offsets();
+    test_expand_hash_tile_indices();
     test_host_signal_header_index_extraction();
     test_pow_target_stratum_nbits_roundtrip();
     test_tighter_target_nbits();

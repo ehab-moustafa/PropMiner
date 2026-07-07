@@ -40,7 +40,22 @@ struct PeriodicPattern {
     std::array<uint8_t, kSerializedSize> to_bytes() const;
 
     uint32_t size() const { return length0 * length1 * length2; }
+
+    // Zero-rooted index list matching C# PeriodicPattern enumeration.
+    std::vector<uint32_t> expand_offsets() const;
 };
+
+class HostSignalHeader;
+
+// Open the committed hash-tile rows/cols for a GPU trigger.  The pool verifier
+// expands rows_pattern/cols_pattern from the hash-tile origin (Akoya
+// RowsPattern.IndicesWithOffset); deduplicating register row/col bytes separately
+// (extract_indices) can yield the wrong h×w cross-product when a thread owns
+// more than one pattern cell.
+void expand_hash_tile_indices(const HostSignalHeader& hdr,
+                              const MiningConfig& cfg,
+                              std::vector<uint32_t>& a_rows,
+                              std::vector<uint32_t>& b_cols);
 
 // Pearl mining configuration. Default shape targets H100/RTX 5090 class GPUs.
 struct MiningConfig {
