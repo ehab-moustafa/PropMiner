@@ -170,10 +170,14 @@ double parse_password_difficulty(const std::string& password) {
 }  // namespace
 
 PearlStratumClient::PearlStratumClient(const Options& opts) : opts_(opts) {
-    // pearl/v1 (Kryptex :7048) requires positional submit; object form is rejected.
-    use_object_submit_ = false;
+    // Default object submit for Kryptex object-notify ({job_id, header, cert_version}).
+    // pearl/v1 challenge pools switch to positional on handshake (see pearl_v1_).
+    use_object_submit_ = true;
     if (const char* env = std::getenv("PROPMINER_STRATUM_OBJECT_SUBMIT"); env && env[0]) {
         use_object_submit_ = (env[0] == '1' || env[0] == 'y' || env[0] == 'Y');
+        if (env[0] == '0' || env[0] == 'n' || env[0] == 'N') {
+            use_object_submit_ = false;
+        }
     }
     if (const char* d = std::getenv("PROPMINER_STRATUM_DIFF"); d && d[0]) {
         const double req = std::atof(d);
@@ -439,6 +443,7 @@ PearlStratumClient::HandshakeResult PearlStratumClient::try_challenge_handshake(
 
     stratum_log("stratum: pearl/v1 challenge-first pool detected");
     pearl_v1_.store(true);
+    use_object_submit_ = false;
 
     const int resp_id = 1;
     request_id_ = resp_id;
@@ -785,6 +790,14 @@ void PearlStratumClient::handle_message(const std::string& line) {
 bool PearlStratumClient::parse_notify_object(const std::string& params_json) {
     auto obj = propminer::JsonValue::parse(params_json);
     if (!obj["job_id"].is_string() || !obj["header"].is_string()) return false;
+    if (!pearl_v1_.load()) {
+        // Kryptex / Pearl-stratum object notify → object mining.submit (ARC path).
+        if (!use_object_submit_) {
+            use_object_submit_ = true;
+            stratum_log("stratum: object-notify dialect → object submit "
+                        "{job_id, plain_proof} (not pearl/v1 positional)");
+        }
+    }
     const int64_t height = obj["height"].is_number() ? obj["height"].to_int() : 0;
     const std::string job_id = obj["job_id"].to_string();
     int cert_version = 1;
@@ -800,6 +813,9 @@ bool PearlStratumClient::parse_notify_object(const std::string& params_json) {
 
 bool PearlStratumClient::parse_notify_array(const propminer::JsonValue& params) {
     if (params.size() < 4) return false;
+    if (pearl_v1_.load()) {
+        use_object_submit_ = false;
+    }
     const std::string job_id = params[0].to_string();
     const std::string header = params[2].to_string();
     const int64_t height = params[3].is_number() ? params[3].to_int() : 0;
