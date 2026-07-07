@@ -27,10 +27,13 @@ CUDA_LIB64="/usr/local/cuda/lib64"
 PM_DIR="/opt/propminer"
 NVIDIA_REDIST="https://developer.download.nvidia.com/compute/cuda/redist"
 
+# Kryptex Pearl is Stratum-only (:7048). Do not default to gRPC :443 (no such endpoint).
 POOL="${PROPMINER_POOL:-}"
-if [[ -z "${POOL}" ]]; then
-    POOL="${PROPMINER_POOL_FALLBACK:-prl.kryptex.network:443,prl-eu.kryptex.network:443}"
-fi
+export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
+export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl-eu.kryptex.network:7048,prl.kryptex.network:7048}"
+export PROPMINER_STRATUM_PASSWORD="${PROPMINER_STRATUM_PASSWORD:-x}"
+export PROPMINER_VERBOSE_STRATUM="${PROPMINER_VERBOSE_STRATUM:-1}"
+export PROPMINER_VERBOSE_SHARES="${PROPMINER_VERBOSE_SHARES:-1}"
 
 fail_keepalive() {
     echo "[salad] FATAL: $*" >&2
@@ -144,19 +147,25 @@ resolve_wallet
 
 GPUS="${PROPMINER_GPUS:-0}"
 RESTART_ON_EXIT="${PROPMINER_RESTART_ON_EXIT:-1}"
-MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --pool "${POOL}" --wallet "${WALLET_RESOLVED}")
+MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --wallet "${WALLET_RESOLVED}")
+if [[ -n "${POOL}" ]]; then
+    MINER_ARGS+=(--pool "${POOL}")
+fi
 if [[ -n "${WORKER_RESOLVED}" ]]; then
     MINER_ARGS+=(--worker "${WORKER_RESOLVED}")
 fi
 
 echo "[salad] Starting propminer (version=$(cat "${PM_DIR}/VERSION" 2>/dev/null || echo unknown))"
 echo "[salad] wallet=${WALLET_RESOLVED} worker=${WORKER_RESOLVED:-<default>}"
+echo "[salad] stratum=${PROPMINER_STRATUM_POOL} use_stratum=${PROPMINER_USE_STRATUM}"
+echo "[salad] miner logs also in /tmp/propminer.log (Salad UI shows stdout below)"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null || true
 
 run_once() {
-    # Avoid pipefail + set -e killing the restart loop when propminer exits non-zero.
+    # Tee to stdout so Salad log UI shows pool/challenge/hashrate lines (not only
+    # the bootstrap [salad] echoes). Full log retained in /tmp/propminer.log.
     (cd "${PM_DIR}" && LD_LIBRARY_PATH="${LD_LIBRARY_PATH}" LD_PRELOAD="${LD_PRELOAD:-}" \
-        ./propminer "${MINER_ARGS[@]}") >> /tmp/propminer.log 2>&1
+        ./propminer "${MINER_ARGS[@]}" 2>&1 | tee -a /tmp/propminer.log)
 }
 
 if [[ "${RESTART_ON_EXIT}" == "0" ]]; then

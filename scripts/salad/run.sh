@@ -69,13 +69,16 @@ if [[ -n "${PROPMINER_POOL:-}" ]]; then
         POOL="${POOL},${PROPMINER_POOL_FALLBACK}"
     fi
 else
-    POOL="${PROPMINER_POOL_FALLBACK:-prl.kryptex.network:443,prl-eu.kryptex.network:443}"
+    POOL=""
 fi
 
 GPUS="${PROPMINER_GPUS:-0}"
 RESTART_ON_EXIT="${PROPMINER_RESTART_ON_EXIT:-1}"
-# Kryptex PRL stratum (direct mining guide): prl[-eu].kryptex.network:7048
+export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
 export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl-eu.kryptex.network:7048,prl.kryptex.network:7048}"
+export PROPMINER_STRATUM_PASSWORD="${PROPMINER_STRATUM_PASSWORD:-x}"
+export PROPMINER_VERBOSE_STRATUM="${PROPMINER_VERBOSE_STRATUM:-1}"
+export PROPMINER_VERBOSE_SHARES="${PROPMINER_VERBOSE_SHARES:-1}"
 
 setup_wsl2_env
 
@@ -83,16 +86,19 @@ log "===== PropMiner Salad (SRB-style bundle) ====="
 log "version=$(cat "${ROOT}/VERSION" 2>/dev/null || echo unknown)"
 log "$(date)"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null | log || true
-log "pool=${POOL} stratum=${PROPMINER_STRATUM_POOL} wallet=${WALLET} worker=${WORKER:-<default>}"
+log "pool=${POOL:-<stratum-only>} stratum=${PROPMINER_STRATUM_POOL} wallet=${WALLET} worker=${WORKER:-<default>}"
 
-MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --pool "${POOL}" --wallet "${WALLET}")
+MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --wallet "${WALLET}")
+if [[ -n "${POOL}" ]]; then
+    MINER_ARGS+=(--pool "${POOL}")
+fi
 if [[ -n "${WORKER}" ]]; then
     MINER_ARGS+=(--worker "${WORKER}")
 fi
 
 run_once() {
     (cd "${ROOT}" && LD_LIBRARY_PATH="${LD_LIBRARY_PATH}" LD_PRELOAD="${LD_PRELOAD:-}" \
-        ./propminer "${MINER_ARGS[@]}")
+        ./propminer "${MINER_ARGS[@]}" 2>&1 | tee -a "${LOG_DIR}/propminer.log")
 }
 
 if [[ "${RESTART_ON_EXIT}" == "0" ]]; then
