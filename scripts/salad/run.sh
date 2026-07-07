@@ -18,7 +18,8 @@ setup_wsl2_env() {
     export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
     export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
     export PROPMINER_AUTOTUNE="${PROPMINER_AUTOTUNE:-0}"
-    export PROPMINER_STRATUM_DIFF="${PROPMINER_STRATUM_DIFF:-32768}"
+    # Leave empty for Kryptex vardiff (dynamic). Set a number to pin a static diff.
+    export PROPMINER_STRATUM_DIFF="${PROPMINER_STRATUM_DIFF:-}"
     export PROPMINER_N_CAP="${PROPMINER_N_CAP:-131072}"
 
     export LD_LIBRARY_PATH="${ROOT}/lib:${ROOT}:${LD_LIBRARY_PATH:-}"

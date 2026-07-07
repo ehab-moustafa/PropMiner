@@ -183,12 +183,14 @@ namespace {
         if (const char* env = std::getenv("PROPMINER_STRATUM_PASSWORD"); env && env[0]) {
             pw = env;
         }
-        long long diff = resolve_stratum_share_diff();
-        if (pw.find("d=") != std::string::npos) {
-            diff = 0;
-        }
-        if (diff > 0) {
-            pw += ";d=" + std::to_string(diff);
+        // Only pin a static difficulty when PROPMINER_STRATUM_DIFF is explicitly
+        // set. Unset => leave the password as-is so Kryptex vardiff picks the
+        // difficulty dynamically. A password that already carries d= is honored.
+        if (pw.find("d=") == std::string::npos && stratum_diff_env_set()) {
+            const long long diff = resolve_stratum_share_diff();
+            if (diff > 0) {
+                pw += ";d=" + std::to_string(diff);
+            }
         }
         return pw;
     }
