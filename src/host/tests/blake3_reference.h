@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define BLAKE3_OUT_LEN 32
 #define BLAKE3_KEY_LEN 32
 #define BLAKE3_BLOCK_LEN 64
@@ -36,5 +40,9 @@ void blake3_hasher_update(blake3_hasher *self, const void *input,
                           size_t input_len);
 void blake3_hasher_finalize(const blake3_hasher *self, void *out,
                             size_t out_len);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif
 
 #endif // _BLAKE3_REFERENCE_IMPL_H
