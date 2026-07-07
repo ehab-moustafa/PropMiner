@@ -147,16 +147,20 @@ resolve_wallet
 
 GPUS="${PROPMINER_GPUS:-0}"
 RESTART_ON_EXIT="${PROPMINER_RESTART_ON_EXIT:-1}"
-MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --wallet "${WALLET_RESOLVED}")
+# SRBMiner-style: --wallet krxUSER.worker (Kryptex expects wallet.worker on the wire).
+# PropMiner splits this internally; do not also pass --worker or the pool sees
+# krxUSER.worker.worker (double worker → no credit).
+WALLET_ARG="${WALLET_RESOLVED}"
+if [[ -n "${WORKER_RESOLVED}" ]]; then
+    WALLET_ARG="${WALLET_RESOLVED}.${WORKER_RESOLVED}"
+fi
+MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --wallet "${WALLET_ARG}")
 if [[ -n "${POOL}" ]]; then
     MINER_ARGS+=(--pool "${POOL}")
 fi
-if [[ -n "${WORKER_RESOLVED}" ]]; then
-    MINER_ARGS+=(--worker "${WORKER_RESOLVED}")
-fi
 
 echo "[salad] Starting propminer (version=$(cat "${PM_DIR}/VERSION" 2>/dev/null || echo unknown))"
-echo "[salad] wallet=${WALLET_RESOLVED} worker=${WORKER_RESOLVED:-<default>}"
+echo "[salad] pool-user=${WALLET_ARG} (Kryptex/SRB format wallet.worker)"
 echo "[salad] stratum=${PROPMINER_STRATUM_POOL} use_stratum=${PROPMINER_USE_STRATUM}"
 echo "[salad] miner logs also in /tmp/propminer.log (Salad UI shows stdout below)"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null || true

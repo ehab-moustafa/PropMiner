@@ -80,20 +80,22 @@ export PROPMINER_STRATUM_PASSWORD="${PROPMINER_STRATUM_PASSWORD:-x}"
 export PROPMINER_VERBOSE_STRATUM="${PROPMINER_VERBOSE_STRATUM:-1}"
 export PROPMINER_VERBOSE_SHARES="${PROPMINER_VERBOSE_SHARES:-1}"
 
+WALLET_ARG="${WALLET}"
+if [[ -n "${WORKER}" ]]; then
+    WALLET_ARG="${WALLET}.${WORKER}"
+fi
+
 setup_wsl2_env
 
 log "===== PropMiner Salad (SRB-style bundle) ====="
 log "version=$(cat "${ROOT}/VERSION" 2>/dev/null || echo unknown)"
 log "$(date)"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader 2>/dev/null | log || true
-log "pool=${POOL:-<stratum-only>} stratum=${PROPMINER_STRATUM_POOL} wallet=${WALLET} worker=${WORKER:-<default>}"
+log "pool=${POOL:-<stratum-only>} stratum=${PROPMINER_STRATUM_POOL} pool-user=${WALLET_ARG} (wallet.worker)"
 
-MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --wallet "${WALLET}")
+MINER_ARGS=(--rtx5090 --gpus "${GPUS}" --wallet "${WALLET_ARG}")
 if [[ -n "${POOL}" ]]; then
     MINER_ARGS+=(--pool "${POOL}")
-fi
-if [[ -n "${WORKER}" ]]; then
-    MINER_ARGS+=(--worker "${WORKER}")
 fi
 
 run_once() {
