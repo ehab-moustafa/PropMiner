@@ -679,8 +679,9 @@ void WorkerOrchestrator::share_sender_thread_func() {
                                          std::to_string(raw.nonce));
                     continue;
                 }
-                const int cert_ver = stratum_client_->cert_version_for_job(job_id);
-                proof = builder.build_stratum_plain_proof(raw, *raw.sigma_ctx, cert_ver);
+                // cert_version in mining.notify is pool metadata; suprnova/Kryptex
+                // PlainProof v1.0 wire has no MoE suffix (ARC-miner path).
+                proof = builder.build_stratum_plain_proof(raw, *raw.sigma_ctx, 1);
             } else {
                 proof = builder.build(raw, *raw.sigma_ctx);
             }
@@ -802,6 +803,21 @@ int WorkerOrchestrator::run() {
     }
 
     MiningConfig tuned_config = cfg_.mining_config;
+    if (use_stratum_.load()) {
+        size_t free_vram = 0;
+        if (!indices.empty()) {
+            if (cudaSetDevice(indices[0]) == cudaSuccess) {
+                size_t total = 0;
+                cudaMemGetInfo(&free_vram, &total);
+            }
+        }
+        tuned_config = stratum_pool_mining_config(free_vram);
+        cfg_.mining_config = tuned_config;
+        std::cerr << "[orchestrator] Stratum pool shape (PlainProof §7.1): M="
+                  << tuned_config.m << " N=" << tuned_config.n
+                  << " K=" << tuned_config.k << " r=" << tuned_config.r
+                  << " (K=128 is rejected as invalid proof on Kryptex)\n";
+    }
     const int profile_n = cfg_.mining_config.n;
     int tuned_batch = cfg_.batch_size;
     int tuned_cluster_m = Rtx5090Profile::kProdDefaultClusterM;
@@ -866,7 +882,7 @@ int WorkerOrchestrator::run() {
     MiningConfig::warn_if_cluster_m_mismatch(tuned_cluster_m);
 
     TuneCache tune_cache;
-    if (cfg_.autotune && cfg_.speed_test_seconds == 0) {
+    if (cfg_.autotune && cfg_.speed_test_seconds == 0 && !use_stratum_.load()) {
         // Try the persistent cache first so reconnects pick up the last good
         // config without re-benchmarking.
         bool cache_hit = false;

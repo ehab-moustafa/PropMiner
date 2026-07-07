@@ -100,19 +100,47 @@ struct Rtx5090Profile {
     // Prefer largest high-intensity N validated on 5090; fall back gracefully.
     // Wave alignment is logged at startup; a small tail wave is cheaper than
     // shrinking N (e.g. 262144 -> 65280).
-    static int pick_n_for_vram(size_t free_bytes, int cap_n = 0) {
+    static int pick_n_for_vram(size_t free_bytes, int cap_n = 0, int K = kDefaultK) {
         static constexpr int kCandidates[] = {
             262144, 131072, 65536, 65280, 43520, 32768,
         };
         for (int n : kCandidates) {
             if (cap_n > 0 && n > cap_n) continue;
             if (n % kTileN != 0) continue;
-            if (!shape_fits_vram(kDefaultM, n, kDefaultK, free_bytes)) continue;
+            if (!shape_fits_vram(kDefaultM, n, K, free_bytes)) continue;
             return n;
         }
         return (cap_n > 0 && cap_n < kDefaultN) ? cap_n : kDefaultN;
     }
+
+    // Kryptex / suprnova stratum sanity (§7.1): k >= 1024, k % 64 == 0,
+    // k >= 16*rank. PropMiner kernels ship R=128; K=4096 satisfies rank=128.
+    static constexpr int kStratumPoolK = 4096;
+    static constexpr int kStratumPoolR = 128;
 };
+
+// Stratum pool PlainProof preamble must pass §7.1 (k >= 1024, etc.).
+// Local Akoya gRPC path may use K=128; Kryptex rejects that as invalid proof.
+inline MiningConfig stratum_pool_mining_config(size_t vram_budget_bytes = 0,
+                                              int cap_n = 0) {
+    MiningConfig cfg;
+    cfg.m = Rtx5090Profile::kDefaultM;
+    cfg.k = Rtx5090Profile::kStratumPoolK;
+    cfg.r = Rtx5090Profile::kStratumPoolR;
+    if (const char* kenv = std::getenv("PROPMINER_STRATUM_K"); kenv && kenv[0]) {
+        const int req = std::atoi(kenv);
+        if (req >= 2048 && req % 64 == 0) cfg.k = req;
+    }
+    if (const char* renv = std::getenv("PROPMINER_STRATUM_RANK"); renv && renv[0]) {
+        const int req = std::atoi(renv);
+        if (req == 64 || req == 128) cfg.r = req;
+    }
+    cfg.n = Rtx5090Profile::pick_n_for_vram(vram_budget_bytes, cap_n, cfg.k);
+    cfg.bM = Rtx5090Profile::kTileM;
+    cfg.bN = Rtx5090Profile::kTileN;
+    cfg.bK = Rtx5090Profile::kTileK;
+    return cfg;
+}
 
 // Compile-time guarantees that the fallback RTX 5090 shape saturates the chip.
 static_assert(Rtx5090Profile::kDefaultM % Rtx5090Profile::kTileM == 0,
