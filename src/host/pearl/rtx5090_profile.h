@@ -119,22 +119,26 @@ struct Rtx5090Profile {
         return (cap_n > 0 && cap_n < kDefaultN) ? cap_n : kDefaultN;
     }
 
-    // Kryptex / Pearl stratum (§7.1): miner chooses m,n,k,noise_rank within bounds;
-    // the pool validates sanity + internal consistency, not a fixed shape.
-    // Defaults: M=8192, N from VRAM, K=4096, R=128 (PropMiner kernels ship R≤256).
-    // Optional large tuple via PROPMINER_STRATUM_M/N (e.g. 131072) for throughput.
+    // Kryptex / HeroMiners-family stratum: network-committed shape M=N=131072,
+    // K=4096, noise_rank=256 (matches ARC WorkerOrchestrator mainnet profile).
+    // config_bytes rank and plain-proof m/n must match or the pool rejects every
+    // share (Invalid share). Escape hatches: PROPMINER_STRATUM_M/N/K/RANK.
     static constexpr int kStratumPoolK = 4096;
-    static constexpr int kStratumPoolR = 128;
-    static constexpr int kStratumLargeM = 131072;
-    static constexpr int kStratumLargeN = 131072;
+    static constexpr int kStratumPoolR = 256;
+    static constexpr int kStratumPoolM = 131072;
+    static constexpr int kStratumPoolN = 131072;
+    static constexpr int kStratumLargeM = kStratumPoolM;
+    static constexpr int kStratumLargeN = kStratumPoolN;
 };
 
 // Stratum pool PlainProof preamble must pass §7.1 (k >= 1024, etc.).
 // Local Akoya gRPC path may use K=128; Kryptex rejects that as invalid proof.
 inline MiningConfig stratum_pool_mining_config(size_t vram_budget_bytes = 0,
                                               int cap_n = 0) {
+    (void)vram_budget_bytes;
     MiningConfig cfg;
-    cfg.m = Rtx5090Profile::kDefaultM;
+    cfg.m = Rtx5090Profile::kStratumPoolM;
+    cfg.n = Rtx5090Profile::kStratumPoolN;
     cfg.k = Rtx5090Profile::kStratumPoolK;
     cfg.r = Rtx5090Profile::kStratumPoolR;
     if (const char* menv = std::getenv("PROPMINER_STRATUM_M"); menv && menv[0]) {
@@ -146,8 +150,8 @@ inline MiningConfig stratum_pool_mining_config(size_t vram_budget_bytes = 0,
         const int req = std::atoi(nenv);
         if (req >= Rtx5090Profile::kTileN && req % Rtx5090Profile::kTileN == 0)
             cfg.n = req;
-    } else {
-        cfg.n = Rtx5090Profile::pick_n_for_vram(vram_budget_bytes, cap_n, cfg.k);
+    } else if (cap_n > 0 && cap_n < cfg.n) {
+        cfg.n = cap_n;
     }
     if (const char* kenv = std::getenv("PROPMINER_STRATUM_K"); kenv && kenv[0]) {
         const int req = std::atoi(kenv);
