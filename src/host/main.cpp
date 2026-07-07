@@ -491,19 +491,38 @@ int main(int argc, char* argv[]) {
     split_wallet_worker(cfg.wallet_address, cfg.worker_name, worker_set);
     warn_kryptex_worker_name(cfg.worker_name);
 
+    // Whether the user explicitly configured a gRPC endpoint (CLI --pool with a
+    // non-7048 port, or PROPMINER_POOL). If not, we do NOT invent a gRPC :443
+    // default: Kryptex Pearl is Stratum-only and a bogus gRPC endpoint just burns
+    // a connect cycle before the fallback kicks in.
+    bool user_grpc_pool = !cfg.pool_endpoints.empty();
     if (cfg.pool_endpoints.empty()) {
         if (const char* env = std::getenv("PROPMINER_POOL"); env && env[0]) {
             parse_pool_list(env, cfg);
+            user_grpc_pool = !cfg.pool_endpoints.empty();
         }
         if (const char* fb = std::getenv("PROPMINER_POOL_FALLBACK"); fb && fb[0]) {
             append_pool_endpoint(cfg, fb);
-        }
-        if (cfg.pool_endpoints.empty()) {
-            cfg.pool_endpoints.push_back({cfg.pool_host, cfg.pool_port, cfg.use_tls});
+            user_grpc_pool = user_grpc_pool || !cfg.pool_endpoints.empty();
         }
     }
     if (const char* st = std::getenv("PROPMINER_STRATUM_POOL"); st && st[0]) {
         parse_stratum_list(st, cfg);
+    }
+
+    // Kryptex Pearl only speaks Stratum (:7048 TCP / :8048 SSL). When the only
+    // endpoints we have are Stratum, run Stratum directly instead of failing a
+    // gRPC connect first — unless the operator forced a mode via env.
+    if (!user_grpc_pool && !cfg.stratum_endpoints.empty()) {
+        if (!std::getenv("PROPMINER_USE_STRATUM") && !std::getenv("PROPMINER_POOL_MODE")) {
+            setenv("PROPMINER_USE_STRATUM", "1", 1);
+            fprintf(stderr, "[main] Stratum-only endpoints configured; defaulting "
+                            "to Kryptex Stratum mode\n");
+        }
+    } else if (cfg.pool_endpoints.empty()) {
+        // No endpoints at all: fall back to the built-in default host so the
+        // orchestrator can still try (and then auto-fallback to Stratum :7048).
+        cfg.pool_endpoints.push_back({cfg.pool_host, cfg.pool_port, cfg.use_tls});
     }
 
     if (cfg.pool_endpoints.empty() && !cfg.stratum_endpoints.empty()) {

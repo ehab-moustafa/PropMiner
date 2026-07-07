@@ -1,5 +1,6 @@
 #include "pearl_stratum_client.h"
 
+#include "pearl_challenge.h"
 #include "pow_target_utils.h"
 #include "share_trace.h"
 
@@ -89,6 +90,22 @@ std::string truncate_line(const std::string& line, size_t max_len) {
     if (line.size() <= max_len) return line;
     return line.substr(0, max_len) + "…";
 }
+
+int env_int(const char* name, int fallback) {
+    if (const char* e = std::getenv(name); e && e[0]) {
+        const int v = std::atoi(e);
+        if (v != 0 || e[0] == '0') return v;
+    }
+    return fallback;
+}
+
+// How long to wait for the pool's first line before assuming a legacy
+// (client-first) pool that does not use the pearl/v1 connection challenge.
+int challenge_wait_ms() { return std::max(0, env_int("PROPMINER_CHALLENGE_WAIT_MS", 2000)); }
+
+// Refuse to grind a challenge above this many leading-zero bits (~2^diff work).
+// A hostile/buggy pool could otherwise pin every core for hours.
+int challenge_max_diff() { return std::max(1, env_int("PROPMINER_CHALLENGE_MAX_DIFF", 44)); }
 
 // JSON-RPC id may be number or string depending on pool.
 bool parse_request_id(const propminer::JsonValue& id_field, int* out) {
@@ -243,10 +260,20 @@ bool PearlStratumClient::connect() {
 
     stratum_log("stratum connected " + opts_.host + ":" + std::to_string(opts_.port));
 
-    // Pearl/Kryptex :7048 does not require mining.subscribe (ARC skips it too).
-    if (!authorize()) {
+    // Challenge-first pools (Kryptex :7048 / AlphaPool / HeroMiners) speak first
+    // with a pearl.challenge that must be solved before any job is handed out.
+    // Detect and handle it; otherwise fall through to client-first authorize.
+    const HandshakeResult hr = try_challenge_handshake();
+    if (hr == HandshakeResult::Failed) {
         disconnect();
         return false;
+    }
+    if (hr == HandshakeResult::NotChallenge) {
+        // Pearl/Kryptex client-first stratum does not require mining.subscribe.
+        if (!authorize()) {
+            disconnect();
+            return false;
+        }
     }
 
     connected_ = true;
@@ -257,6 +284,7 @@ bool PearlStratumClient::connect() {
 
 void PearlStratumClient::disconnect() {
     flush_all_pending_submits("disconnect");
+    stop_solving_ = true;
     running_ = false;
     connected_ = false;
     if (recv_thread_ && recv_thread_->joinable()) recv_thread_->join();
@@ -384,6 +412,188 @@ bool PearlStratumClient::authorize() {
     return false;
 }
 
+PearlStratumClient::HandshakeResult PearlStratumClient::try_challenge_handshake() {
+    stop_solving_.store(false);
+    std::string line;
+    const int wait_ms = challenge_wait_ms();
+    if (wait_ms == 0) return HandshakeResult::NotChallenge;
+    const ReadStatus st = read_line_status(line, wait_ms);
+    if (st == ReadStatus::Closed) {
+        last_error_ = "connection closed during handshake";
+        return HandshakeResult::Failed;
+    }
+    if (st == ReadStatus::Timeout || line.empty()) {
+        // Pool waited for us -> classic client-first stratum.
+        return HandshakeResult::NotChallenge;
+    }
+
+    auto parsed = propminer::JsonValue::parse(line);
+    const bool is_challenge = parsed["method"].is_string() &&
+                              parsed["method"].to_string() == "pearl.challenge";
+    if (!is_challenge) {
+        // First inbound line is not a challenge — hand it to the normal path by
+        // re-buffering it ahead of anything else still in the socket buffer.
+        recv_buf_ = line + "\n" + recv_buf_;
+        return HandshakeResult::NotChallenge;
+    }
+
+    stratum_log("stratum: pearl/v1 challenge-first pool detected");
+    pearl_v1_.store(true);
+
+    const int resp_id = 1;
+    request_id_ = resp_id;
+    if (!solve_and_respond_challenge(parsed["params"], resp_id)) {
+        return HandshakeResult::Failed;
+    }
+
+    // configure -> subscribe -> authorize (positional), matching ARC pearl/v1.
+    const int cfg_id = ++request_id_;    // 2
+    const int sub_id = ++request_id_;    // 3
+    const int auth_id = ++request_id_;   // 4
+    (void)cfg_id;
+    (void)sub_id;
+    const std::string user = opts_.wallet + "." + opts_.worker;
+    if (!send_line("{\"id\":2,\"method\":\"mining.configure\",\"params\":[[\"pearl/v1\"],{}]}") ||
+        !send_line("{\"id\":3,\"method\":\"mining.subscribe\",\"params\":[\"" +
+                   json_escape(opts_.user_agent) + "\"]}") ||
+        !send_line("{\"id\":4,\"method\":\"mining.authorize\",\"params\":[\"" +
+                   json_escape(user) + "\",\"" + json_escape(opts_.password) + "\"]}")) {
+        last_error_ = "pearl/v1 handshake send failed";
+        return HandshakeResult::Failed;
+    }
+
+    return pearl_v1_finish_handshake(auth_id) ? HandshakeResult::Ok
+                                              : HandshakeResult::Failed;
+}
+
+bool PearlStratumClient::solve_and_respond_challenge(const propminer::JsonValue& params,
+                                                     int resp_id) {
+    if (!params["seed"].is_string()) {
+        last_error_ = "pearl.challenge missing seed";
+        return false;
+    }
+    const std::string seed_hex = params["seed"].to_string();
+    const int difficulty = params["difficulty"].is_number()
+                               ? static_cast<int>(params["difficulty"].to_int())
+                               : 32;
+    auto seed = PearlChallenge::hex_to_seed(seed_hex);
+    if (!seed) {
+        last_error_ = "pearl.challenge seed is not 32 bytes of hex";
+        stratum_log("stratum: " + last_error_);
+        return false;
+    }
+    const int max_diff = challenge_max_diff();
+    if (difficulty > max_diff) {
+        last_error_ = "pearl.challenge difficulty=" + std::to_string(difficulty) +
+                      " exceeds PROPMINER_CHALLENGE_MAX_DIFF=" + std::to_string(max_diff) +
+                      " (refusing to grind)";
+        stratum_log("stratum: " + last_error_);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(challenge_mtx_);
+        challenge_resp_ids_.insert(resp_id);
+    }
+
+    stratum_log("stratum: solving pearl/v1 connection challenge diff=" +
+                std::to_string(difficulty) + " (~2^" + std::to_string(difficulty) +
+                " hashes)");
+    const auto t0 = std::chrono::steady_clock::now();
+    auto nonce = PearlChallenge::solve(*seed, difficulty, max_diff, &stop_solving_);
+    if (!nonce) {
+        last_error_ = "pearl.challenge solve aborted/failed";
+        return false;
+    }
+    if (!PearlChallenge::verify(*seed, *nonce, difficulty)) {
+        last_error_ = "pearl.challenge solver produced a non-winning nonce (bug)";
+        stratum_log("stratum: " + last_error_);
+        return false;
+    }
+    const auto secs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - t0).count() / 1000.0;
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "stratum: challenge solved in %.1fs", secs);
+    stratum_log(buf);
+
+    const std::string wire_nonce = PearlChallenge::nonce_to_wire_hex(*nonce);
+    const std::string resp = "{\"id\":" + std::to_string(resp_id) +
+                             ",\"method\":\"pearl.challenge_response\",\"params\":{" +
+                             "\"nonce\":\"" + wire_nonce + "\",\"seed\":\"" +
+                             json_escape(seed_hex) + "\"}}";
+    if (!send_line(resp)) {
+        last_error_ = "pearl.challenge_response send failed";
+        return false;
+    }
+    return true;
+}
+
+bool PearlStratumClient::pearl_v1_finish_handshake(int authorize_id) {
+    for (int i = 0; i < 200; ++i) {
+        if (stop_solving_.load()) return false;
+        std::string line;
+        const ReadStatus st = read_line_status(line, opts_.connect_timeout_ms);
+        if (st == ReadStatus::Closed) {
+            last_error_ = "pool disconnected during pearl/v1 authorization";
+            return false;
+        }
+        if (st == ReadStatus::Timeout) {
+            last_error_ = "pearl/v1 authorization timeout";
+            return false;
+        }
+        if (line.empty()) continue;
+
+        auto parsed = propminer::JsonValue::parse(line);
+        if (parsed["method"].is_string()) {
+            // Jobs / difficulty / mining params can arrive before the auth ack.
+            handle_message(line);
+            continue;
+        }
+        int id = 0;
+        if (!parse_request_id(parsed["id"], &id)) continue;
+        if (id == authorize_id) {
+            if (!parsed["error"].is_null()) {
+                last_error_ = "pearl/v1 authorize error: " + parsed["error"].serialize();
+                return false;
+            }
+            if (parsed["result"].is_bool() && !parsed["result"].to_bool()) {
+                last_error_ = "pearl/v1 authorize rejected (check wallet.worker)";
+                return false;
+            }
+            stratum_log("stratum authorized (pearl/v1) as " + opts_.wallet + "." +
+                        opts_.worker + " password=" + opts_.password);
+            return true;
+        }
+        // challenge-response / configure / subscribe ack: verify the challenge
+        // response wasn't rejected, otherwise ignore.
+        bool is_challenge_ack = false;
+        {
+            std::lock_guard<std::mutex> lk(challenge_mtx_);
+            auto it = challenge_resp_ids_.find(id);
+            if (it != challenge_resp_ids_.end()) {
+                is_challenge_ack = true;
+                challenge_resp_ids_.erase(it);
+            }
+        }
+        if (is_challenge_ack && parsed["result"].is_bool() &&
+            !parsed["result"].to_bool()) {
+            last_error_ = "pool rejected pearl.challenge response";
+            return false;
+        }
+    }
+    last_error_ = "pearl/v1 authorization: no ack";
+    return false;
+}
+
+void PearlStratumClient::handle_challenge_async(const propminer::JsonValue& params) {
+    // Mid-session re-challenge. Solve synchronously on the receive thread; these
+    // are rare and CPU-cheap, and this avoids detached-thread lifetime hazards.
+    const int resp_id = ++request_id_;
+    if (!solve_and_respond_challenge(params, resp_id)) {
+        stratum_log("stratum: mid-session challenge failed: " + last_error_);
+    }
+}
+
 double PearlStratumClient::read_difficulty_param(const propminer::JsonValue& params) {
     if (params.is_array()) {
         for (size_t i = 0; i < params.size(); ++i) {
@@ -505,6 +715,16 @@ void PearlStratumClient::handle_message(const std::string& line) {
                 stratum_log(buf);
                 if (vardiff_cb_) vardiff_cb_(nbits);
             }
+        } else if (method == "pearl.challenge") {
+            // Mid-session re-challenge — solve and respond to stay authorized.
+            stratum_log("stratum: mid-session pearl.challenge received");
+            handle_challenge_async(params);
+        } else if (method == "pearl.set_mining_params") {
+            // The pool dictates the GEMM shape (m/n/k/rank/patterns). PropMiner
+            // mines a fixed RTX 5090 shape; surface a mismatch loudly since it
+            // would make otherwise-valid shares fail verification at the pool.
+            stratum_log("stratum: pearl.set_mining_params=" +
+                        truncate_line(params.serialize(), 400));
         } else if (stratum_verbose_recv()) {
             stratum_log("notify: method=" + method);
         }
@@ -513,6 +733,19 @@ void PearlStratumClient::handle_message(const std::string& line) {
 
     int msg_id = 0;
     if (!parse_request_id(parsed["id"], &msg_id)) return;
+
+    // pearl.challenge_response ack — not a share result.
+    {
+        std::lock_guard<std::mutex> lk(challenge_mtx_);
+        auto it = challenge_resp_ids_.find(msg_id);
+        if (it != challenge_resp_ids_.end()) {
+            challenge_resp_ids_.erase(it);
+            if (parsed["result"].is_bool() && !parsed["result"].to_bool()) {
+                stratum_log("stratum: pool rejected mid-session challenge response");
+            }
+            return;
+        }
+    }
 
     // Share submit ack: JSON-RPC response with id, no method (ARC StratumSession).
     bool is_share = msg_id > 2;

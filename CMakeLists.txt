@@ -215,6 +215,7 @@ add_executable(propminer
     src/host/pearl/worker_orchestrator.cpp
     src/host/pearl/grpc_client.cpp
     src/host/pearl/pearl_stratum_client.cpp
+    src/host/pearl/pearl_challenge.cpp
     src/host/pearl/proto/mining_v2.cpp
     src/host/stratum/simple_json.cpp
 )

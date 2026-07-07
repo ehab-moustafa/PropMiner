@@ -32,6 +32,11 @@ source "${ROOT}/scripts/download_release.sh"
 export PROPMINER_USE_TUNE_CACHE="${PROPMINER_USE_TUNE_CACHE:-1}"
 export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-1}"
 
+# Kryptex Pearl is Stratum-only (prl.kryptex.network:7048 TCP / :8048 SSL) — there
+# is no gRPC :443 endpoint. Default to Stratum so we don't waste a connect cycle
+# failing gRPC first. Override with PROPMINER_POOL_MODE=grpc for other pools.
+export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
+
 WALLET="${PROPMINER_WALLET:-}"
 if [[ -n "${PROPMINER_POOL:-}" ]]; then
     POOL="${PROPMINER_POOL}"

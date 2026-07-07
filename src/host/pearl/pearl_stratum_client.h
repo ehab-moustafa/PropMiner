@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <unordered_map>
+#include <unordered_set>
 
 #include "simple_json.h"
 #include "pow_target_utils.h"
@@ -67,6 +68,14 @@ private:
     bool read_line(std::string& out, int timeout_ms);
     bool subscribe();
     bool authorize();
+    // pearl/v1 challenge-first handshake (Kryptex :7048 / AlphaPool / HeroMiners):
+    // detect a pool-first `pearl.challenge`, solve it, then configure/subscribe/
+    // authorize. Returns true if the challenge path handled the handshake.
+    enum class HandshakeResult { NotChallenge, Ok, Failed };
+    HandshakeResult try_challenge_handshake();
+    bool solve_and_respond_challenge(const propminer::JsonValue& params, int resp_id);
+    bool pearl_v1_finish_handshake(int authorize_id);
+    void handle_challenge_async(const propminer::JsonValue& params);
     void receive_loop();
     void handle_message(const std::string& line);
     bool parse_notify_object(const std::string& params_json);
@@ -89,6 +98,12 @@ private:
     int sock_ = -1;
     std::atomic<bool> connected_{false};
     std::atomic<bool> running_{false};
+    std::atomic<bool> pearl_v1_{false};
+    std::atomic<bool> stop_solving_{false};
+    // Request ids of in-flight pearl.challenge_response messages so the receive
+    // loop does not mistake the pool's ack for a share result.
+    std::mutex challenge_mtx_;
+    std::unordered_set<int> challenge_resp_ids_;
     std::string last_error_;
     std::string recv_buf_;
     int request_id_ = 1;
