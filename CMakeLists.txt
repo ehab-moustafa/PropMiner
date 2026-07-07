@@ -276,6 +276,9 @@ target_link_libraries(propminer_ref_tests PRIVATE
     dl
 )
 target_compile_options(propminer_ref_tests PRIVATE -Wall -Wextra -O2)
+set_source_files_properties(
+    src/host/tests/blake3_reference.c
+    PROPERTIES LANGUAGE CXX)
 
 # ── Host-only benchmark executables ─────────────────────────────────────
 set(PROP_MINER_BENCH_SOURCES

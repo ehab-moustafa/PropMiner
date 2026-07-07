@@ -79,6 +79,7 @@ RUN --mount=type=cache,id=propminer-ccache,target=/ccache \
     && ccache -s
 
 # Layer 2: host sources + scripts + propminer link. Fast when only src/host changes.
+COPY CMakeLists.txt .
 COPY src/host src/host
 COPY scripts scripts
 
