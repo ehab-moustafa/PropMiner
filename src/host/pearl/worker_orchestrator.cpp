@@ -318,6 +318,41 @@ void WorkerOrchestrator::reset_pool_session() {
     }
 }
 
+int WorkerOrchestrator::max_consecutive_rejects() const {
+    static int cached = -2;
+    if (cached == -2) {
+        cached = 3;  // temporary anti-ban default
+        if (const char* e = std::getenv("PROPMINER_MAX_CONSECUTIVE_REJECTS");
+            e && e[0]) {
+            cached = std::atoi(e);
+            if (cached < 0) cached = 0;
+        }
+    }
+    return cached;
+}
+
+void WorkerOrchestrator::note_share_result(bool accepted) {
+    if (accepted) {
+        consecutive_rejects_.store(0);
+        return;
+    }
+    const int limit = max_consecutive_rejects();
+    const uint64_t n = consecutive_rejects_.fetch_add(1) + 1;
+    if (limit <= 0) return;  // disabled
+    if (n >= static_cast<uint64_t>(limit) && !submissions_halted_.exchange(true)) {
+        share_log("halted",
+                  "reason=too_many_rejects consecutive=" + std::to_string(n) +
+                  " limit=" + std::to_string(limit) +
+                  " — pausing Stratum submissions and reconnects to avoid a pool "
+                  "ban/spam. Fix the proof issue and RESTART the miner to resume "
+                  "(tune with PROPMINER_MAX_CONSECUTIVE_REJECTS, 0=disable).");
+        std::cerr << "[orchestrator] SUBMISSIONS HALTED after " << n
+                  << " consecutive rejects — not reconnecting or submitting to "
+                     "avoid a ban. Restart the miner after fixing the share/proof "
+                     "issue (PROPMINER_MAX_CONSECUTIVE_REJECTS to tune).\n";
+    }
+}
+
 void WorkerOrchestrator::start_watchdog_if_needed() {
     if (!cfg_.enable_watchdog || watchdog_) return;
     watchdog_ = std::make_unique<Watchdog>();
@@ -477,6 +512,7 @@ void WorkerOrchestrator::handle_pool_event(const proto::PoolEvent& evt) {
         case proto::PoolEventType::ShareResult:
             if (evt.share_result.accepted) shares_accepted_.fetch_add(1);
             else shares_rejected_.fetch_add(1);
+            note_share_result(evt.share_result.accepted);
             share_log(evt.share_result.accepted ? "accepted" : "rejected",
                       evt.share_result.outcome +
                       (evt.share_result.is_block_find ? " BLOCK" : "") +
@@ -582,6 +618,7 @@ void WorkerOrchestrator::run_stratum_session() {
             [this](bool accepted, const std::string& msg) {
                 if (accepted) shares_accepted_.fetch_add(1);
                 else shares_rejected_.fetch_add(1);
+                note_share_result(accepted);
                 share_log(accepted ? "accepted" : "rejected",
                           msg + " (totals " + std::to_string(shares_accepted_.load()) +
                           "a/" + std::to_string(shares_rejected_.load()) + "r/" +
@@ -601,7 +638,8 @@ void WorkerOrchestrator::run_stratum_session() {
         reconnect_attempt_ = 0;
         last_pool_error_.clear();
         set_pool_state(PoolState::AwaitingJob);
-        while (!stop_flag_ && stratum_client_->connected()) {
+        while (!stop_flag_ && stratum_client_->connected() &&
+               !submissions_halted_.load()) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
         last_pool_error_ = stratum_client_ ? stratum_client_->last_error() : "stratum disconnected";
@@ -615,6 +653,18 @@ void WorkerOrchestrator::run_stratum_session() {
 
 void WorkerOrchestrator::network_thread_func() {
     while (!stop_flag_) {
+        if (submissions_halted_.load()) {
+            // Circuit breaker tripped: drop any live connection and stop
+            // reconnecting/handshaking to avoid a pool ban. Idle until restart.
+            if (stratum_client_) {
+                stratum_client_->disconnect();
+                stratum_client_.reset();
+            }
+            reset_pool_session();
+            set_pool_state(PoolState::Disconnected);
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            continue;
+        }
         if (use_stratum_.load()) {
             run_stratum_session();
             continue;
@@ -675,6 +725,16 @@ void WorkerOrchestrator::share_sender_thread_func() {
         }
         if (stop_flag_) break;
         for (const ShareFound& raw : batch) {
+            if (submissions_halted_.load()) {
+                // Circuit breaker active — do not build or submit shares.
+                shares_dropped_.fetch_add(1);
+                if (!halt_drop_logged_.exchange(true)) {
+                    share_log("dropped",
+                              "reason=submissions_halted circuit breaker active; "
+                              "restart the miner to resume submissions");
+                }
+                continue;
+            }
             if (!raw.sigma_ctx) {
                 shares_dropped_.fetch_add(1);
                 share_log("dropped", "reason=missing_sigma_context nonce=" +

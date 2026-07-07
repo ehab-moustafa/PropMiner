@@ -89,6 +89,11 @@ private:
     std::string pool_status_line() const;
     void ping_thread_func();
 
+    // Anti-ban circuit breaker: after N consecutive pool rejects, stop
+    // submitting shares and stop reconnecting/handshaking until restart.
+    int max_consecutive_rejects() const;
+    void note_share_result(bool accepted);
+
     void run_stratum_session();
     bool run_grpc_session();
 
@@ -123,6 +128,11 @@ private:
     std::atomic<uint64_t> shares_dropped_{0};
     int reconnect_attempt_ = 0;
     std::string last_pool_error_;
+
+    // Circuit breaker state (see note_share_result / max_consecutive_rejects).
+    std::atomic<uint64_t> consecutive_rejects_{0};
+    std::atomic<bool> submissions_halted_{false};
+    std::atomic<bool> halt_drop_logged_{false};
 
     // Session state.
     std::mutex session_mtx_;
