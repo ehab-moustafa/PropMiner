@@ -51,6 +51,9 @@ public:
 
     std::string job_id_for_sigma(const std::array<uint8_t, kSigmaHeaderBytes>& sigma) const;
 
+    // Pool mining.notify cert_version (1=dense V1 proof, 2=V2 + moe suffix).
+    int cert_version_for_job(const std::string& job_id) const;
+
     // Outstanding mining.submit RPCs awaiting a pool JSON-RPC ack.
     size_t pending_submit_count() const;
 
@@ -71,7 +74,8 @@ private:
     proto::JobAssignment make_job(const std::string& job_id,
                                     const std::string& header_hex,
                                     const std::string& target_hex,
-                                    int64_t height);
+                                    int64_t height,
+                                    int cert_version = 1);
     static std::array<uint8_t, 16> job_id_bytes(const std::string& job_id);
     static std::vector<uint8_t> hex_to_bytes(const std::string& hex);
     static double read_difficulty_param(const propminer::JsonValue& params);
@@ -99,6 +103,7 @@ private:
     std::unordered_map<int, PendingSubmit> pending_submit_nonces_;
     std::unordered_map<std::string, std::string> sigma_hex_to_job_id_;
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> job_received_at_;
+    std::unordered_map<std::string, int> job_cert_version_;
     std::string current_job_id_;
     std::chrono::steady_clock::time_point current_job_at_{};
 

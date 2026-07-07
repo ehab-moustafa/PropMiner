@@ -11,6 +11,7 @@ namespace pearl {
 // Bincode PlainProof encoder for Stratum mining.submit (ARC-compatible).
 class BincodeEncoder {
 public:
+    // cert_version >= 2 (Kryptex MoE fork): append moe: Option::None (0x00).
     static std::vector<uint8_t> encode_plain_proof(
         const MiningConfig& cfg,
         const OwnedProof& a_proof,
@@ -18,7 +19,8 @@ public:
         const std::vector<uint32_t>& a_row_indices,
         const std::vector<uint32_t>& b_col_indices,
         const uint8_t hash_a[32],
-        const uint8_t hash_b[32]);
+        const uint8_t hash_b[32],
+        int cert_version = 1);
 
 private:
     static void write_u64(std::vector<uint8_t>& out, uint64_t v);

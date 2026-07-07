@@ -22,7 +22,8 @@ public:
 
     // Build bincode PlainProof for Stratum mining.submit (Kryptex :7048).
     std::vector<uint8_t> build_stratum_plain_proof(const ShareFound& share,
-                                                    const SigmaContext& ctx) const;
+                                                    const SigmaContext& ctx,
+                                                    int cert_version = 1) const;
 
     // Verify a built proof locally (for tests).
     bool verify(const std::vector<uint8_t>& proof,

@@ -58,7 +58,8 @@ std::vector<uint8_t> BincodeEncoder::encode_plain_proof(
     const std::vector<uint32_t>& a_row_indices,
     const std::vector<uint32_t>& b_col_indices,
     const uint8_t hash_a[32],
-    const uint8_t hash_b[32]) {
+    const uint8_t hash_b[32],
+    int cert_version) {
     std::vector<uint8_t> out;
     out.reserve(4096);
 
@@ -70,6 +71,9 @@ std::vector<uint8_t> BincodeEncoder::encode_plain_proof(
     // ARC StratumSession.WriteMatrixMerkleProof uses share.HashA/HashB as wire roots.
     write_matrix_merkle_proof(out, a_proof, hash_a, a_row_indices);
     write_matrix_merkle_proof(out, b_proof, hash_b, b_col_indices);
+    if (cert_version >= 2) {
+        out.push_back(0x00);  // PlainProof V2: moe: None (dense share)
+    }
     return out;
 }
 

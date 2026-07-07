@@ -446,9 +446,14 @@ static void test_bincode_plain_proof_header_and_roots() {
     }
 
     const auto proof = BincodeEncoder::encode_plain_proof(
-        cfg, a_proof, b_proof, a_rows, b_cols, hashA.data(), hashB.data());
+        cfg, a_proof, b_proof, a_rows, b_cols, hashA.data(), hashB.data(), 1);
     EXPECT(proof.size() > 36000);
     EXPECT(proof.size() < 38000);
+
+    const auto proof_v2 = BincodeEncoder::encode_plain_proof(
+        cfg, a_proof, b_proof, a_rows, b_cols, hashA.data(), hashB.data(), 2);
+    EXPECT(proof_v2.size() == proof.size() + 1);
+    EXPECT(proof_v2.back() == 0x00);
 
     uint64_t m = 0, n = 0, k = 0, r = 0;
     std::memcpy(&m, proof.data(), 8);

@@ -550,9 +550,13 @@ bool PearlStratumClient::parse_notify_object(const std::string& params_json) {
     if (!obj["job_id"].is_string() || !obj["header"].is_string()) return false;
     const int64_t height = obj["height"].is_number() ? obj["height"].to_int() : 0;
     const std::string job_id = obj["job_id"].to_string();
+    int cert_version = 1;
+    if (obj["cert_version"].is_number()) {
+        cert_version = static_cast<int>(obj["cert_version"].to_int());
+    }
     // Kryptex object notify carries the *network* target in `target` — never use
     // it for share PoW (nbits ~0x1a07ffff). Share difficulty comes from d= / vardiff.
-    auto ja = make_job(job_id, obj["header"].to_string(), "", height);
+    auto ja = make_job(job_id, obj["header"].to_string(), "", height, cert_version);
     if (job_cb_) job_cb_(ja, job_id);
     return true;
 }
@@ -570,7 +574,8 @@ bool PearlStratumClient::parse_notify_array(const propminer::JsonValue& params) 
 proto::JobAssignment PearlStratumClient::make_job(const std::string& job_id,
                                                    const std::string& header_hex,
                                                    const std::string& target_hex,
-                                                   int64_t height) {
+                                                   int64_t height,
+                                                   int cert_version) {
     proto::JobAssignment ja{};
     auto id_bytes = job_id_bytes(job_id);
     std::memcpy(ja.job_id.data(), id_bytes.data(), 16);
@@ -617,16 +622,18 @@ proto::JobAssignment PearlStratumClient::make_job(const std::string& job_id,
         std::lock_guard<std::mutex> lk(job_map_mtx_);
         sigma_hex_to_job_id_[sigma_key] = job_id;
         job_received_at_[job_id] = std::chrono::steady_clock::now();
+        job_cert_version_[job_id] = cert_version;
         current_job_id_ = job_id;
         current_job_at_ = job_received_at_[job_id];
     }
     char buf[160];
     std::snprintf(buf, sizeof(buf),
                   "stratum new job %s height=%lld share_nbits=0x%08x "
-                  "network_nbits=0x%08x diff=%.3f",
+                  "network_nbits=0x%08x diff=%.3f cert_version=%d",
                   job_id.substr(0, std::min<size_t>(12, job_id.size())).c_str(),
                   static_cast<long long>(height), ja.target_nbits,
-                  ja.network_target_nbits, effective_share_difficulty());
+                  ja.network_target_nbits, effective_share_difficulty(),
+                  cert_version);
     stratum_log(buf);
     return ja;
 }
@@ -645,6 +652,13 @@ std::string PearlStratumClient::job_id_for_sigma(
     auto it = sigma_hex_to_job_id_.find(hex);
     if (it != sigma_hex_to_job_id_.end()) return it->second;
     return hex.substr(0, std::min<size_t>(32, hex.size()));
+}
+
+int PearlStratumClient::cert_version_for_job(const std::string& job_id) const {
+    std::lock_guard<std::mutex> lk(job_map_mtx_);
+    auto it = job_cert_version_.find(job_id);
+    if (it != job_cert_version_.end()) return it->second;
+    return 1;
 }
 
 bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
@@ -669,11 +683,6 @@ bool PearlStratumClient::submit_plain_proof(const std::string& job_id,
                     " current=" +
                     current_job_id_.substr(0, std::min<size_t>(12, current_job_id_.size())));
         share_log("submit-drop", "nonce=" + std::to_string(nonce) + " reason=superseded_job");
-        return false;
-    }
-    if (job_age_ms > 15000) {
-        stratum_log("submit dropped stale job age_ms=" + std::to_string(job_age_ms));
-        share_log("submit-drop", "nonce=" + std::to_string(nonce) + " reason=stale_job");
         return false;
     }
     if (job_age_ms >= 0) {

@@ -671,7 +671,16 @@ void WorkerOrchestrator::share_sender_thread_func() {
             }
             std::vector<uint8_t> proof;
             if (use_stratum_.load()) {
-                proof = builder.build_stratum_plain_proof(raw, *raw.sigma_ctx);
+                const std::string job_id =
+                    stratum_client_->job_id_for_sigma(raw.job.sigma);
+                if (job_id.empty()) {
+                    shares_dropped_.fetch_add(1);
+                    share_log("dropped", "reason=no_job_id_for_sigma nonce=" +
+                                         std::to_string(raw.nonce));
+                    continue;
+                }
+                const int cert_ver = stratum_client_->cert_version_for_job(job_id);
+                proof = builder.build_stratum_plain_proof(raw, *raw.sigma_ctx, cert_ver);
             } else {
                 proof = builder.build(raw, *raw.sigma_ctx);
             }

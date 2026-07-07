@@ -353,7 +353,8 @@ std::vector<uint8_t> ShareBuilder::build(const ShareFound& share,
 
 std::vector<uint8_t> ShareBuilder::build_stratum_plain_proof(
     const ShareFound& share,
-    const SigmaContext& ctx) const {
+    const SigmaContext& ctx,
+    int cert_version) const {
     if (share.a_opened_leaf_data.empty()) {
         throw std::runtime_error(
             "ShareFound.a_opened_leaf_data missing; cannot build A proof");
@@ -401,10 +402,11 @@ std::vector<uint8_t> ShareBuilder::build_stratum_plain_proof(
 
     const auto proof = BincodeEncoder::encode_plain_proof(
         cfg_, a_proof, b_proof, share.a_row_indices, share.b_col_indices,
-        hashA.data(), hashB.data());
+        hashA.data(), hashB.data(), cert_version);
     share_trace("build-ok",
                 "nonce=" + std::to_string(share.nonce) +
                 " proof_bytes=" + std::to_string(proof.size()) +
+                " cert_version=" + std::to_string(cert_version) +
                 " claimed=" + hex_prefix(claimed.data(), 32));
     return proof;
 }
