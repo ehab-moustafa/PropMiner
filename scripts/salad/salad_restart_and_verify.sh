@@ -14,6 +14,9 @@ if [[ -z "${SALAD_API_KEY:-}" ]]; then
   exit 1
 fi
 
+# WARNING: Salad merge-patch on environment_variables REPLACES the entire map.
+# Always send the full env block when patching via API (see kryptex.env.example).
+
 auth=(-H "Salad-Api-Key: ${SALAD_API_KEY}" -H "Accept: application/json")
 cg_url="${API_BASE}/organizations/${ORG}/projects/${PROJECT}/containers/${CONTAINER}"
 instances_url="${cg_url}/instances"
