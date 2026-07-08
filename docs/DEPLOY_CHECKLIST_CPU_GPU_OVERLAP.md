@@ -11,6 +11,7 @@ env-var kill switch. Roll them out in this order; validate between steps.
 | 2. Deferred share handling (share rebuild on side thread, GPU keeps mining) | **ON** | `PROPMINER_DEFER_SHARE_GPU=0` |
 | 3. Async seed conveyor (next sub-batch seed uploads on copy stream) | **ON** | `PROPMINER_ASYNC_SEED=0` |
 | 4. Async job installation (next job's resident B installs on a background thread; GPU keeps mining the old job until a fast swap) | **ON** (VRAM-guarded, self-disables when tight) | `PROPMINER_ASYNC_JOB_INSTALL=0` |
+| 5. Triple half-buffer (third compute workspace; share rebuild never blocks both GEMM halves) | **OFF** (opt-in) | `PROPMINER_TRIPLE_BUFFER=1` (VRAM-guarded; needs defer-share ON) |
 
 No proof math, share encoding, or transcript logic was touched.
 `ShareBuilder::VerifyShare` still gates every submission, so a regression shows

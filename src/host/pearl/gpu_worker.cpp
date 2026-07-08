@@ -273,6 +273,36 @@ GpuWorker::GpuWorker(int device_index, int gpu_index,
     ping_.allocate(cfg_, device_index_, ping_.stream);
     pong_.allocate(cfg_, device_index_, pong_.stream);
 
+    if (triple_buffer_enabled() && defer_share_gpu_enabled() &&
+        triple_vram_headroom_ok()) {
+        try {
+            check_cuda(cuStreamCreate(&third_.stream, CU_STREAM_NON_BLOCKING),
+                       "third stream");
+            third_.allocate(cfg_, device_index_, third_.stream);
+            triple_buffer_active_ = true;
+            size_t free_bytes = 0, total_bytes = 0;
+            cudaMemGetInfo(&free_bytes, &total_bytes);
+            std::fprintf(stderr,
+                "[gpu] triple-buffer enabled gpu=%d N=%d K=%d free_vram=%.1f/%.1fGiB\n",
+                device_index_, cfg_.n, cfg_.k,
+                free_bytes / (1024.0 * 1024.0 * 1024.0),
+                total_bytes / (1024.0 * 1024.0 * 1024.0));
+        } catch (...) {
+            third_.free();
+            triple_buffer_active_ = false;
+            std::fprintf(stderr,
+                "[gpu] triple-buffer disabled gpu=%d reason=alloc_failed\n",
+                device_index_);
+        }
+    } else if (triple_buffer_enabled()) {
+        const char* reason = !defer_share_gpu_enabled()
+                                 ? "defer_share_off"
+                                 : "insufficient_vram";
+        std::fprintf(stderr,
+            "[gpu] triple-buffer disabled gpu=%d reason=%s N=%d K=%d\n",
+            device_index_, reason, cfg_.n, cfg_.k);
+    }
+
     // Per-GPU nonce-space partition: top 16 bits = gpu_index, next 16 bits =
     // time-based entropy.  This lets multiple GPUs mine disjoint ranges without
     // central coordination.
@@ -282,6 +312,7 @@ GpuWorker::GpuWorker(int device_index, int gpu_index,
 
 GpuWorker::~GpuWorker() {
     stop();
+    if (triple_buffer_active_) third_.free();
     ping_.free();
     pong_.free();
     if (seed_copy_done_event_) { cudaEventDestroy(seed_copy_done_event_); seed_copy_done_event_ = nullptr; }
@@ -347,14 +378,28 @@ void GpuWorker::stop_share_gpu_thread() {
     }
     ping_.share_jobs_pending.store(0);
     pong_.share_jobs_pending.store(0);
+    third_.share_jobs_pending.store(0);
 }
 
 void GpuWorker::wait_until_half_free(HalfBuffers& half) {
     if (half.share_jobs_pending.load(std::memory_order_acquire) == 0) return;
+    const auto t0 = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lk(share_mtx_);
     share_done_cv_.wait(lk, [&] {
         return half.share_jobs_pending.load(std::memory_order_acquire) == 0;
     });
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    if (ms > 0) {
+        half_wait_ms_total_.fetch_add(static_cast<uint64_t>(ms),
+                                      std::memory_order_relaxed);
+        half_wait_count_.fetch_add(1, std::memory_order_relaxed);
+        uint64_t cur_max = half_wait_ms_max_.load(std::memory_order_relaxed);
+        while (static_cast<uint64_t>(ms) > cur_max &&
+               !half_wait_ms_max_.compare_exchange_weak(
+                   cur_max, static_cast<uint64_t>(ms),
+                   std::memory_order_relaxed)) {}
+    }
 }
 
 void GpuWorker::enqueue_share_trigger(HalfBuffers& half, uint64_t nonce,
@@ -508,6 +553,73 @@ bool GpuWorker::async_vram_headroom_ok(bool need_workspace) {
     const size_t margin = static_cast<size_t>(512) << 20;  // 512 MiB
     const size_t need = resident_b + staging + margin;
     return free_bytes >= need;
+}
+
+bool GpuWorker::triple_buffer_enabled() {
+    static const int cached = pearl::triple_buffer_enabled() ? 1 : 0;
+    return cached == 1;
+}
+
+bool GpuWorker::triple_vram_headroom_ok() const {
+    size_t free_bytes = 0, total_bytes = 0;
+    if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess) {
+        return false;
+    }
+    const size_t m = static_cast<size_t>(cfg_.m);
+    const size_t n = static_cast<size_t>(cfg_.n);
+    const size_t k = static_cast<size_t>(cfg_.k);
+    const size_t r = static_cast<size_t>(cfg_.r);
+    const size_t half_device = 2 * m * k + m * n * 2 + 6 * m * r + 2 * k * r +
+                               m * 4 + (m * k) / 32 + 4096;
+    const size_t noise_b = n * std::max(k, r) * sizeof(int32_t);
+    const size_t noise_a = std::max(m * r, m * k) * sizeof(int32_t);
+    const size_t transcript = static_cast<size_t>(m / cfg_.bM) *
+                              static_cast<size_t>(n / cfg_.bN) * 256 * 16 * 4;
+    const size_t workspace_per_half = noise_b + noise_a + transcript + (1ULL << 20);
+    const size_t resident_b = 2 * n * k + 5 * n * r + 2 * k * r + 4 * n +
+                              (n * k) / 32 + 4096;
+    const size_t margin = 512ULL << 20;
+    // Steady-state peak: three full halves (device + workspace each) + resident B.
+    // ping/pong device buffers are already allocated when this runs in the ctor.
+    const size_t peak_total = 3 * (half_device + workspace_per_half) + resident_b +
+                              margin;
+    const size_t already_device = 2 * half_device;
+    const size_t incremental = peak_total > already_device
+                                   ? peak_total - already_device
+                                   : peak_total;
+    // Hard floor at prod N/K: ~11 GiB free required (audit: dual @79% leaves ~6.7).
+    if (n >= 262144 && k >= 2048) {
+        return free_bytes >= (11ULL << 30) && free_bytes >= incremental;
+    }
+    return free_bytes >= incremental;
+}
+
+const char* GpuWorker::half_tag(const HalfBuffers& half) const {
+    if (&half == &ping_) return "ping";
+    if (&half == &pong_) return "pong";
+    if (&half == &third_) return "third";
+    return "half";
+}
+
+void GpuWorker::upload_pow_target_all_halves(uint32_t nbits) {
+    upload_pow_target(ping_, nbits);
+    upload_pow_target(pong_, nbits);
+    if (triple_buffer_active_) upload_pow_target(third_, nbits);
+}
+
+void GpuWorker::drain_all_halves_for_sigma() {
+    if (!defer_share_gpu_enabled()) return;
+    wait_until_half_free(ping_);
+    wait_until_half_free(pong_);
+    if (triple_buffer_active_) wait_until_half_free(third_);
+}
+
+void GpuWorker::sync_all_compute_streams() {
+    check_cuda(cuStreamSynchronize(ping_.stream), "sync ping stream");
+    check_cuda(cuStreamSynchronize(pong_.stream), "sync pong stream");
+    if (triple_buffer_active_) {
+        check_cuda(cuStreamSynchronize(third_.stream), "sync third stream");
+    }
 }
 
 void GpuWorker::async_install_loop() {
@@ -1300,6 +1412,8 @@ void GpuWorker::run() {
     uint64_t global_iter = 0;
     int batch = matmuls_per_poll_.load();
     bool first = true;
+    int launch_i = 0;
+    int triple_warmup = 0;
     std::shared_ptr<SigmaContext> current_sigma;
     auto last_mining_log = std::chrono::steady_clock::now();
     uint64_t gpu_hits_since_log = 0;
@@ -1341,14 +1455,17 @@ void GpuWorker::run() {
             // Synchronous install: first job (nothing to mine yet) or async
             // disabled. Blocks the loop while resident B is built — unchanged
             // proven path.
-            if (defer_share_gpu_enabled()) {
-                wait_until_half_free(*ping);
-                wait_until_half_free(*pong);
+            if (current_sigma) {
+                drain_all_halves_for_sigma();
+                sync_all_compute_streams();
             }
             current_sigma = new_sigma;
             batch = matmuls_per_poll_.load();
             install_sigma(*current_sigma, *ping);
             install_sigma(*current_sigma, *pong);
+            if (triple_buffer_active_) {
+                install_sigma(*current_sigma, third_);
+            }
             target_dirty_.store(false);
             first = true;
         } else if (async_install) {
@@ -1364,20 +1481,17 @@ void GpuWorker::run() {
                 }
                 if (ready == want && ready != current_sigma) {
                     // Same barriers as the synchronous path: drain deferred
-                    // shares and both compute streams before rebinding the B
+                    // shares and all compute streams before rebinding the B
                     // pointers, so no in-flight batch/share reads the old B.
-                    if (defer_share_gpu_enabled()) {
-                        wait_until_half_free(*ping);
-                        wait_until_half_free(*pong);
-                    }
-                    check_cuda(cuStreamSynchronize(ping_.stream),
-                               "async swap drain ping");
-                    check_cuda(cuStreamSynchronize(pong_.stream),
-                               "async swap drain pong");
+                    drain_all_halves_for_sigma();
+                    sync_all_compute_streams();
                     current_sigma = ready;
                     batch = matmuls_per_poll_.load();
                     bind_sigma_to_half(*current_sigma, *ping);
                     bind_sigma_to_half(*current_sigma, *pong);
+                    if (triple_buffer_active_) {
+                        bind_sigma_to_half(*current_sigma, third_);
+                    }
                     target_dirty_.store(false);
                     first = true;
                     share_trace("async-install-swap",
@@ -1395,13 +1509,140 @@ void GpuWorker::run() {
 
         if (!new_sigma && target_dirty_.exchange(false)) {
             const uint32_t nbits = target_nbits_.load();
-            upload_pow_target_both_halves(nbits);
-            check_cuda(cuStreamSynchronize(ping_.stream), "vardiff pow_target sync ping");
-            check_cuda(cuStreamSynchronize(pong_.stream), "vardiff pow_target sync pong");
+            upload_pow_target_all_halves(nbits);
+            sync_all_compute_streams();
         }
 
         if (!current_sigma) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        if (triple_buffer_active_) {
+            HalfBuffers* ring[3] = {&ping_, &pong_, &third_};
+            const int num_halves = 3;
+            const int pipeline_depth = 2;
+
+            if (first) {
+                launch_i = 0;
+                triple_warmup = pipeline_depth;
+                first = false;
+            }
+
+            if (triple_warmup > 0) {
+                if (!logged_first_queue_) {
+                    logged_first_queue_ = true;
+                    std::fprintf(stderr,
+                        "[gpu] first batch queued (count=%d, graph=%s, triple=on)\n",
+                        batch, ring[launch_i]->graph_ready ? "on" : "off");
+                }
+                wait_until_half_free(*ring[launch_i]);
+                queue_batch(*ring[launch_i], seed_base_ + global_iter, batch);
+                global_iter += batch;
+                launch_i = (launch_i + 1) % num_halves;
+                --triple_warmup;
+                continue;
+            }
+
+            const int complete_i =
+                (launch_i + num_halves - pipeline_depth) % num_halves;
+            HalfBuffers& complete = *ring[complete_i];
+
+            uint64_t t0 = now_ms();
+            wait_until_half_free(*ring[launch_i]);
+            if (stop_flag_) break;
+            queue_batch(*ring[launch_i], seed_base_ + global_iter, batch);
+            global_iter += batch;
+            total_iters_ += batch;
+            launch_i = (launch_i + 1) % num_halves;
+
+            if (!wait_for_batch(complete, 0)) {
+                const long long stall_ms = stall_restart_ms();
+                const bool aborted = batch_abort_requested_.exchange(false);
+                std::fprintf(stderr,
+                    "[gpu] STALL: batch on gpu=%d exceeded %lld ms with no progress "
+                    "(wedged CUDA stream%s). Exiting for supervisor restart "
+                    "(set PROPMINER_STALL_RESTART_MS=0 to disable).\n",
+                    device_index_, stall_ms,
+                    aborted ? "; health-monitor abort" : "");
+                std::fflush(stderr);
+                std::_Exit(42);
+            }
+            batch_abort_requested_.store(false);
+
+            const auto winners = scan_winners(complete, batch);
+            gpu_hits_since_log += winners.size();
+            const bool defer_share = defer_share_gpu_enabled();
+            for (int winner : winners) {
+                const uint64_t nonce =
+                    complete.batch_seed_start + static_cast<uint64_t>(winner);
+                const auto& header = complete.host_header_storage[winner];
+                if (defer_share) {
+                    enqueue_share_trigger(complete, nonce, header, current_sigma);
+                } else {
+                    handle_trigger(complete, current_sigma, header, nonce);
+                }
+            }
+            if (watchdog_) watchdog_->heartbeat();
+
+            if (share_trace_enabled()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last_mining_log >= std::chrono::seconds(30)) {
+                    share_trace("mining-heartbeat",
+                                "gpu=" + std::to_string(device_index_) +
+                                " iters=" + std::to_string(total_iters_.load()) +
+                                " batch=" + std::to_string(batch) +
+                                " target=" + nbits_hex(target_nbits_.load()) +
+                                " gpu_hits_30s=" + std::to_string(gpu_hits_since_log) +
+                                " hashrate_ths=" + std::to_string(hashrate_.load() / 1e12) +
+                                " triple=on");
+                    gpu_hits_since_log = 0;
+                    last_mining_log = now;
+                }
+            }
+
+            double ms = 0.0;
+            bool gpu_timed = false;
+            if (complete.batch_start_event && complete.batch_done_event) {
+                float gpu_ms = 0.0f;
+                cudaError_t te = cudaEventElapsedTime(
+                    &gpu_ms, complete.batch_start_event, complete.batch_done_event);
+                if (te == cudaSuccess && gpu_ms > 0.0f) {
+                    ms = static_cast<double>(gpu_ms);
+                    gpu_timed = true;
+                }
+            }
+            if (!gpu_timed) {
+                ms = static_cast<double>(now_ms() - t0);
+            }
+            last_iter_ms_.store(ms);
+            if (ms > 0.0) {
+                const double sec = ms / 1000.0;
+                const double ips = static_cast<double>(batch) / sec;
+                const double tmads = mining_mac_volume(cfg_) * ips / 1e12;
+                const double tiles_per_iter =
+                    static_cast<double>(cfg_.m / cfg_.bM) * (cfg_.n / cfg_.bN);
+                const double tiles_per_sec = ips * tiles_per_iter;
+                const double hr = tiles_per_sec * cfg_.difficulty_adjustment_factor();
+                tmads_per_sec_.store(tmads);
+                hashrate_.store(hr);
+                if (!logged_first_hashrate_ && hr > 0.0) {
+                    logged_first_hashrate_ = true;
+                    const HashrateMetrics metrics = hashrate_metrics_from_rates(
+                        cfg_, tmads, hr, ms, batch, graph_batch_.load());
+                    SystemTelemetry telemetry;
+                    SystemSnapshot sys = telemetry.sample(device_index_, 0);
+                    const char* stratum_env = std::getenv("PROPMINER_USE_STRATUM");
+                    if (!stratum_env || stratum_env[0] != '0') {
+                        sys.pool_share_diff = resolve_stratum_share_diff_double();
+                    }
+                    std::fprintf(stderr,
+                        "[gpu] first batch completed in %.0f ms (%s, triple=on)\n",
+                        ms, gpu_timed ? "gpu" : "wall");
+                    print_hashrate_metrics_line(stderr, "[gpu] ", metrics, &sys);
+                    print_hashrate_health(stderr, "[gpu] ", metrics, &sys);
+                }
+            }
             continue;
         }
 

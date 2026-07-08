@@ -64,6 +64,12 @@ public:
     uint64_t total_iters() const { return total_iters_.load(); }
     int device_index() const { return device_index_; }
 
+    // Pipeline instrumentation (wait_until_half_free stalls).
+    uint64_t half_wait_ms_total() const { return half_wait_ms_total_.load(); }
+    uint32_t half_wait_count() const { return half_wait_count_.load(); }
+    uint64_t half_wait_ms_max() const { return half_wait_ms_max_.load(); }
+    bool triple_buffer_active() const { return triple_buffer_active_; }
+
     void set_watchdog(Watchdog* wd) { watchdog_ = wd; }
 
     // Orchestrator thermal pause (PeakMiner-style): worker spins idle without
@@ -206,6 +212,15 @@ private:
     // async, use sync) when headroom is tight so the async path can never OOM.
     bool async_vram_headroom_ok(bool need_workspace);
 
+    // Triple half-buffer (PROPMINER_TRIPLE_BUFFER). Third compute workspace so
+    // share rebuild on one half leaves two free for GEMM rotation.
+    static bool triple_buffer_enabled();
+    bool triple_vram_headroom_ok() const;
+    const char* half_tag(const HalfBuffers& half) const;
+    void upload_pow_target_all_halves(uint32_t nbits);
+    void drain_all_halves_for_sigma();
+    void sync_all_compute_streams();
+
     // Scan batch for all PoW hits (status==1). Caller must sync stream first.
     std::vector<int> scan_winners(HalfBuffers& half, int batch);
 
@@ -226,6 +241,13 @@ private:
 
     HalfBuffers ping_;
     HalfBuffers pong_;
+    HalfBuffers third_;
+    bool triple_buffer_active_ = false;
+
+    // Pipeline stall instrumentation (wait_until_half_free wall time).
+    std::atomic<uint64_t> half_wait_ms_total_{0};
+    std::atomic<uint32_t> half_wait_count_{0};
+    std::atomic<uint64_t> half_wait_ms_max_{0};
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_flag_{false};

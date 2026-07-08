@@ -1350,6 +1350,16 @@ int WorkerOrchestrator::run() {
                 }
                 std::printf("\n");
             }
+            if (!workers_.empty()) {
+                const auto& w = workers_.front();
+                std::printf(
+                    "pipeline: half_wait_count=%u half_wait_ms_max=%llu "
+                    "half_wait_ms_total=%llu triple=%s\n",
+                    w->half_wait_count(),
+                    static_cast<unsigned long long>(w->half_wait_ms_max()),
+                    static_cast<unsigned long long>(w->half_wait_ms_total()),
+                    w->triple_buffer_active() ? "on" : "off");
+            }
         } else if (bench_mode) {
             std::cout << "hashrate: waiting for first batch..." << std::endl;
         } else {
