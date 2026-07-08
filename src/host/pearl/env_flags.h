@@ -70,4 +70,32 @@ inline int stall_restart_delay_sec() {
     return 3;
 }
 
+// Health monitor: no iter progress + wedge signature (high util, low power).
+inline int64_t progress_stall_warn_ms() {
+    const char* env = std::getenv("PROPMINER_PROGRESS_STALL_WARN_MS");
+    if (env && env[0]) {
+        const long long v = std::atoll(env);
+        if (v >= 5000 && v <= 120000) return v;
+    }
+    return 12000;  // warn + soft recovery at 12s (healthy batch << 1s)
+}
+
+inline int64_t progress_stall_abort_ms() {
+    const char* env = std::getenv("PROPMINER_PROGRESS_STALL_ABORT_MS");
+    if (env && env[0]) {
+        const long long v = std::atoll(env);
+        if (v >= 10000 && v <= 120000) return v;
+    }
+    return 18000;  // abort batch wait at 18s (before default 30s stall exit)
+}
+
+inline int wedge_power_threshold_w() {
+    const char* env = std::getenv("PROPMINER_WEDGE_POWER_THRESHOLD_W");
+    if (env && env[0]) {
+        const int v = std::atoi(env);
+        if (v > 0 && v <= 500) return v;
+    }
+    return 150;  // 100% util + <150W = spinning wedge (healthy ~450W)
+}
+
 }  // namespace pearl

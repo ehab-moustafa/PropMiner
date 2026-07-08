@@ -62,6 +62,7 @@ public:
     double last_iter_ms() const { return last_iter_ms_.load(); }
     int matmuls_per_poll() const { return matmuls_per_poll_.load(); }
     uint64_t total_iters() const { return total_iters_.load(); }
+    int device_index() const { return device_index_; }
 
     void set_watchdog(Watchdog* wd) { watchdog_ = wd; }
 
@@ -69,6 +70,11 @@ public:
     // tearing down CUDA context.
     void set_paused(bool paused) { pause_flag_.store(paused); }
     bool paused() const { return pause_flag_.load(); }
+
+    // Orchestrator health monitor: abort in-flight batch wait so stall recovery
+    // triggers before the full PROPMINER_STALL_RESTART_MS timeout.
+    void request_batch_abort() { batch_abort_requested_.store(true); }
+    void clear_batch_abort() { batch_abort_requested_.store(false); }
 
 private:
     struct HalfBuffers {
@@ -197,6 +203,7 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_flag_{false};
     std::atomic<bool> pause_flag_{false};
+    std::atomic<bool> batch_abort_requested_{false};
     std::thread thread_;
 
     void upload_pow_target(HalfBuffers& half, uint32_t nbits);

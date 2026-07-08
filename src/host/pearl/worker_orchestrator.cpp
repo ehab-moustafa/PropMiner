@@ -337,6 +337,82 @@ void WorkerOrchestrator::start_watchdog_if_needed() {
     }
 }
 
+void WorkerOrchestrator::try_soft_gpu_recovery(const char* reason) {
+    std::fprintf(stderr,
+        "[health] %s — soft recovery: brief pause + republish current job\n",
+        reason);
+    std::fflush(stderr);
+    for (auto& w : workers_) w->set_paused(true);
+    auto entry = bus_.drain_latest();
+    if (entry.ctx) {
+        for (auto& w : workers_) w->set_sigma(entry.ctx);
+    }
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    for (auto& w : workers_) w->set_paused(false);
+}
+
+void WorkerOrchestrator::monitor_gpu_progress(const SystemSnapshot& sys) {
+    if (cfg_.speed_test_seconds > 0 || thermal_paused_ || workers_.empty()) {
+        return;
+    }
+    const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    if (gpu_health_.size() != workers_.size()) {
+        gpu_health_.assign(workers_.size(), GpuProgressHealth{});
+        for (size_t i = 0; i < workers_.size(); ++i) {
+            gpu_health_[i].last_iters = workers_[i]->total_iters();
+            gpu_health_[i].last_change_ms = now;
+        }
+        return;
+    }
+
+    const bool wedge_sig =
+        sys.nvidia_smi &&
+        sys.gpu_util_pct >= 80 &&
+        sys.gpu_power_w >= 0 &&
+        sys.gpu_power_w < wedge_power_threshold_w();
+
+    for (size_t i = 0; i < workers_.size(); ++i) {
+        auto& h = gpu_health_[i];
+        auto& w = workers_[i];
+        const uint64_t iters = w->total_iters();
+        if (iters != h.last_iters) {
+            h.last_iters = iters;
+            h.last_change_ms = now;
+            h.soft_recovery_count = 0;
+            h.abort_requested = false;
+            continue;
+        }
+
+        const int64_t stalled_ms = now - h.last_change_ms;
+        if (stalled_ms < progress_stall_warn_ms()) continue;
+
+        if (stalled_ms >= progress_stall_abort_ms()) {
+            if (!h.abort_requested) {
+                h.abort_requested = true;
+                std::fprintf(stderr,
+                    "[health] GPU %d no progress for %lld ms%s — requesting batch "
+                    "abort (fast stall path; supervisor restart ~%ds)\n",
+                    w->device_index(), static_cast<long long>(stalled_ms),
+                    wedge_sig ? " [wedge: high util, low power]" : "",
+                    stall_restart_delay_sec());
+                std::fflush(stderr);
+                w->request_batch_abort();
+            }
+            continue;
+        }
+
+        if (h.soft_recovery_count == 0) {
+            h.soft_recovery_count = 1;
+            const char* reason = wedge_sig
+                ? "GPU wedge suspected (high util, low power, no iter progress)"
+                : "GPU progress stalled (no new iters)";
+            try_soft_gpu_recovery(reason);
+        }
+    }
+}
+
 bool WorkerOrchestrator::ensure_connected_and_registered() {
     if (client_ && client_->connected() && registered_.load()) return true;
     if (cfg_.pool_endpoints.empty()) {
@@ -1158,6 +1234,16 @@ int WorkerOrchestrator::run() {
         workers_.push_back(std::move(w));
     }
 
+    gpu_health_.assign(workers_.size(), GpuProgressHealth{});
+    {
+        const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        for (size_t i = 0; i < workers_.size(); ++i) {
+            gpu_health_[i].last_iters = workers_[i]->total_iters();
+            gpu_health_[i].last_change_ms = now;
+        }
+    }
+
     for (auto& w : workers_) w->start();
 
     if (!bench_mode) {
@@ -1213,6 +1299,8 @@ int WorkerOrchestrator::run() {
                         primary_gpu, sys.gpu_temp_c);
                 }
             }
+
+            monitor_gpu_progress(sys);
 
             if (use_stratum_.load() && stratum_client_ &&
                 stratum_client_->connected()) {

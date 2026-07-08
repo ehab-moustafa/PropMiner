@@ -142,6 +142,10 @@ Legacy monolithic `--tune-autotune`: `PROPMINER_TUNE_ISOLATED=0` (fragile on wed
 | Shell supervisor loop | `PROPMINER_RESTART_ON_EXIT` | `1` |
 | Thermal pause | `PROPMINER_GPU_TEMP_STOP` / `_START` | off (set e.g. 85/75) |
 | In-process watchdog | default on | republishes job on soft stall |
+| **Progress monitor** | `PROPMINER_PROGRESS_STALL_WARN_MS=12000` | 12s no iters → soft recovery (pause + republish) |
+| **Fast abort** | `PROPMINER_PROGRESS_STALL_ABORT_MS=18000` | 18s no iters → batch abort → rc=42 → 3s restart |
+| **Wedge signature** | `PROPMINER_WEDGE_POWER_THRESHOLD_W=150` | high util + power below this = wedge suspected |
+| **cluster_m default** | `1` (was 4) | prevents GeForce Blackwell wedge in production |
 
 ---
 

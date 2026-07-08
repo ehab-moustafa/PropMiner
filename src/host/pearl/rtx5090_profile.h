@@ -40,8 +40,9 @@ struct Rtx5090Profile {
     static constexpr int kMaxMineBatch = 32;
     static constexpr int kDefaultBatch = kDefaultMineBatch;  // legacy alias
 
-    // Kryptex/stratum prod default; override via PEARL_GEMM_CONSUMER_CLUSTER_M.
-    static constexpr int kProdDefaultClusterM = 4;
+    // Consumer GeForce Blackwell (RTX 5090): cluster_m>1 wedges on sm_120a.
+    // Datacenter GPUs may override via PEARL_GEMM_CONSUMER_CLUSTER_M.
+    static constexpr int kProdDefaultClusterM = 1;
 
     // Stratum share difficulty when pool has not sent vardiff yet (also PROPMINER_STRATUM_DIFF).
     // Lower = easier shares, more frequent submits (Salad: helps before job supersede).

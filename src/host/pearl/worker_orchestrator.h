@@ -83,6 +83,8 @@ private:
     std::vector<proto::GpuCard> enumerate_gpu_cards();
     void reset_pool_session();
     void start_watchdog_if_needed();
+    void try_soft_gpu_recovery(const char* reason);
+    void monitor_gpu_progress(const SystemSnapshot& sys);
     int backoff_ms(int attempt) const;
     const PoolEndpoint& active_pool() const;
     void set_pool_state(PoolState state);
@@ -121,6 +123,13 @@ private:
     std::atomic<uint64_t> shares_accepted_{0};
     std::atomic<uint64_t> shares_rejected_{0};
     bool thermal_paused_ = false;
+    struct GpuProgressHealth {
+        uint64_t last_iters = 0;
+        int64_t last_change_ms = 0;
+        int soft_recovery_count = 0;
+        bool abort_requested = false;
+    };
+    std::vector<GpuProgressHealth> gpu_health_;
     int reconnect_attempt_ = 0;
     std::string last_pool_error_;
 
