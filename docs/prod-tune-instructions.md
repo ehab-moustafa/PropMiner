@@ -2,7 +2,7 @@
 
 One-time full tune on a **native NVIDIA RTX 5090** (not WSL/Salad). Finds optimal kernel knobs + batch/cluster/carveout, then reuse winners on all mining boxes via env or cache.
 
-**Time:** ~2–3 hours (knob sweep + runtime autotune).  
+**Time:** ~3–4 hours (optional knob sweep + full runtime autotune with 4 N values).  
 **No wallet required** — tune never connects to the pool.
 
 ---
@@ -78,58 +78,31 @@ nvidia-smi
 | Path | Contents |
 |------|----------|
 | `/workspace/tune_prod.log` | Full log |
-| `~/.cache/propminer/autotune.json` | batch, graph_batch, cluster_m, carveout |
-| `~/.cache/propminer/kernel_knobs.json` | KBLOCK, STAGES, SWIZZLE, MIN_BLOCKS |
-| `/workspace/PropMiner/build/knob_sweep_results/` | Per-variant cmake/build logs |
+| `build/tune_full_raw.tsv` | Every run: TMAD/s + GPU temp/power/util + CPU/RAM/VRAM |
+| `build/tune_full_results.txt` | Human-readable lines |
+| `build/tune_full_summary.txt` | Global winner + best settings per N |
+| `build/tune_full_winners_by_n.tsv` | Best batch/graph/cluster per N |
+| `~/.cache/propminer/tune_full_result.env` | Fleet mining env (global winner) |
+| `~/.cache/propminer/kernel_knobs.json` | KBLOCK, STAGES, SWIZZLE (step 1 only) |
 
 **When done:**
 ```bash
-grep -E 'Winner|new best|tune-prod Done' /workspace/tune_prod.log
-cat ~/.cache/propminer/autotune.json
-cat ~/.cache/propminer/kernel_knobs.json
+cat ~/.cache/propminer/tune_full_result.env
+cat build/tune_full_summary.txt
+head -5 build/tune_full_raw.tsv
 ```
 
 ---
 
 ## Apply winners to mining fleet
 
-Copy values from `autotune.json` into env on all boxes (same `PROPMINER_N_CAP=32768`):
-
-```
-PROPMINER_BATCH=<winner batch>
-PROPMINER_GRAPH_BATCH=<winner graph_batch>
-PEARL_GEMM_CONSUMER_CLUSTER_M=<winner cluster_m>
-PROPMINER_USE_TUNE_CACHE=1
-PROPMINER_AUTOTUNE=0
-```
-
-Or bake env defaults — `autotune.json` is keyed per GPU UUID and won't auto-apply across 200 vast boxes.
-
----
-
-## Wedge-proof alternative (process-isolated sweep with retries)
-
-The default runtime tune (`tune_runtime_prod.sh`) now uses **process-isolated**
-sweep with **3 retries per combo** (configurable). Each batch runs as its own
-short `propminer --bench` under `timeout`; wedges only kill that child.
-
 ```bash
-cd /workspace/PropMiner
-PROPMINER_N_CAP=32768 ./scripts/tune_runtime_safe.sh
-# or via tune-prod step 2 (isolated is default):
-PROPMINER_SKIP_KNOB_TUNE=1 PROPMINER_N_CAP=32768 ./scripts/tune_prod_5090.sh
+set -a && source ~/.cache/propminer/tune_full_result.env && set +a
+export PROPMINER_MODE=mine PROPMINER_WALLET=<wallet>
+./scripts/docker_entrypoint.sh
 ```
 
-| Env | Default | Meaning |
-|-----|---------|---------|
-| `PROPMINER_TUNE_ISOLATED` | `1` | Safe per-process sweep (recommended) |
-| `PROPMINER_TUNE_MAX_RETRIES` | `3` | Attempts per combo before FAILED |
-| `PROPMINER_TUNE_RETRY_COOLDOWN_SEC` | `3` | Cooldown + GPU reset between retries |
-| `PROPMINER_TUNE_SAFE_GRAPH` | `0` | Graphs off during sweep (safe) |
-
-Output: `~/.cache/propminer/tune_safe_result.env` with fleet mining env.
-
-Legacy monolithic `--tune-autotune`: `PROPMINER_TUNE_ISOLATED=0` (fragile on wedges).
+Copy `tune_full_result.env` to all boxes. **Mining N must match tune N** (`PROPMINER_N_CAP` in the env file).
 
 ---
 
@@ -142,38 +115,37 @@ Legacy monolithic `--tune-autotune`: `PROPMINER_TUNE_ISOLATED=0` (fragile on wed
 | Shell supervisor loop | `PROPMINER_RESTART_ON_EXIT` | `1` |
 | Thermal pause | `PROPMINER_GPU_TEMP_STOP` / `_START` | off (set e.g. 85/75) |
 | In-process watchdog | default on | republishes job on soft stall |
-| **Progress monitor** | `PROPMINER_PROGRESS_STALL_WARN_MS=12000` | 12s no iters → soft recovery (pause + republish) |
-| **Fast abort** | `PROPMINER_PROGRESS_STALL_ABORT_MS=18000` | 18s no iters → batch abort → rc=42 → 3s restart |
+| **Progress monitor** | `PROPMINER_PROGRESS_STALL_ABORT_MS=18000` | 18s no iters → batch abort → rc=42 → 3s restart |
 | **Wedge signature** | `PROPMINER_WEDGE_POWER_THRESHOLD_W=150` | high util + power below this = wedge suspected |
-| **cluster_m default** | `1` (was 4) | prevents GeForce Blackwell wedge in production |
-
----
-
-## Lighter alternative (runtime tune only)
-
-Salad/WSL one-liner — no nvcc, no knob rebuild:
-
-```bash
-export DEBIAN_FRONTEND=noninteractive && apt-get update && apt-get install -y curl ca-certificates libssl3 xz-utils && curl -fsSL --retry 5 --retry-delay 3 https://raw.githubusercontent.com/ehab-moustafa/PropMiner/master/scripts/salad/ubuntu24_one_liner_tune.sh | bash; sleep infinity
-```
-
-On WSL, set `PROPMINER_BENCH_NO_GRAPH=1` before running if graphs wedge.
 
 ---
 
 ## What `tune-prod` sweeps
 
-**Step 1 — kernel knobs** (rebuild per variant): KBLOCK, STAGES, SWIZZLE, MIN_BLOCKS  
-**Step 2 — runtime** (fixed M/N/K from `PROPMINER_N_CAP`): **full** isolated sweep via `tune_runtime_full.sh`:
+**Step 1 — kernel knobs** (optional, skip with `PROPMINER_SKIP_KNOB_TUNE=1`): KBLOCK, STAGES, SWIZZLE, MIN_BLOCKS  
 
-- batch {1,2,4,6,8,10,12,14,16,20,24,28,32,40,48}
-- graph on **and** off
-- graph_batch {1,2,4,8,16,32} divisors of batch (when graph on)
-- cluster_m {1,2,4} (default)
-- carveout {-1,50,80} only if `PROPMINER_TUNE_CARVEOUT=1`
+**Step 2 — runtime** via `tune_runtime_full.sh` (each combo = own `propminer --bench`, retries on wedge):
 
-Each combo is a separate `propminer --bench` process (~15s). Expect **~1 hour** on RTX 5090.
+| Axis | Default sweep |
+|------|----------------|
+| **N** | `32768 65536 131072 262144` (compare all four) |
+| batch | 1,2,4,6,8,10,12,14,16,20,24,28,32,40,48 |
+| graph | on and off |
+| graph_batch | 1,2,4,8,16,32 divisors of batch |
+| cluster_m | 1, 2, 4 |
 
-Quick batch-only sweep (old behavior): `PROPMINER_TUNE_QUICK=1 ./scripts/tune_runtime_prod.sh`
+**768 combos** (192 per N × 4 N) × ~15s ≈ **3+ hours**.
 
-Legacy monolithic (wedge-prone): `PROPMINER_TUNE_ISOLATED=0 ./scripts/tune_runtime_prod.sh`
+Single N only: `PROPMINER_TUNE_SWEEP_N=0 PROPMINER_N_CAP=131072 ./scripts/tune_prod_5090.sh`
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `PROPMINER_TUNE_N_VALUES` | `32768 65536 131072 262144` | N values to compare |
+| `PROPMINER_TUNE_SWEEP_N` | `1` | `0` = single `PROPMINER_N_CAP` only |
+| `PROPMINER_TUNE_MAX_RETRIES` | `3` | Retries per combo on wedge |
+| `PROPMINER_TUNE_GRAPHS` | `both` | `on`, `off`, or `both` |
+| `PROPMINER_TUNE_CLUSTERS` | `1` | `0` = cluster 1 only |
+
+---
+
+## Production resilience (mining)

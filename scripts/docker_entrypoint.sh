@@ -4,8 +4,7 @@
 #   test      — quick self-test only
 #   mine      — connect to pool and mine until stopped (requires PROPMINER_WALLET)
 #   tune      — offline kernel-knob sweep (KBLOCK/STAGES/SWIZZLE/MIN_BLOCKS)
-#   tune-prod — unified runtime autotune (batch + graph_batch + cluster + carveout)
-#   salad-tune — tune-prod + validation bench (Salad/WSL2, no nvcc)
+#   tune-prod — full runtime autotune (N × batch × graph_batch × cluster)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -63,9 +62,6 @@ case "${MODE}" in
     tune-prod|tune_prod|prod-tune)
         exec ./scripts/tune_prod_5090.sh "$@"
         ;;
-    salad-tune|salad_tune)
-        exec ./scripts/salad_tune_and_remaining.sh "$@"
-        ;;
     remaining|run-remaining|validate)
         exec ./scripts/run_remaining_5090.sh "$@"
         ;;
@@ -74,7 +70,7 @@ case "${MODE}" in
         ;;
     *)
         echo "[entrypoint] ERROR: unknown PROPMINER_MODE='${MODE_RAW}'." >&2
-        echo "[entrypoint] Valid values: full, test, mine, tune, tune-prod, salad-tune, remaining, verify-geforce." >&2
+        echo "[entrypoint] Valid values: full, test, mine, tune, tune-prod, remaining, verify-geforce." >&2
         exit 1
         ;;
 esac

@@ -400,7 +400,6 @@ mkdir -p "$(dirname "${ENV_OUT}")"
     echo "PROPMINER_AUTOTUNE=0"
     echo "PROPMINER_USE_TUNE_CACHE=0"
 } > "${ENV_OUT}"
-ln -sf "${ENV_OUT}" "${HOME}/.cache/propminer/tune_safe_result.env"
 
 echo ""
 echo "[full-tune] Files:"

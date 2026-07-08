@@ -30,7 +30,6 @@ jobs:
         run: |
           mkdir -p tune-kit/scripts tune-kit/docs
           cp scripts/tune_runtime_full.sh \
-             scripts/tune_runtime_safe.sh \
              scripts/tune_runtime_prod.sh \
              scripts/tune_prod_5090.sh \
              scripts/setup_cuda_env.sh \
@@ -38,21 +37,20 @@ jobs:
              tune-kit/scripts/
           cp docs/prod-tune-instructions.md tune-kit/docs/
           cat > tune-kit/RUNPOD.md <<'EOF'
-          # RunPod quick tune (RTX 5090)
+          # RunPod full tune (RTX 5090)
 
           ```bash
           git clone https://github.com/ehab-moustafa/PropMiner.git /workspace/PropMiner
-          cd /workspace/PropMiner
-          git submodule update --init --recursive
+          cd /workspace/PropMiner && git submodule update --init --recursive
           cmake -S . -B build -DPROP_MINER_CUDA_ARCH=blackwell \
             -DCMAKE_CUDA_ARCHITECTURES=120a -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target propminer -j"$(nproc)"
-          PROPMINER_N_CAP=32768 ./scripts/tune_runtime_safe.sh
-          cat ~/.cache/propminer/tune_safe_result.env
+          PROPMINER_SKIP_KNOB_TUNE=1 ./scripts/tune_prod_5090.sh 15
+          cat ~/.cache/propminer/tune_full_result.env
           ```
 
-          Baseline: PEARL_GEMM_CONSUMER_CLUSTER_M=1. Optional cluster sweep:
-          PROPMINER_TUNE_CLUSTERS=1 ./scripts/tune_runtime_prod.sh
+          Default: N sweep 32768, 65536, 131072, 262144 (~768 combos, ~3h).
+          Raw telemetry: build/tune_full_raw.tsv
           EOF
           tar czf propminer-tune-kit.tar.gz -C tune-kit .
           tar tzf propminer-tune-kit.tar.gz

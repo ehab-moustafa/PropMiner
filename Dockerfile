@@ -204,7 +204,8 @@ COPY --from=builder /root/PropMiner/scripts/tune_kernel_knobs_common.sh ./script
 COPY --from=builder /root/PropMiner/scripts/tune_mine_batch.sh ./scripts/tune_mine_batch.sh
 COPY --from=builder /root/PropMiner/scripts/tune_cluster_sweep.sh ./scripts/tune_cluster_sweep.sh
 COPY --from=builder /root/PropMiner/scripts/tune_prod_5090.sh ./scripts/tune_prod_5090.sh
-COPY --from=builder /root/PropMiner/scripts/salad_tune_and_remaining.sh ./scripts/salad_tune_and_remaining.sh
+COPY --from=builder /root/PropMiner/scripts/tune_runtime_full.sh ./scripts/tune_runtime_full.sh
+COPY --from=builder /root/PropMiner/scripts/tune_runtime_prod.sh ./scripts/tune_runtime_prod.sh
 COPY --from=builder /root/PropMiner/scripts/run_remaining_5090.sh ./scripts/run_remaining_5090.sh
 COPY --from=builder /root/PropMiner/scripts/pre_deploy_gate.sh ./scripts/pre_deploy_gate.sh
 COPY --from=builder /root/PropMiner/scripts/verify_geforce_transcript.sh ./scripts/verify_geforce_transcript.sh
@@ -271,7 +272,8 @@ COPY scripts/tune_kernel_knobs_common.sh ./scripts/tune_kernel_knobs_common.sh
 COPY scripts/tune_mine_batch.sh ./scripts/tune_mine_batch.sh
 COPY scripts/tune_cluster_sweep.sh ./scripts/tune_cluster_sweep.sh
 COPY scripts/tune_prod_5090.sh ./scripts/tune_prod_5090.sh
-COPY scripts/salad_tune_and_remaining.sh ./scripts/salad_tune_and_remaining.sh
+COPY scripts/tune_runtime_full.sh ./scripts/tune_runtime_full.sh
+COPY scripts/tune_runtime_prod.sh ./scripts/tune_runtime_prod.sh
 COPY scripts/run_remaining_5090.sh ./scripts/run_remaining_5090.sh
 COPY scripts/pre_deploy_gate.sh ./scripts/pre_deploy_gate.sh
 COPY scripts/verify_geforce_transcript.sh ./scripts/verify_geforce_transcript.sh

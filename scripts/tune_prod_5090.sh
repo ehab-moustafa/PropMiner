@@ -20,11 +20,11 @@ else
     "${ROOT}/scripts/tune_blackwell_knobs.sh" 15 3
 fi
 
-echo "[tune-prod] Step 2/2: runtime autotune (batch x graph_batch x cluster)..."
-"${ROOT}/scripts/tune_runtime_prod.sh" "${1:-15}" "${2:-3}"
+echo "[tune-prod] Step 2/2: runtime autotune (N × batch × graph_batch × cluster)..."
+"${ROOT}/scripts/tune_runtime_prod.sh" "${1:-15}"
 
 echo ""
-echo "[tune-prod] Done. Start mining:"
-echo "  PROPMINER_MODE=mine PROPMINER_USE_TUNE_CACHE=1 PROPMINER_AUTOTUNE=0"
-echo "  PROPMINER_WALLET=<wallet> ./scripts/docker_entrypoint.sh"
-echo "Cache: ~/.cache/propminer/autotune.json"
+echo "[tune-prod] Done. Start mining with:"
+echo "  set -a && source ~/.cache/propminer/tune_full_result.env && set +a"
+echo "  PROPMINER_MODE=mine PROPMINER_WALLET=<wallet> ./scripts/docker_entrypoint.sh"
+echo "Results: build/tune_full_raw.tsv  build/tune_full_summary.txt"
