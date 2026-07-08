@@ -101,7 +101,7 @@ template <typename TmaA, typename TmaB, typename SmemLayoutStagedA,
 CUTLASS_DEVICE void tma_issue_k_tile(
     TmaA const& tma_a, TmaB const& tma_b,
     TmaPipelineStorage<kStages>& pipe,
-    ElementIn* smem_a_base, ElementIn* smem_b_base,
+    int8_t* smem_a_base, int8_t* smem_b_base,
     TensorGA const& gA, TensorGB const& gB,
     int k_iter, int stg, int leader_thread = 0) {
   if (threadIdx.x != leader_thread) return;
