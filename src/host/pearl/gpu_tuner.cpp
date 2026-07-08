@@ -71,6 +71,11 @@ namespace {
         if (out.empty()) out.push_back(std::max(1, batch));
         return out;
     }
+
+    bool env_flag_enabled(const char* name) {
+        const char* v = std::getenv(name);
+        return v && v[0] && v[0] != '0';
+    }
 }
 
 GpuTuner::GpuTuner(int device_index) : device_index_(device_index) {}
@@ -253,12 +258,23 @@ TuningResult GpuTuner::tune_shapes(const std::vector<MiningConfig>& candidates,
     // and launch overhead dominates; still keep the option for odd drivers.
     const std::vector<bool> graph_opts = {true, false};
 
+    // Thread-block clusters (cluster_m>1) and shared-memory carveout only help
+    // on datacenter Blackwell (sm_90/sm_100). On consumer sm_120a (RTX 5090)
+    // they give no measurable gain and can wedge the CUDA stream (100% util,
+    // zero forward progress). A wedged combo trips the stall watchdog, which
+    // _Exit()s the whole process and aborts the entire sweep. Keep both axes
+    // opt-in so the default production autotune is robust on GeForce Blackwell.
+    const bool sweep_clusters = env_flag_enabled("PROPMINER_TUNE_CLUSTERS");
+    const bool sweep_carveout = env_flag_enabled("PROPMINER_TUNE_CARVEOUT");
+
     for (const MiningConfig& base : candidates) {
         std::vector<int> cluster_ms = {1};
         std::vector<int> carveouts = {-1};
         const bool is_blackwell = (base.bM == 128 && base.bN == 256);
-        if (is_blackwell) {
+        if (is_blackwell && sweep_clusters) {
             cluster_ms = {1, 2, 4};
+        }
+        if (is_blackwell && sweep_carveout) {
             carveouts = {-1, 50, 80};
         }
 
@@ -270,6 +286,15 @@ TuningResult GpuTuner::tune_shapes(const std::vector<MiningConfig>& candidates,
                 for (int graph_batch : graph_batches) {
                     for (int cluster_m : cluster_ms) {
                         for (int carveout : carveouts) {
+                            // Log (and flush) before the run so that if this
+                            // combo wedges the GPU, the last line pinpoints the
+                            // exact culprit.
+                            std::fprintf(stderr,
+                                "[autotune] trying batch=%d graph=%s "
+                                "graph_batch=%d cluster_m=%d carveout=%d\n",
+                                batch, use_graph ? "on" : "off", graph_batch,
+                                cluster_m, carveout);
+                            std::fflush(stderr);
                             double rate = benchmark_stable(
                                 base, batch, graph_batch, use_graph, cluster_m,
                                 carveout, seconds_per_candidate, repeats);

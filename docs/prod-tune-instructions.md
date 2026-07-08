@@ -122,6 +122,24 @@ On WSL, set `PROPMINER_BENCH_NO_GRAPH=1` before running if graphs wedge.
 ## What `tune-prod` sweeps
 
 **Step 1 — kernel knobs** (rebuild per variant): KBLOCK, STAGES, SWIZZLE, MIN_BLOCKS  
-**Step 2 — runtime** (fixed M/N/K from `PROPMINER_N_CAP`): batch × graph_batch × cluster_m {1,2,4} × carveout {-1,50,80}
+**Step 2 — runtime** (fixed M/N/K from `PROPMINER_N_CAP`): batch × graph_batch (cluster_m=1, carveout=-1 by default)
 
 N is **not** swept — tune and mine must use the **same** `PROPMINER_N_CAP`.
+
+### Cluster / carveout are opt-in (GeForce Blackwell safety)
+
+Thread-block clusters (`cluster_m` {2,4}) and shared-memory carveout {50,80} only
+help on **datacenter** Blackwell (sm_90/sm_100). On consumer **sm_120a (RTX 5090)**
+they give no measurable gain and can **wedge the CUDA stream** (100% GPU-util, ~110W,
+no forward progress) regardless of CUDA graphs — a wedge trips the stall watchdog and
+aborts the whole sweep. So the default runtime sweep tests **batch × graph_batch only**.
+
+To explicitly sweep them anyway (e.g. on a datacenter GPU), opt in:
+
+```
+PROPMINER_TUNE_CLUSTERS=1   # also sweep cluster_m {1,2,4}
+PROPMINER_TUNE_CARVEOUT=1   # also sweep carveout {-1,50,80}
+```
+
+Each combo is now logged before it runs (`[autotune] trying batch=… cluster_m=… carveout=…`),
+so if one wedges, the last log line names the exact culprit.
