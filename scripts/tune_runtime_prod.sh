@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # RTX 5090 / Stratum production runtime autotune.
 #
-# Default (PROPMINER_TUNE_ISOLATED=1): process-isolated safe sweep with retries
-#   — survives GPU wedges that kill the legacy single-process --tune-autotune.
+# Default (PROPMINER_TUNE_ISOLATED=1): process-isolated FULL sweep
+#   batch × graph_batch × cluster × graph on/off — each combo is its own process.
+#
+# Quick (PROPMINER_TUNE_QUICK=1): batch-only sweep (legacy tune_runtime_safe.sh).
 #
 # Legacy (PROPMINER_TUNE_ISOLATED=0): monolithic --tune-autotune → autotune.json
 #   (fragile on wedge-prone Blackwell driver stacks).
@@ -16,9 +18,13 @@ SECONDS_PER="${1:-15}"
 REPEATS="${2:-3}"
 
 if [[ "${PROPMINER_TUNE_ISOLATED:-1}" == "1" ]]; then
-    echo "[autotune] Using process-isolated safe sweep (retries=${PROPMINER_TUNE_MAX_RETRIES:-3})"
-    echo "[autotune] Set PROPMINER_TUNE_ISOLATED=0 for legacy monolithic --tune-autotune"
-    exec "${ROOT}/scripts/tune_runtime_safe.sh" "${SECONDS_PER}"
+    if [[ "${PROPMINER_TUNE_QUICK:-0}" == "1" ]]; then
+        echo "[autotune] Quick batch-only sweep (PROPMINER_TUNE_QUICK=1)"
+        exec "${ROOT}/scripts/tune_runtime_safe.sh" "${SECONDS_PER}"
+    fi
+    echo "[autotune] Full process-isolated sweep (batch × graph_batch × cluster × graph on/off)"
+    echo "[autotune] Set PROPMINER_TUNE_QUICK=1 for batch-only, PROPMINER_TUNE_ISOLATED=0 for legacy"
+    exec "${ROOT}/scripts/tune_runtime_full.sh" "${SECONDS_PER}"
 fi
 
 source "${ROOT}/scripts/setup_cuda_env.sh"

@@ -164,24 +164,16 @@ On WSL, set `PROPMINER_BENCH_NO_GRAPH=1` before running if graphs wedge.
 ## What `tune-prod` sweeps
 
 **Step 1 — kernel knobs** (rebuild per variant): KBLOCK, STAGES, SWIZZLE, MIN_BLOCKS  
-**Step 2 — runtime** (fixed M/N/K from `PROPMINER_N_CAP`): batch × graph_batch (cluster_m=1 default; use `PROPMINER_TUNE_CLUSTERS=1` to sweep 2/4)
+**Step 2 — runtime** (fixed M/N/K from `PROPMINER_N_CAP`): **full** isolated sweep via `tune_runtime_full.sh`:
 
-N is **not** swept — tune and mine must use the **same** `PROPMINER_N_CAP`.
+- batch {1,2,4,6,8,10,12,14,16,20,24,28,32,40,48}
+- graph on **and** off
+- graph_batch {1,2,4,8,16,32} divisors of batch (when graph on)
+- cluster_m {1,2,4} (default)
+- carveout {-1,50,80} only if `PROPMINER_TUNE_CARVEOUT=1`
 
-### Cluster / carveout are opt-in (GeForce Blackwell safety)
+Each combo is a separate `propminer --bench` process (~15s). Expect **~1 hour** on RTX 5090.
 
-Thread-block clusters (`cluster_m` {2,4}) and shared-memory carveout {50,80} only
-help on **datacenter** Blackwell (sm_90/sm_100). On consumer **sm_120a (RTX 5090)**
-they give no measurable gain and can **wedge the CUDA stream** (100% GPU-util, ~110W,
-no forward progress) regardless of CUDA graphs — a wedge trips the stall watchdog and
-aborts the whole sweep. So the default runtime sweep tests **batch × graph_batch only**.
+Quick batch-only sweep (old behavior): `PROPMINER_TUNE_QUICK=1 ./scripts/tune_runtime_prod.sh`
 
-To explicitly sweep them anyway (e.g. on a datacenter GPU), opt in:
-
-```
-PROPMINER_TUNE_CLUSTERS=1   # also sweep cluster_m {1,2,4}
-PROPMINER_TUNE_CARVEOUT=1   # also sweep carveout {-1,50,80}
-```
-
-Each combo is now logged before it runs (`[autotune] trying batch=… cluster_m=… carveout=…`),
-so if one wedges, the last log line names the exact culprit.
+Legacy monolithic (wedge-prone): `PROPMINER_TUNE_ISOLATED=0 ./scripts/tune_runtime_prod.sh`

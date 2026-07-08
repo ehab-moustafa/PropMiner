@@ -29,7 +29,8 @@ jobs:
       - name: Package tune kit
         run: |
           mkdir -p tune-kit/scripts tune-kit/docs
-          cp scripts/tune_runtime_safe.sh \
+          cp scripts/tune_runtime_full.sh \
+             scripts/tune_runtime_safe.sh \
              scripts/tune_runtime_prod.sh \
              scripts/tune_prod_5090.sh \
              scripts/setup_cuda_env.sh \
