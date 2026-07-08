@@ -15,6 +15,7 @@
 #include "job_bus.h"
 #include "pearl_types.h"
 #include "rtx5090_profile.h"
+#include "system_telemetry.h"
 #include "watchdog.h"
 
 namespace pearl {
