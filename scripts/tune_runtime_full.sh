@@ -37,7 +37,9 @@ SWEEP_N="${PROPMINER_TUNE_SWEEP_N:-1}"
 N_VALUES="${PROPMINER_TUNE_N_VALUES:-32768 65536 131072 262144}"
 export PROPMINER_STALL_RESTART_MS="${PROPMINER_STALL_RESTART_MS:-12000}"
 export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
-TIMEOUT_S=$(( PER + 45 ))
+BENCH_GRACE="${PROPMINER_BENCH_GRACE_SECONDS:-120}"
+# Must exceed bench PER + grace (sigma install at N=262144 K=4096 can take minutes).
+TIMEOUT_S=$(( PER + BENCH_GRACE + 90 ))
 
 source "${ROOT}/scripts/setup_cuda_env.sh"
 setup_cuda_runtime_env
@@ -61,7 +63,7 @@ WINNERS_N="${BUILD_DIR}/tune_full_winners_by_n.tsv"
 : > "${WINNERS_N}"
 
 printf '%s\n' \
-  'n_cap	batch	graph	graph_batch	cluster_m	carveout	status	tmad_per_sec	tops_pct	m	n	k	gpu_util_pct	gpu_mem_util_pct	gpu_temp_c	gpu_power_w	gpu_power_limit_w	vram_used_mb	vram_total_mb	cpu_util_pct	ram_used_mb	ram_total_mb' \
+  'n_cap	batch	graph	graph_batch	cluster_m	carveout	status	tmad_per_sec	iters_per_sec	tops_pct	m	n	k	gpu_util_pct	gpu_mem_util_pct	gpu_temp_c	gpu_power_w	gpu_power_limit_w	vram_used_mb	vram_total_mb	cpu_util_pct	ram_used_mb	ram_total_mb' \
   >> "${RAW_TSV}"
 printf '%s\n' 'n_cap	best_batch	best_graph_batch	best_cluster	best_graph	tmad_per_sec' >> "${WINNERS_N}"
 
@@ -195,7 +197,8 @@ fields = [
     os.environ["TUNE_N_CAP"], os.environ["TUNE_BATCH"], os.environ["TUNE_GRAPH"],
     os.environ["TUNE_GB"], os.environ["TUNE_CLUSTER"], os.environ["TUNE_CARVEOUT"],
     os.environ["TUNE_STATUS"],
-    g(j, "tmad_per_sec", ""), g(j, "tops_pct", ""), g(j, "m", ""), g(j, "n", ""), g(j, "k", ""),
+    g(j, "tmad_per_sec", ""), g(j, "iters_per_sec", ""), g(j, "tops_pct", ""),
+    g(j, "m", ""), g(j, "n", ""), g(j, "k", ""),
     g(j, "gpu_util_pct"), g(j, "gpu_mem_util_pct"), g(j, "gpu_temp_c"),
     g(j, "gpu_power_w"), g(j, "gpu_power_limit_w"),
     g(j, "vram_used_mb"), g(j, "vram_total_mb"),
@@ -211,11 +214,31 @@ append_tsv_wedge() {
     read -r gpu_util gpu_mem gpu_temp gpu_pwr gpu_pl vram_u vram_t cpu ram_u ram_t \
         < <(sample_host_telemetry)
     printf '%s\n' \
-      "${n_cap}	${batch}	${graph_label}	${graph_batch}	${cluster}	${carveout}	${status}						${gpu_util}	${gpu_mem}	${gpu_temp}	${gpu_pwr}	${gpu_pl}	${vram_u}	${vram_t}	${cpu}	${ram_u}	${ram_t}" \
+      "${n_cap}	${batch}	${graph_label}	${graph_batch}	${cluster}	${carveout}	${status}							${gpu_util}	${gpu_mem}	${gpu_temp}	${gpu_pwr}	${gpu_pl}	${vram_u}	${vram_t}	${cpu}	${ram_u}	${ram_t}" \
       >> "${RAW_TSV}"
 }
 
+json_field() {
+    local json="$1" key="$2"
+    if [[ -z "${json}" ]]; then
+        return
+    fi
+    JSON_FIELD_LINE="${json}" JSON_FIELD_KEY="${key}" python3 <<'PY'
+import json, os
+raw = os.environ.get("JSON_FIELD_LINE", "")
+key = os.environ.get("JSON_FIELD_KEY", "")
+try:
+    j = json.loads(raw)
+    v = j.get(key)
+    if v is not None:
+        print(v)
+except json.JSONDecodeError:
+    pass
+PY
+}
+
 LAST_BENCH_JSON=""
+LAST_BENCH_ITERS=""
 LAST_BENCH_OUT=""
 
 run_one_attempt() {
@@ -239,6 +262,7 @@ run_one_attempt() {
     local rc=$?
     LAST_BENCH_OUT="${out}"
     LAST_BENCH_JSON="$(printf '%s\n' "${out}" | grep '"tmad_per_sec"' | tail -1 || true)"
+    LAST_BENCH_ITERS="$(json_field "${LAST_BENCH_JSON}" "iters_per_sec")"
     if [[ ${rc} -eq 124 || ${rc} -eq 137 ]]; then
         echo "WEDGED(timeout)"
         return
@@ -338,11 +362,19 @@ for n_cap in "${N_LIST[@]}"; do
                                 ((failed_count++)) || true
                                 ;;
                             *)
-                                echo "${res} TMAD/s"
+                                if [[ -n "${LAST_BENCH_ITERS}" ]]; then
+                                    echo "${res} TMAD/s | ${LAST_BENCH_ITERS} matmul/s"
+                                else
+                                    echo "${res} TMAD/s"
+                                fi
                                 append_tsv_from_json "${n_cap}" "${batch}" "${graph_label}" \
                                     "${graph_batch}" "${cluster}" "${carveout}" "ok" \
                                     "${LAST_BENCH_JSON}"
-                                echo "n_cap=${n_cap} batch=${batch} graph=${graph_label} graph_batch=${graph_batch} cluster_m=${cluster} carveout=${carveout} tmad_per_sec=${res}" >> "${RESULTS}"
+                                if [[ -n "${LAST_BENCH_ITERS}" ]]; then
+                                    echo "n_cap=${n_cap} batch=${batch} graph=${graph_label} graph_batch=${graph_batch} cluster_m=${cluster} carveout=${carveout} tmad_per_sec=${res} iters_per_sec=${LAST_BENCH_ITERS}" >> "${RESULTS}"
+                                else
+                                    echo "n_cap=${n_cap} batch=${batch} graph=${graph_label} graph_batch=${graph_batch} cluster_m=${cluster} carveout=${carveout} tmad_per_sec=${res}" >> "${RESULTS}"
+                                fi
                                 update_best "${n_cap}" "${res}" "${batch}" "${graph_batch}" \
                                     "${cluster}" "${carveout}" "${use_graph}" "${graph_label}"
                                 ;;
@@ -360,7 +392,7 @@ done
     echo "# raw_tsv=${RAW_TSV}"
     echo ""
     if [[ -n "${best_n}" ]]; then
-        echo "GLOBAL_WINNER n_cap=${best_n} batch=${best_batch} graph_batch=${best_graph_batch} cluster_m=${best_cluster} graph=$([[ ${best_use_graph} == 1 ]] && echo on || echo off) tmad_per_sec=${best_rate}"
+        echo "GLOBAL_WINNER n_cap=${best_n} batch=${best_batch} graph_batch=${best_graph_batch} cluster_m=${best_cluster} graph=$([[ ${best_use_graph} == 1 ]] && echo on || echo off) tmad_per_sec=${best_rate} (see raw TSV for matmul/s)"
     fi
     echo ""
     echo "BEST_PER_N:"
@@ -375,7 +407,7 @@ done
 echo ""
 echo "===== Full sweep complete ====="
 echo "[full-tune] wedged=${wedged_count} no_result=${failed_count}"
-echo "[full-tune] Top 20 by TMAD/s:"
+echo "[full-tune] Top 20 by TMAD/s (with matmul/s when logged):"
 grep 'tmad_per_sec=' "${RESULTS}" | sort -t= -k7 -g | tail -20 || true
 echo ""
 

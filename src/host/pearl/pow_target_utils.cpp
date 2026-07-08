@@ -133,28 +133,16 @@ std::array<uint8_t, 32> nbits_to_target_le(uint32_t nbits) {
         return t;
     }
     // ARC/Bitcoin compact target: mantissa * 256^(exp-3), stored as uint256 LE.
-    // The legacy placement at bytes (32-exp..) broke GPU uint32 MSW-first
-    // comparisons and made share targets impossibly hard (gpu_hits_30s=0).
-#if defined(__SIZEOF_INT128__)
-    unsigned __int128 val = static_cast<unsigned __int128>(mant);
-    val <<= static_cast<unsigned>(8 * (exp - 3));
-    for (int i = 0; i < 32; ++i) {
-        t[static_cast<size_t>(i)] =
-            static_cast<uint8_t>(static_cast<uint64_t>(val >> (8 * i)) & 0xFF);
+    // Place the 3 mantissa bytes directly at LE offsets exp-3..exp-1. The old
+    // __int128 shift was UB for exp > 16 (shift >= 128 bits) and produced a
+    // garbage target for common share exponents like 0x1b (diff 32768).
+    for (int i = 0; i < 3; ++i) {
+        const int idx = exp - 3 + i;
+        if (idx >= 0 && idx < 32) {
+            t[static_cast<size_t>(idx)] =
+                static_cast<uint8_t>((mant >> (8 * i)) & 0xFF);
+        }
     }
-#else
-    uint64_t lo = mant;
-    uint64_t hi = 0;
-    const int shift_bytes = exp - 3;
-    if (shift_bytes >= 8) {
-        hi = lo << (8 * (shift_bytes - 8));
-        lo = 0;
-    } else if (shift_bytes > 0) {
-        lo <<= (8 * shift_bytes);
-    }
-    std::memcpy(t.data(), &lo, sizeof(lo));
-    std::memcpy(t.data() + 8, &hi, sizeof(hi));
-#endif
     return t;
 }
 

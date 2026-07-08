@@ -11,7 +11,7 @@ echo "===== PropMiner host-only tests (no GPU) ====="
 "${CXX}" -std=c++20 -O2 \
   -DPROP_MINER_HOST_ONLY_TESTS=1 \
   -DPROP_MINER_DISABLE_RUST_CRYPTO=1 \
-  -I src/host -I src/host/pearl \
+  -I include -I src/host -I src/host/pearl \
   src/host/tests.cpp \
   src/host/tests/blake3_reference.c \
   src/host/tests/ref_blake3.cpp \
@@ -22,6 +22,9 @@ echo "===== PropMiner host-only tests (no GPU) ====="
   src/host/pearl/proto/mining_v2.cpp \
   src/host/pearl/host_signal_header.cpp \
   src/host/pearl/pow_target_utils.cpp \
+  src/host/pearl/bincode_encoder.cpp \
+  src/host/pearl/share_diagnostics.cpp \
+  src/host/stratum/simple_json.cpp \
   -o "${OUT}" -lpthread
 
 "${OUT}"

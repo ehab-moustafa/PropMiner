@@ -313,10 +313,12 @@ void GpuWorker::stop() {
 }
 
 bool GpuWorker::defer_share_gpu_enabled() {
+    // Default ON: share rebuild runs on the side thread so the GPU keeps
+    // mining. Set PROPMINER_DEFER_SHARE_GPU=0 to restore inline handling.
     static int cached = -1;
     if (cached < 0) {
         const char* env = std::getenv("PROPMINER_DEFER_SHARE_GPU");
-        cached = (env && env[0] && env[0] != '0') ? 1 : 0;
+        cached = (env && env[0] == '0') ? 0 : 1;
     }
     return cached == 1;
 }
@@ -620,6 +622,22 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
     bool launched_graph = false;
     if (can_graph) {
         try {
+            // Async seed conveyor (PROPMINER_ASYNC_SEED=1): upload each
+            // sub-batch's seed on seed_copy_stream_ so the 8-byte H2D overlaps
+            // the CPU header copy, instead of a synchronous H2D on the compute
+            // stream. seed_dev is only rewritten after the consuming sub-batch
+            // has fully completed (wait_half_stream below), and each launch
+            // orders after its seed copy via cudaStreamWaitEvent.
+            const bool async_seed = async_seed_enabled() &&
+                                    seed_copy_stream_ && seed_copy_done_event_ &&
+                                    half.pinned_seed_host && half.seed_dev_ptr;
+            bool seed_preloaded = false;
+            if (async_seed) {
+                upload_next_seed_async(
+                    half, seed_lo_start +
+                              static_cast<uint64_t>(count - graph_batch));
+                seed_preloaded = true;
+            }
             // The captured graph writes winners into the first `graph_batch`
             // pinned slots [0..graph_batch). It only SETS status=1 on a hit and
             // never resets it, so a winner from one sub-launch stays flagged and
@@ -633,8 +651,14 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
                 }
                 check_cuda(cuMemsetD8Async(half.sync, 0, 256, half.stream),
                            "graph sub-batch sync clear");
-                upload_seed_for_graph(
-                    half, seed_lo_start + static_cast<uint64_t>(off));
+                if (seed_preloaded) {
+                    CUDA_CHECK(cudaStreamWaitEvent(
+                        reinterpret_cast<cudaStream_t>(half.stream),
+                        seed_copy_done_event_, 0));
+                } else {
+                    upload_seed_for_graph(
+                        half, seed_lo_start + static_cast<uint64_t>(off));
+                }
                 gemm_.iter_batch_graph_launch_ex(half.workspace, half.stream);
                 if (half.sub_batch_done_event) {
                     CUDA_CHECK(cudaEventRecord(
@@ -652,6 +676,16 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
                         aborted ? "; health-monitor abort" : "");
                     std::fflush(stderr);
                     std::_Exit(42);
+                }
+                const int next_off = off - graph_batch;
+                if (async_seed && next_off >= 0) {
+                    // Sub-batch done — seed_dev is free. Kick off the next
+                    // seed copy so it overlaps the header memcpy below.
+                    upload_next_seed_async(
+                        half, seed_lo_start + static_cast<uint64_t>(next_off));
+                    seed_preloaded = true;
+                } else {
+                    seed_preloaded = false;
                 }
                 for (int i = 0; i < graph_batch; ++i) {
                     std::memcpy(half.host_headers[off + i],

@@ -1,4 +1,5 @@
 #include "share_builder.h"
+#include "env_flags.h"
 #include "share_trace.h"
 
 #include <algorithm>
@@ -227,13 +228,28 @@ std::array<uint8_t, 32> ShareBuilder::compute_claimed_hash(
 
     // secretB: expand only the columns we need, packed w x k.
     std::vector<int8_t> secretB(static_cast<size_t>(w) * k);
-    auto b_slice = mining_.bseed_expand_range(
-        share.job.b_seed.data(), 0,
-        static_cast<uint64_t>(cfg_.n) * k);
-    for (int j = 0; j < w; ++j) {
-        uint32_t col = share.b_col_indices[j];
-        std::memcpy(secretB.data() + static_cast<size_t>(j) * k,
-                    b_slice.data() + static_cast<size_t>(col) * k, k);
+    if (bcol_targeted_expand_enabled()) {
+        // Targeted path: XOF-seek each opened column (w*k bytes total)
+        // instead of materialising the full n*k stream. Byte-identical to
+        // the legacy path below; protobuf_encoder.cpp uses the same pattern.
+        for (int j = 0; j < w; ++j) {
+            const uint64_t byte_offset =
+                static_cast<uint64_t>(share.b_col_indices[j]) * k;
+            auto col = mining_.bseed_expand_range(
+                share.job.b_seed.data(), byte_offset, static_cast<uint64_t>(k));
+            std::memcpy(secretB.data() + static_cast<size_t>(j) * k,
+                        col.data(), k);
+        }
+    } else {
+        // Legacy path (PROPMINER_BCOL_CACHE=0): full n*k expansion.
+        auto b_slice = mining_.bseed_expand_range(
+            share.job.b_seed.data(), 0,
+            static_cast<uint64_t>(cfg_.n) * k);
+        for (int j = 0; j < w; ++j) {
+            uint32_t col = share.b_col_indices[j];
+            std::memcpy(secretB.data() + static_cast<size_t>(j) * k,
+                        b_slice.data() + static_cast<size_t>(col) * k, k);
+        }
     }
 
     auto eAl = generate_uniform_random_matrix(SEED_LABEL_A.data(), a_noise_seed, share.a_row_indices, r);

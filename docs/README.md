@@ -148,7 +148,9 @@ There is no subcommand — mode is selected by flags and environment.
 | `PROPMINER_AUTOTUNE` | `0` | `0` off, `1` cache/sweep, `2` require knob cache, `force` re-sweep |
 | `PEARL_GEMM_CONSUMER_CLUSTER_M` | `2` | Thread-block cluster: **1**=off, **2** or **4**=on |
 | `PEARL_GEMM_CONSUMER_CARVEOUT` | from cache | L1/shared carveout % (0–100) |
-| `PROPMINER_DEFER_SHARE_GPU` | off | `1` = experimental deferred share thread |
+| `PROPMINER_DEFER_SHARE_GPU` | on | `0` = share rebuild back inline on the mine loop |
+| `PROPMINER_BCOL_CACHE` | on | `0` = legacy full n×k B expansion in share path |
+| `PROPMINER_ASYNC_SEED` | on | `0` = synchronous seed upload (watch shares 30 min after deploy) |
 | `PROP_MINER_SELF_TEST_PROD` | off | `1` = self-test at full prod N |
 
 ### Benchmark / validation

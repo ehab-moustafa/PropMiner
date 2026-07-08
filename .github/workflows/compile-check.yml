@@ -16,6 +16,21 @@ permissions:
   packages: read
 
 jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host test deps
+        run: sudo apt-get update && sudo apt-get install -y clang python3
+
+      - name: Host-only unit tests
+        run: ./scripts/local_host_tests.sh
+
+      - name: Tune script dry-run (no GPU)
+        run: ./scripts/test_tune_full_dry.sh
+
   compile:
     runs-on: ubuntu-24.04
     steps:

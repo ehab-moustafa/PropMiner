@@ -15,6 +15,28 @@ inline bool bench_no_graph_enabled() {
     return env_truthy("PROPMINER_BENCH_NO_GRAPH");
 }
 
+// Targeted B-column expansion in compute_claimed_hash: expand only the opened
+// columns (w*k bytes via BLAKE3 XOF seek) instead of the full n*k stream.
+// Byte-identical output (see pearl_capi_bseed_expand_range_raw docs); the
+// same per-column pattern is already used by protobuf_encoder.cpp.
+// PROPMINER_BCOL_CACHE=0 restores the legacy full expansion.
+inline bool bcol_targeted_expand_enabled() {
+    const char* env = std::getenv("PROPMINER_BCOL_CACHE");
+    return !(env && env[0] == '0');
+}
+
+// Async seed conveyor (default ON): upload the next graph sub-batch's seed on
+// the dedicated copy stream while the CPU copies out the previous sub-batch's
+// headers, instead of a synchronous H2D on the compute stream. The upload is
+// issued only after the current sub-batch has fully completed (seed_dev must
+// never change while a graph is reading it), and the next launch orders after
+// the copy via cudaStreamWaitEvent. PROPMINER_ASYNC_SEED=0 restores the
+// synchronous seed upload.
+inline bool async_seed_enabled() {
+    const char* env = std::getenv("PROPMINER_ASYNC_SEED");
+    return !(env && env[0] == '0');
+}
+
 // Max wall time a single GPU batch may take before we treat the worker as
 // wedged (GPU pinned at 100% but not making progress — a hung CUDA stream that
 // in-process recovery cannot clear). On stall we exit so the supervisor

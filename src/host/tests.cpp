@@ -5,6 +5,7 @@
 #include <iostream>
 #include <vector>
 
+#include "pearl/env_tuning.h"
 #include "pearl/hashrate_metrics.h"
 #include "pearl/host_signal_header.h"
 #include "pearl/job_key.h"
@@ -111,6 +112,40 @@ static void test_reference_bseed_expand() {
     auto range = ref::bseed_expand_range(bseed.data(), 100, 200);
     EXPECT(range.size() == 200);
     EXPECT(std::memcmp(range.data(), expanded.data() + 100, 200) == 0);
+}
+
+// Phase 1 (PROPMINER_BCOL_CACHE): compute_claimed_hash extracts secretB by
+// expanding each opened column at byte offset col*k instead of expanding the
+// full n*k stream. This test mirrors both extraction patterns byte-for-byte
+// and proves they produce an identical packed w x k buffer.
+static void test_bseed_targeted_column_expand_matches_full() {
+    std::array<uint8_t, 32> bseed{};
+    bseed.fill(0x5a);
+
+    const int n = 64;   // columns in B
+    const int k = 96;   // bytes per column (not 64-aligned on purpose)
+    const std::vector<uint32_t> cols = {0, 3, 17, 42, 63};
+    const size_t w = cols.size();
+
+    // Legacy pattern: full n*k expansion, then slice per column.
+    auto full = ref::bseed_expand(bseed.data(),
+                                  static_cast<size_t>(n) * k);
+    std::vector<uint8_t> legacy(w * k);
+    for (size_t j = 0; j < w; ++j) {
+        std::memcpy(legacy.data() + j * k,
+                    full.data() + static_cast<size_t>(cols[j]) * k, k);
+    }
+
+    // Targeted pattern: per-column XOF range at byte offset col*k.
+    std::vector<uint8_t> targeted(w * k);
+    for (size_t j = 0; j < w; ++j) {
+        auto col = ref::bseed_expand_range(
+            bseed.data(), static_cast<uint64_t>(cols[j]) * k, k);
+        EXPECT(col.size() == static_cast<size_t>(k));
+        std::memcpy(targeted.data() + j * k, col.data(), k);
+    }
+
+    EXPECT(legacy == targeted);
 }
 
 static void test_reference_merkle_tree() {
@@ -309,6 +344,124 @@ static void test_rtx5090_wave_alignment() {
     EXPECT(capped.n == 32768);
     EXPECT(Rtx5090Profile::kBenchDefaultSeconds == 300);
     EXPECT(Rtx5090Profile::kBenchGraceSeconds == 120);
+}
+
+// Tune sweep uses four N values; each must be pickable and tile-aligned at M=8192.
+static void test_pick_n_for_vram_tune_n_values() {
+    constexpr size_t k32GbMinusReserve = (28ULL << 30);
+    static constexpr int kTuneN[] = {32768, 65536, 131072, 262144};
+
+    for (int cap_n : kTuneN) {
+        const int picked =
+            Rtx5090Profile::pick_n_for_vram(k32GbMinusReserve, cap_n);
+        EXPECT(picked == cap_n);
+        EXPECT(picked % Rtx5090Profile::kTileN == 0);
+        EXPECT(Rtx5090Profile::shape_fits_vram(
+            Rtx5090Profile::kDefaultM, picked, Rtx5090Profile::kDefaultK,
+            k32GbMinusReserve));
+
+        auto cfg = rtx5090_mining_config(k32GbMinusReserve, cap_n);
+        EXPECT(cfg.n == cap_n);
+        EXPECT(cfg.m == 8192);
+
+        // Stratum path (K=4096) must also honor the same cap.
+        auto stratum_cfg = stratum_pool_mining_config(k32GbMinusReserve, cap_n);
+        EXPECT(stratum_cfg.n == cap_n);
+    }
+
+    // 65536 was missing from earlier tests — explicit tile count check.
+    EXPECT(Rtx5090Profile::tiles(8192, 65536) == 16384);
+
+    // Cap between candidates: 65536 cap must not jump to 131072.
+    EXPECT(Rtx5090Profile::pick_n_for_vram(k32GbMinusReserve, 65536) == 65536);
+    EXPECT(Rtx5090Profile::pick_n_for_vram(k32GbMinusReserve, 65535) == 65280);
+}
+
+static void test_env_tuning_helpers() {
+    const char* prev_cap = std::getenv("PROPMINER_N_CAP");
+    auto restore_cap = [&]() {
+        if (prev_cap) setenv("PROPMINER_N_CAP", prev_cap, 1);
+        else unsetenv("PROPMINER_N_CAP");
+    };
+
+    unsetenv("PROPMINER_N_CAP");
+    EXPECT(resolve_n_cap() == Rtx5090Profile::kDefaultProdNCap);
+
+    setenv("PROPMINER_N_CAP", "65536", 1);
+    EXPECT(resolve_n_cap() == 65536);
+
+    setenv("PROPMINER_N_CAP", "0", 1);
+    EXPECT(resolve_n_cap() == 0);
+
+    restore_cap();
+
+    int batch = 8;
+    int graph_batch = 16;
+    normalize_batch_and_graph(batch, graph_batch);
+    EXPECT(graph_batch == 8);
+
+    batch = 12;
+    graph_batch = 5;
+    normalize_batch_and_graph(batch, graph_batch);
+    EXPECT(batch == 12);
+    EXPECT(graph_batch == 5);
+}
+
+static int count_graph_batch_candidates(int batch) {
+    int count = 0;
+    for (int g : {1, 2, 4, 8, 16, 32}) {
+        if (g <= batch && batch % g == 0) ++count;
+    }
+    return count;
+}
+
+static void test_graph_batch_candidates_match_tune_script() {
+    // Must stay in sync with graph_batch_candidates() in tune_runtime_full.sh.
+    EXPECT(count_graph_batch_candidates(1) == 1);
+    EXPECT(count_graph_batch_candidates(8) == 4);
+    EXPECT(count_graph_batch_candidates(16) == 5);
+    EXPECT(count_graph_batch_candidates(32) == 6);
+    EXPECT(count_graph_batch_candidates(48) == 5);
+}
+
+static void test_hashrate_metrics_json_telemetry() {
+    MiningConfig cfg;
+    cfg.m = 8192;
+    cfg.n = 65536;
+    cfg.k = 128;
+    cfg.r = 128;
+    cfg.bM = 128;
+    cfg.bN = 256;
+    cfg.bK = 128;
+
+    HashrateMetrics m = hashrate_metrics_from_iters(cfg, 100, 10, 4);
+    SystemSnapshot sys{};
+    sys.valid = true;
+    sys.gpu_util_pct = 99;
+    sys.gpu_mem_util_pct = 80;
+    sys.gpu_temp_c = 72;
+    sys.gpu_power_w = 480;
+    sys.gpu_power_limit_w = 575;
+    sys.vram_used_mb = 16384;
+    sys.vram_total_mb = 32768;
+    sys.cpu_util_pct = 12;
+    sys.ram_used_mb = 8192;
+    sys.ram_total_mb = 65536;
+
+    FILE* tmp = std::tmpfile();
+    EXPECT(tmp != nullptr);
+    print_hashrate_metrics_json(tmp, m, cfg, 10, 100, 15, "testsha", "testver",
+                                &sys);
+    std::rewind(tmp);
+    char buf[4096] = {};
+    const size_t nread = std::fread(buf, 1, sizeof(buf) - 1, tmp);
+    std::fclose(tmp);
+    EXPECT(nread > 0);
+    EXPECT(std::strstr(buf, "\"n\":65536") != nullptr);
+    EXPECT(std::strstr(buf, "\"gpu_power_w\":480") != nullptr);
+    EXPECT(std::strstr(buf, "\"gpu_temp_c\":72") != nullptr);
+    EXPECT(std::strstr(buf, "\"vram_used_mb\":16384") != nullptr);
+    EXPECT(std::strstr(buf, "\"ram_total_mb\":65536") != nullptr);
 }
 
 static void test_mine_batch_manifest_matches() {
@@ -563,6 +716,7 @@ int main() {
     test_job_key_derivation();
     test_reference_blake3();
     test_reference_bseed_expand();
+    test_bseed_targeted_column_expand_matches_full();
     test_reference_merkle_tree();
     test_reference_audit_index_derive();
     test_reference_claimed_hash_deterministic();
@@ -574,6 +728,10 @@ int main() {
     test_hashrate_metrics_math();
     test_mining_config_conservative();
     test_rtx5090_wave_alignment();
+    test_pick_n_for_vram_tune_n_values();
+    test_env_tuning_helpers();
+    test_graph_batch_candidates_match_tune_script();
+    test_hashrate_metrics_json_telemetry();
     test_mine_batch_manifest_matches();
     test_strict_knob_cache_validate();
     test_share_found_serialization_sanity();

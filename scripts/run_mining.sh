@@ -27,6 +27,9 @@ export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:704
 # Leave empty for Kryptex vardiff (dynamic). Set a number to pin a static diff.
 export PROPMINER_STRATUM_DIFF="${PROPMINER_STRATUM_DIFF:-}"
 export PROPMINER_N_CAP="${PROPMINER_N_CAP:-131072}"
+# CPU/GPU overlap optimizations are ON by default in the binary.
+# Kill switches: PROPMINER_DEFER_SHARE_GPU=0, PROPMINER_ASYNC_SEED=0,
+# PROPMINER_BCOL_CACHE=0 restore the pre-optimization behavior.
 
 WALLET="${PROPMINER_WALLET:-}"
 if [[ -n "${PROPMINER_POOL:-}" ]]; then
