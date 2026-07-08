@@ -128,8 +128,8 @@ __global__ void transcript_gemm_sm120_geforce_kernel(
   const int num_n_tiles = N / kBN;
 
   ConsumerTiledMma tiled_mma;
-  auto thr_mma = is_consumer ? tiled_mma.get_thread_slice(consumer_tid)
-                             : tiled_mma.get_thread_slice(_0{});
+  // Both branches must pass int (not cute::_0) so ThrMMA deduces one type.
+  auto thr_mma = tiled_mma.get_thread_slice(is_consumer ? consumer_tid : 0);
   Tensor tCrC = make_tensor<ElementAcc>(Shape<Int<kFragSize>>{});
   uint32_t transcript_local[kTranscriptSlots];
   Tensor cD = make_identity_tensor(Shape<Int<kBM>, Int<kBN>>{});
