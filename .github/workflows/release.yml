@@ -79,7 +79,18 @@ jobs:
             propminer libpearl_gemm_capi.so libpearl_mining_capi.so VERSION
           cd ../salad-artifact
           tar czf ../PropMiner-Salad-Linux.tar.gz PropMiner-Salad
-          ls -la ../propminer-rtx5090-linux-amd64.tar.gz ../PropMiner-Salad-Linux.tar.gz
+          mkdir -p ../tune-kit/scripts ../tune-kit/docs
+          cp scripts/tune_runtime_safe.sh \
+             scripts/tune_runtime_prod.sh \
+             scripts/tune_prod_5090.sh \
+             scripts/setup_cuda_env.sh \
+             scripts/tune_defaults.env \
+             ../tune-kit/scripts/
+          cp docs/prod-tune-instructions.md ../tune-kit/docs/
+          tar czf ../propminer-tune-kit.tar.gz -C ../tune-kit .
+          ls -la ../propminer-rtx5090-linux-amd64.tar.gz \
+                 ../PropMiner-Salad-Linux.tar.gz \
+                 ../propminer-tune-kit.tar.gz
           tar tzf ../PropMiner-Salad-Linux.tar.gz | head -20
 
       - name: Publish rolling release
@@ -92,9 +103,11 @@ jobs:
           files: |
             propminer-rtx5090-linux-amd64.tar.gz
             PropMiner-Salad-Linux.tar.gz
+            propminer-tune-kit.tar.gz
           body: |
             Rolling RTX 5090 release.
             Salad (SRBMiner-style): wget PropMiner-Salad-Linux.tar.gz on ubuntu:24.04
+            Tune kit: propminer-tune-kit.tar.gz (safe batch sweep + defaults, cluster_m=1)
             Commit: ${{ github.sha }} (sha-${{ steps.meta.outputs.sha }})
 
       - name: Publish pinned release
@@ -106,5 +119,7 @@ jobs:
           files: |
             propminer-rtx5090-linux-amd64.tar.gz
             PropMiner-Salad-Linux.tar.gz
+            propminer-tune-kit.tar.gz
           body: |
             Pinned: PROPMINER_RELEASE_TAG=sha-${{ steps.meta.outputs.sha }}
+            Tune kit: propminer-tune-kit.tar.gz (cluster_m=1 baseline; run tune for best batch/graph/cluster)

@@ -1,0 +1,64 @@
+# Fast tune-script packaging (no Docker build). Full binary release: release.yml
+name: Tune kit
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - scripts/tune_*.sh
+      - scripts/tune_defaults.env
+      - scripts/setup_cuda_env.sh
+      - docs/prod-tune-instructions.md
+      - .github/workflows/tune-kit-release.yml
+  workflow_dispatch:
+
+concurrency:
+  group: propminer-tune-kit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package tune kit
+        run: |
+          mkdir -p tune-kit/scripts tune-kit/docs
+          cp scripts/tune_runtime_safe.sh \
+             scripts/tune_runtime_prod.sh \
+             scripts/tune_prod_5090.sh \
+             scripts/setup_cuda_env.sh \
+             scripts/tune_defaults.env \
+             tune-kit/scripts/
+          cp docs/prod-tune-instructions.md tune-kit/docs/
+          cat > tune-kit/RUNPOD.md <<'EOF'
+          # RunPod quick tune (RTX 5090)
+
+          ```bash
+          git clone https://github.com/ehab-moustafa/PropMiner.git /workspace/PropMiner
+          cd /workspace/PropMiner
+          git submodule update --init --recursive
+          cmake -S . -B build -DPROP_MINER_CUDA_ARCH=blackwell \
+            -DCMAKE_CUDA_ARCHITECTURES=120a -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target propminer -j"$(nproc)"
+          PROPMINER_N_CAP=32768 ./scripts/tune_runtime_safe.sh
+          cat ~/.cache/propminer/tune_safe_result.env
+          ```
+
+          Baseline: PEARL_GEMM_CONSUMER_CLUSTER_M=1. Optional cluster sweep:
+          PROPMINER_TUNE_CLUSTERS=1 ./scripts/tune_runtime_prod.sh
+          EOF
+          tar czf propminer-tune-kit.tar.gz -C tune-kit .
+          tar tzf propminer-tune-kit.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: propminer-tune-kit
+          path: propminer-tune-kit.tar.gz
+          retention-days: 30

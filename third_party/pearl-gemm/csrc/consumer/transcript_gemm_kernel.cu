@@ -585,7 +585,7 @@ static int read_carveout_env() {
 
 // Runtime knob: PEARL_GEMM_CONSUMER_CLUSTER_M (or legacy
 // PEARL_GEMM_BLACKWELL_CLUSTER_M)
-//   - unset / "default" → PEARL_CONSUMER_DEFAULT_CLUSTER_M (4 on RTX 5090 prod)
+//   - unset / "default" → PEARL_CONSUMER_DEFAULT_CLUSTER_M (1 = safe; tune for 2/4)
 //   - "0", "1", "off"  → disable thread-block clustering
 //   - "2" or "4"       → cluster adjacent M tiles when the grid divides
 //
@@ -609,7 +609,7 @@ static int read_cluster_m_env() {
 }
 
 #ifndef PEARL_CONSUMER_DEFAULT_CLUSTER_M
-#define PEARL_CONSUMER_DEFAULT_CLUSTER_M 4
+#define PEARL_CONSUMER_DEFAULT_CLUSTER_M 1
 #endif
 
 static cudaError_t ensure_transcript_kernel_attrs(size_t smem_bytes) {

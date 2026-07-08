@@ -292,7 +292,7 @@ static void print_usage(const char* prog) {
         "  Env: PROPMINER_N_CAP=N          Cap N (default 131072; 0 = uncapped VRAM pick)\n"
         "  Env: PROPMINER_BATCH=N            Matmuls per poll (default 32; env or cache)\n"
         "  Env: PROPMINER_GRAPH_BATCH=N      CUDA graph depth (default 8; must divide batch)\n"
-        "  Env: PEARL_GEMM_CONSUMER_CLUSTER_M  Cluster M (default 4 on RTX 5090 prod)\n"
+        "  Env: PEARL_GEMM_CONSUMER_CLUSTER_M  Cluster M (default 1; tune for 2/4)\n"
         "  Env: PROPMINER_STRATUM_DIFF=N     Stratum share difficulty (default 32768)\n"
         "  Env: PROPMINER_BENCH_BATCH=N      Override bench graph batch\n"
         "  Env: PROPMINER_USE_TUNE_CACHE=1   Load autotune.json (default on for mine)\n"
