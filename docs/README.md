@@ -152,7 +152,7 @@ There is no subcommand — mode is selected by flags and environment.
 | `PROPMINER_DEFER_SHARE_GPU` | on | `0` = share rebuild back inline on the mine loop |
 | `PROPMINER_BCOL_CACHE` | on | `0` = legacy full n×k B expansion in share path |
 | `PROPMINER_ASYNC_SEED` | on | `0` = synchronous seed upload (watch shares 30 min after deploy) |
-| `PROPMINER_ASYNC_JOB_INSTALL` | off | `1` = install the next job's resident B on a background thread while the current job keeps mining (proof-critical job-switch path; opt-in) |
+| `PROPMINER_ASYNC_JOB_INSTALL` | on | `0` = force synchronous job switch. On: installs the next job's resident B on a background thread while mining continues, then fast-swaps. VRAM-guarded — self-disables to synchronous when free VRAM is tight (e.g. large N), so it never OOMs |
 | `PROP_MINER_SELF_TEST_PROD` | off | `1` = self-test at full prod N |
 
 ### Benchmark / validation

@@ -10,7 +10,7 @@ env-var kill switch. Roll them out in this order; validate between steps.
 | 1. Targeted B-column expansion (share path skips full n×k B re-hash) | **ON** | `PROPMINER_BCOL_CACHE=0` |
 | 2. Deferred share handling (share rebuild on side thread, GPU keeps mining) | **ON** | `PROPMINER_DEFER_SHARE_GPU=0` |
 | 3. Async seed conveyor (next sub-batch seed uploads on copy stream) | **ON** | `PROPMINER_ASYNC_SEED=0` |
-| 4. Async job installation (next job's resident B installs on a background thread; GPU keeps mining the old job until a fast swap) | **OFF** (opt-in) | `PROPMINER_ASYNC_JOB_INSTALL=1` to enable |
+| 4. Async job installation (next job's resident B installs on a background thread; GPU keeps mining the old job until a fast swap) | **ON** (VRAM-guarded, self-disables when tight) | `PROPMINER_ASYNC_JOB_INSTALL=0` |
 
 No proof math, share encoding, or transcript logic was touched.
 `ShareBuilder::VerifyShare` still gates every submission, so a regression shows
@@ -49,12 +49,12 @@ up as dropped/rejected shares in logs — never silent bad submissions.
 4. **Judge success** on pool-side accepted share rate over ≥1 h vs the
    previous deployment, not just local TMAD/s.
 
-5. **(Optional) Enable async job installation** only after 1–3 are proven
-   stable. It removes the GPU idle window on every job switch, but touches the
-   proof-critical job-switch path and cannot be validated on a Mac.
+5. **Async job installation is ON by default** and removes the GPU idle window
+   on every job switch when VRAM allows. It is VRAM-guarded and cannot OOM;
+   set `PROPMINER_ASYNC_JOB_INSTALL=0` to force the old synchronous switch.
 
    ```bash
-   PROPMINER_ASYNC_JOB_INSTALL=1 ./build/propminer ... # add to run env
+   PROPMINER_ASYNC_JOB_INSTALL=0 ./build/propminer ... # force synchronous switch
    ```
 
    - The first job of a session still installs synchronously; only rotations

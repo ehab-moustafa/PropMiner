@@ -25,13 +25,18 @@ inline bool bcol_targeted_expand_enabled() {
     return !(env && env[0] == '0');
 }
 
-// Async job installation (PROPMINER_ASYNC_JOB_INSTALL, default OFF): when a new
+// Async job installation (PROPMINER_ASYNC_JOB_INSTALL, default ON): when a new
 // pool job arrives, install its resident B (GPU expand + tensor-hash + noise +
 // Merkle) on a background thread while the current job keeps mining, then do a
-// fast swap on the worker thread. Default OFF — this touches the proof-critical
-// job-switch path; enable only after watching accepted-share rate on the rig.
+// fast swap on the worker thread. A cudaMemGetInfo headroom check runs before
+// each background install: if there is not enough free VRAM for a second
+// resident-B set (+ one-time staging workspace + margin) it self-disables and
+// does a synchronous install instead, so it can never OOM — at large N
+// (262144) with high VRAM use it simply falls back to the old behavior.
+// PROPMINER_ASYNC_JOB_INSTALL=0 forces the synchronous job switch.
 inline bool async_job_install_enabled() {
-    return env_truthy("PROPMINER_ASYNC_JOB_INSTALL");
+    const char* env = std::getenv("PROPMINER_ASYNC_JOB_INSTALL");
+    return !(env && env[0] == '0');
 }
 
 // Async seed conveyor (default ON): upload the next graph sub-batch's seed on
