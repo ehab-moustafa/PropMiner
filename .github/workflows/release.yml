@@ -74,24 +74,22 @@ jobs:
 
       - name: Package tarballs
         run: |
-          cd artifact
-          tar czf ../propminer-rtx5090-linux-amd64.tar.gz \
-            propminer libpearl_gemm_capi.so libpearl_mining_capi.so VERSION
-          cd ../salad-artifact
-          tar czf ../PropMiner-Salad-Linux.tar.gz PropMiner-Salad
-          mkdir -p ../tune-kit/scripts ../tune-kit/docs
+          tar czf propminer-rtx5090-linux-amd64.tar.gz \
+            -C artifact propminer libpearl_gemm_capi.so libpearl_mining_capi.so VERSION
+          tar czf PropMiner-Salad-Linux.tar.gz -C salad-artifact PropMiner-Salad
+          mkdir -p tune-kit/scripts tune-kit/docs
           cp scripts/tune_runtime_safe.sh \
              scripts/tune_runtime_prod.sh \
              scripts/tune_prod_5090.sh \
              scripts/setup_cuda_env.sh \
              scripts/tune_defaults.env \
-             ../tune-kit/scripts/
-          cp docs/prod-tune-instructions.md ../tune-kit/docs/
-          tar czf ../propminer-tune-kit.tar.gz -C ../tune-kit .
-          ls -la ../propminer-rtx5090-linux-amd64.tar.gz \
-                 ../PropMiner-Salad-Linux.tar.gz \
-                 ../propminer-tune-kit.tar.gz
-          tar tzf ../PropMiner-Salad-Linux.tar.gz | head -20
+             tune-kit/scripts/
+          cp docs/prod-tune-instructions.md tune-kit/docs/
+          tar czf propminer-tune-kit.tar.gz -C tune-kit .
+          ls -la propminer-rtx5090-linux-amd64.tar.gz \
+                 PropMiner-Salad-Linux.tar.gz \
+                 propminer-tune-kit.tar.gz
+          tar tzf PropMiner-Salad-Linux.tar.gz | head -20
 
       - name: Publish rolling release
         uses: softprops/action-gh-release@v2
