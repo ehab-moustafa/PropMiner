@@ -15,7 +15,7 @@
 #   PROPMINER_N_CAP                 N ceiling (must match mining). Default 131072.
 #   PROPMINER_TUNE_MAX_RETRIES      Attempts per combo before FAILED (default 3).
 #   PROPMINER_TUNE_RETRY_COOLDOWN_SEC Cooldown between retries (default 3).
-#   PROPMINER_TUNE_SAFE_GRAPH       1 = try CUDA graphs (default 0 = off).
+#   PROPMINER_TUNE_SAFE_GRAPH       1 = try CUDA graphs (default 1 = on).
 #   PROPMINER_BUILD_DIR             Build dir with propminer.
 set -uo pipefail
 
@@ -30,7 +30,8 @@ COOLDOWN_SEC="${PROPMINER_TUNE_RETRY_COOLDOWN_SEC:-3}"
 export PROPMINER_STALL_RESTART_MS="${PROPMINER_STALL_RESTART_MS:-12000}"
 export PROPMINER_N_CAP="${PROPMINER_N_CAP:-131072}"
 export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
-USE_GRAPH="${PROPMINER_TUNE_SAFE_GRAPH:-0}"
+USE_GRAPH="${PROPMINER_TUNE_SAFE_GRAPH:-1}"
+export PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M:-4}"
 TIMEOUT_S=$(( PER + 45 ))
 
 source "${ROOT}/scripts/setup_cuda_env.sh"
@@ -81,6 +82,8 @@ run_one_attempt() {
         "${graph_env[@]}" \
         PROPMINER_BENCH_JSON=1 \
         PROPMINER_BENCH_BATCH="${batch}" \
+        PROPMINER_GRAPH_BATCH="${batch}" \
+        PEARL_GEMM_CONSUMER_CLUSTER_M="${PEARL_GEMM_CONSUMER_CLUSTER_M}" \
         LD_LIBRARY_PATH="${LD_LIBRARY_PATH}" \
         "${BIN}" --bench "${PER}" --rtx5090 --gpus 0 2>&1)"
     local rc=$?
@@ -184,7 +187,7 @@ echo "  PROPMINER_N_CAP=${PROPMINER_N_CAP}"
 echo "  PROPMINER_BATCH=${best_batch}"
 echo "  ${graph_batch_line}"
 echo "  ${graph_line}"
-echo "  PEARL_GEMM_CONSUMER_CLUSTER_M=1"
+echo "  PEARL_GEMM_CONSUMER_CLUSTER_M=${PEARL_GEMM_CONSUMER_CLUSTER_M}"
 echo "  PROPMINER_STALL_RESTART_MS=30000"
 echo "  PROPMINER_STALL_RESTART_DELAY_SEC=3"
 echo "  PROPMINER_AUTOTUNE=0"
@@ -199,7 +202,7 @@ mkdir -p "$(dirname "${ENV_OUT}")"
     echo "PROPMINER_BATCH=${best_batch}"
     echo "${graph_batch_line}"
     [[ "${USE_GRAPH}" != "1" ]] && echo "PROPMINER_BENCH_NO_GRAPH=1"
-    echo "PEARL_GEMM_CONSUMER_CLUSTER_M=1"
+    echo "PEARL_GEMM_CONSUMER_CLUSTER_M=${PEARL_GEMM_CONSUMER_CLUSTER_M}"
     echo "PROPMINER_STALL_RESTART_MS=30000"
     echo "PROPMINER_STALL_RESTART_DELAY_SEC=3"
     echo "PROPMINER_AUTOTUNE=0"

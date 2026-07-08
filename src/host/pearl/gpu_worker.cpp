@@ -152,6 +152,10 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
         cudaError_t e = cudaEventCreate(&batch_done_event);
         if (e != cudaSuccess) batch_done_event = nullptr;
     }
+    if (!sub_batch_done_event) {
+        cudaError_t e = cudaEventCreate(&sub_batch_done_event);
+        if (e != cudaSuccess) sub_batch_done_event = nullptr;
+    }
 
     auto check_rt = [](cudaError_t e, const char* msg) {
         if (e != cudaSuccess) {
@@ -213,6 +217,10 @@ void GpuWorker::HalfBuffers::free() {
     if (batch_done_event) {
         cudaEventDestroy(batch_done_event);
         batch_done_event = nullptr;
+    }
+    if (sub_batch_done_event) {
+        cudaEventDestroy(sub_batch_done_event);
+        sub_batch_done_event = nullptr;
     }
     if (stream) { cuStreamDestroy(stream); stream = nullptr; }
     for (void* h : host_headers) {
@@ -623,11 +631,28 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
                 for (int i = 0; i < graph_batch; ++i) {
                     std::memset(half.host_headers[i], 0, half.header_size);
                 }
+                check_cuda(cuMemsetD8Async(half.sync, 0, 256, half.stream),
+                           "graph sub-batch sync clear");
                 upload_seed_for_graph(
                     half, seed_lo_start + static_cast<uint64_t>(off));
                 gemm_.iter_batch_graph_launch_ex(half.workspace, half.stream);
-                check_cuda(cuStreamSynchronize(half.stream),
-                           "graph sub-batch sync");
+                if (half.sub_batch_done_event) {
+                    CUDA_CHECK(cudaEventRecord(
+                        half.sub_batch_done_event,
+                        reinterpret_cast<cudaStream_t>(half.stream)));
+                }
+                if (!wait_half_stream(half)) {
+                    const long long stall_ms = stall_restart_ms();
+                    const bool aborted = batch_abort_requested_.exchange(false);
+                    std::fprintf(stderr,
+                        "[gpu] STALL: graph sub-batch on gpu=%d exceeded %lld ms "
+                        "with no progress (wedged CUDA stream%s). Exiting for "
+                        "supervisor restart.\n",
+                        device_index_, stall_ms,
+                        aborted ? "; health-monitor abort" : "");
+                    std::fflush(stderr);
+                    std::_Exit(42);
+                }
                 for (int i = 0; i < graph_batch; ++i) {
                     std::memcpy(half.host_headers[off + i],
                                 half.host_headers[i],
@@ -640,6 +665,9 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
                 "[gpu] graph launch failed, falling back to iter_batch: %s\n",
                 ex.what());
             half.graph_ready = false;
+            launched_graph = false;
+            // Drain poisoned graph work before the direct iter_batch path.
+            cuStreamSynchronize(half.stream);
         }
     }
 
@@ -744,6 +772,31 @@ std::vector<int> GpuWorker::scan_winners(HalfBuffers& half, int batch) {
         }
     }
     return winners;
+}
+
+bool GpuWorker::wait_half_stream(HalfBuffers& half) {
+    if (!half.sub_batch_done_event) {
+        check_cuda(cuStreamSynchronize(half.stream), "half stream sync");
+        return true;
+    }
+    cudaError_t e = cudaEventQuery(half.sub_batch_done_event);
+    if (e == cudaSuccess) return true;
+    if (e != cudaErrorNotReady) {
+        check_cuda(CUDA_ERROR_UNKNOWN, cudaGetErrorString(e));
+        return false;
+    }
+    const int64_t stall_ms = stall_restart_ms();
+    if (stall_ms <= 0) {
+        CUDA_CHECK(cudaEventSynchronize(half.sub_batch_done_event));
+        return true;
+    }
+    try {
+        return spin_wait_batch_event(half.sub_batch_done_event, watchdog_,
+                                     stall_ms, &batch_abort_requested_);
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr, "[gpu] sub-batch spin-wait failed: %s\n", ex.what());
+        return false;
+    }
 }
 
 bool GpuWorker::wait_for_batch(HalfBuffers& half, int timeout_ms) {

@@ -108,6 +108,7 @@ private:
         // Timing / non-blocking wait (cudaEventElapsedTime needs default flags).
         cudaEvent_t batch_start_event = nullptr;
         cudaEvent_t batch_done_event = nullptr;
+        cudaEvent_t sub_batch_done_event = nullptr;
 
         // Caller-owned device-side seed pointer for the extended graph path.
         // Allows cudaMemcpyAsync seed upload on a separate copy stream while
@@ -155,6 +156,7 @@ private:
 
     int sync_and_scan(HalfBuffers& half, int batch);
     bool wait_for_batch(HalfBuffers& half, int timeout_ms);
+    bool wait_half_stream(HalfBuffers& half);
     bool handle_trigger(HalfBuffers& half,
                         const std::shared_ptr<SigmaContext>& ctx,
                         const std::vector<uint8_t>& header,

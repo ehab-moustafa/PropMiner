@@ -1211,8 +1211,24 @@ int WorkerOrchestrator::run() {
         }
         tuned_batch = bench_batch;
         const bool bench_graph = !bench_no_graph_enabled();
+        if (bench_graph) {
+            if (graph_batch_env_set()) {
+                tuned_graph_batch = resolve_graph_batch();
+            } else {
+                // Exercise the graph capture path at the same depth as bench batch.
+                tuned_graph_batch = bench_batch;
+            }
+            normalize_batch_and_graph(tuned_batch, tuned_graph_batch);
+        }
+        if (!cluster_m_env_set()) {
+            setenv("PEARL_GEMM_CONSUMER_CLUSTER_M",
+                   std::to_string(Rtx5090Profile::kProdDefaultClusterM).c_str(),
+                   1);
+        }
         std::cerr << "[orchestrator] Benchmark mode: local job, no pool connection"
                   << " (batch=" << tuned_batch
+                  << " graph_batch=" << tuned_graph_batch
+                  << " cluster_m=" << resolve_cluster_m()
                   << " graph=" << (bench_graph ? "on" : "off") << ")\n";
         std::cerr << "[orchestrator] Bench reports TMAD/s (= pool/community TH/s) "
                      "and protocol H/s (DAF-normalized; ~1000x smaller label)\n";

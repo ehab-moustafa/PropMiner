@@ -164,7 +164,7 @@ On WSL, set `PROPMINER_BENCH_NO_GRAPH=1` before running if graphs wedge.
 ## What `tune-prod` sweeps
 
 **Step 1 — kernel knobs** (rebuild per variant): KBLOCK, STAGES, SWIZZLE, MIN_BLOCKS  
-**Step 2 — runtime** (fixed M/N/K from `PROPMINER_N_CAP`): batch × graph_batch (cluster_m=1, carveout=-1 by default)
+**Step 2 — runtime** (fixed M/N/K from `PROPMINER_N_CAP`): batch × graph_batch (cluster_m=4 default, carveout=-1 by default)
 
 N is **not** swept — tune and mine must use the **same** `PROPMINER_N_CAP`.
 

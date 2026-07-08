@@ -585,7 +585,7 @@ static int read_carveout_env() {
 
 // Runtime knob: PEARL_GEMM_CONSUMER_CLUSTER_M (or legacy
 // PEARL_GEMM_BLACKWELL_CLUSTER_M)
-//   - unset / "default" → PEARL_CONSUMER_DEFAULT_CLUSTER_M (1 on sm_120a native)
+//   - unset / "default" → PEARL_CONSUMER_DEFAULT_CLUSTER_M (4 on RTX 5090 prod)
 //   - "0", "1", "off"  → disable thread-block clustering
 //   - "2" or "4"       → cluster adjacent M tiles when the grid divides
 //
@@ -609,7 +609,7 @@ static int read_cluster_m_env() {
 }
 
 #ifndef PEARL_CONSUMER_DEFAULT_CLUSTER_M
-#define PEARL_CONSUMER_DEFAULT_CLUSTER_M 1
+#define PEARL_CONSUMER_DEFAULT_CLUSTER_M 4
 #endif
 
 static cudaError_t ensure_transcript_kernel_attrs(size_t smem_bytes) {
@@ -740,8 +740,16 @@ cudaError_t launch_transcript_gemm(
                              , tma_a, tma_b
 #endif
                              );
-    if (err != cudaSuccess) return err;
-  } else {
+    if (err != cudaSuccess) {
+      std::fprintf(stderr,
+          "[pearl-gemm] WARN: cluster_m=%d cudaLaunchKernelEx failed (%s); "
+          "falling back to standard launch\n",
+          cluster_m, cudaGetErrorString(err));
+      (void)cudaGetLastError();
+      use_cluster = false;
+    }
+  }
+  if (!use_cluster) {
     transcript_gemm_kernel_consumer<<<grid, block, smem_bytes, stream>>>(
         A, B, C, transcript, (int)M, (int)N, (int)K, (int)R,
         nullptr, nullptr, nullptr, nullptr
@@ -813,8 +821,16 @@ cudaError_t launch_transcript_gemm_headless(
                              , tma_a, tma_b
 #endif
                              );
-    if (err != cudaSuccess) return err;
-  } else {
+    if (err != cudaSuccess) {
+      std::fprintf(stderr,
+          "[pearl-gemm] WARN: cluster_m=%d cudaLaunchKernelEx failed (%s); "
+          "falling back to standard launch\n",
+          cluster_m, cudaGetErrorString(err));
+      (void)cudaGetLastError();
+      use_cluster = false;
+    }
+  }
+  if (!use_cluster) {
     transcript_gemm_kernel_consumer<<<grid, block, smem_bytes, stream>>>(
         A, B, C, nullptr, (int)M, (int)N, (int)K, (int)R,
         pow_target, pow_key,

@@ -40,9 +40,10 @@ struct Rtx5090Profile {
     static constexpr int kMaxMineBatch = 32;
     static constexpr int kDefaultBatch = kDefaultMineBatch;  // legacy alias
 
-    // Consumer GeForce Blackwell (RTX 5090): cluster_m>1 wedges on sm_120a.
-    // Datacenter GPUs may override via PEARL_GEMM_CONSUMER_CLUSTER_M.
-    static constexpr int kProdDefaultClusterM = 1;
+    // Consumer GeForce Blackwell (RTX 5090): cluster_m>1 can wedge on some driver
+    // stacks; kernel falls back to standard launch on cudaLaunchKernelEx failure.
+    // Production default remains 4 (aggressive scheduling); set CLUSTER_M=1 if unstable.
+    static constexpr int kProdDefaultClusterM = 4;
 
     // Stratum share difficulty when pool has not sent vardiff yet (also PROPMINER_STRATUM_DIFF).
     // Lower = easier shares, more frequent submits (Salad: helps before job supersede).
