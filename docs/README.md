@@ -171,7 +171,7 @@ There is no subcommand — mode is selected by flags and environment.
 | Variable | Default | Meaning |
 |---|---|---|
 | `PEARL_GEMM_DEBUG` | `0` | Verbose GEMM logging |
-| `PEARL_GEMM_KERNEL` | consumer | `geforce` if experimental kernel built |
+| `PEARL_GEMM_KERNEL` | geforce (blackwell builds) | `consumer` to opt out of warp-specialized kernel |
 
 ### Build-time (CMake / Make)
 
@@ -182,7 +182,7 @@ There is no subcommand — mode is selected by flags and environment.
 | `PEARL_GEMM_BLACKWELL_STAGES` | `2` | Pipeline stages |
 | `PEARL_GEMM_BLACKWELL_SWIZZLE_BITS` | `2` | Shared-memory swizzle |
 | `PEARL_GEMM_BLACKWELL_LOAD_POLICY` | `cp_async` | `tma` = experimental (not prod) |
-| `PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL` | `0` | `1` = build optional TMA+IMMA kernel |
+| `PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL` | `1` (blackwell) | `0` = omit GeForce kernel from build |
 
 ---
 

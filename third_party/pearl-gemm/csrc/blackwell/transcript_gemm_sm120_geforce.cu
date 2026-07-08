@@ -10,8 +10,8 @@
 // consumer::transcript_gemm_kernel_consumer. Validate with
 // scripts/verify_geforce_transcript.sh before enabling in production.
 //
-// Compile: PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1 (default OFF).
-// Runtime: PEARL_GEMM_KERNEL=geforce (aliases: tcgen05, sm120_tcgen05).
+// Compile: PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1 (default ON for blackwell).
+// Runtime: default geforce when compiled in; PEARL_GEMM_KERNEL=consumer to opt out.
 //
 // Standalone verify build (from pearl-gemm root, RTX 5090 host):
 //   make -f csrc/capi/Makefile PEARL_GEMM_ARCH=blackwell \
