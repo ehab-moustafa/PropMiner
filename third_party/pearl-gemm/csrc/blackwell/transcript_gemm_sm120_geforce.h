@@ -13,8 +13,8 @@ namespace blackwell {
 // This is NOT tcgen05/TMEM — GeForce Blackwell lacks that ISA (see
 // external_repos/blackwell-geforce-nvfp4-gemm/docs/sm120-architecture.md).
 //
-// Gated at compile time (PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1, default ON).
-// Runtime default is geforce when compiled in; PEARL_GEMM_KERNEL=consumer opts out.
+// Gated at compile time (PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1) and runtime
+// (PEARL_GEMM_KERNEL=geforce). Production default remains consumer::.
 
 cudaError_t launch_transcript_gemm_sm120_geforce(
     int8_t const* A, int8_t const* B, uint32_t* transcript,

@@ -254,9 +254,8 @@ ifeq ($(PEARL_GEMM_ARCH),blackwell)
     $(error PEARL_GEMM_BLACKWELL_LOAD_POLICY=$(PEARL_GEMM_BLACKWELL_LOAD_POLICY) not recognised. Supported: cp_async, tma)
   endif
   # Optional RTX 5090 warp-specialized TMA+IMMA kernel (NOT tcgen05 — see
-  # external_repos/README.md). Default ON for blackwell; opt out with
-  # PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=0 or PEARL_GEMM_KERNEL=consumer.
-  PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL ?= 1
+  # external_repos/README.md). Default OFF; production stays consumer::.
+  PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL ?=
   ifeq ($(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL),1)
     DEFINES += -DPEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1
     PEARL_GEMM_BUILD_KNOBS_STR := $(PEARL_GEMM_BUILD_KNOBS_STR)+geforce
