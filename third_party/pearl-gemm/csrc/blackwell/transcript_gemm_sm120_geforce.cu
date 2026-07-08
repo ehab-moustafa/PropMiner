@@ -154,10 +154,10 @@ __global__ void transcript_gemm_sm120_geforce_kernel(
   Tensor sA = make_tensor(make_smem_ptr(smem.smem_A), SmemLayoutA{});
   Tensor sB = make_tensor(make_smem_ptr(smem.smem_B), SmemLayoutB{});
 
-  Tensor mA = make_tensor(make_gmem_ptr(A_gmem),
-                          make_shape(M, K), make_stride(K, _1{}));
-  Tensor mB = make_tensor(make_gmem_ptr(B_gmem),
-                          make_shape(N, K), make_stride(K, _1{}));
+  // TMA copies require gmem views from the grid-constant descriptor, not raw
+  // pointers (see transcript_gemm_sm100.cu load_stage).
+  Tensor mA = tma_a.get_tma_tensor(make_shape(M, K));
+  Tensor mB = tma_b.get_tma_tensor(make_shape(N, K));
   Tensor gA = local_tile(mA, Shape<Int<kBM>, Int<kBK>>{},
                          make_coord(m_tile, _));
   Tensor gB = local_tile(mB, Shape<Int<kBN>, Int<kBK>>{},
@@ -176,7 +176,7 @@ __global__ void transcript_gemm_sm120_geforce_kernel(
     for (int s = 0; s < kStages - 1; ++s) {
       if (s < K_TILES) {
         tma_issue_k_tile<ConsumerTmaA, ConsumerTmaB, ConsumerTmaStagedA,
-                         ConsumerTmaStagedB, kBM, kBN, kBK, kStages, ElementIn>(
+                         ConsumerTmaStagedB, kBM, kBN, kBK, kStages>(
             tma_a, tma_b, tma_pipe, smem.smem_A, smem.smem_B, gA, gB, s, s,
             kProducerLeader);
       }
@@ -194,7 +194,7 @@ __global__ void transcript_gemm_sm120_geforce_kernel(
       int next_k = k_iter + kStages - 1;
       if (next_k < K_TILES) {
         tma_issue_k_tile<ConsumerTmaA, ConsumerTmaB, ConsumerTmaStagedA,
-                         ConsumerTmaStagedB, kBM, kBN, kBK, kStages, ElementIn>(
+                         ConsumerTmaStagedB, kBM, kBN, kBK, kStages>(
             tma_a, tma_b, tma_pipe, smem.smem_A, smem.smem_B, gA, gB,
             next_k, next_k % kStages, kProducerLeader);
       }

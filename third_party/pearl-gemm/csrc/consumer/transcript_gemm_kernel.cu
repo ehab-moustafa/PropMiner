@@ -305,8 +305,7 @@ __global__ void transcript_gemm_kernel_consumer(
   for (int s = 0; s < kStages - 1; ++s) {
     if (s < K_TILES) {
       tma_loader::tma_issue_k_tile<ConsumerTmaA, ConsumerTmaB, ConsumerTmaStagedA,
-                                   ConsumerTmaStagedB, kBM, kBN, kBK, kStages,
-                                   ElementIn>(
+                                   ConsumerTmaStagedB, kBM, kBN, kBK, kStages>(
           tma_a, tma_b, tma_pipe, smem.smem_A, smem.smem_B, gA, gB, s, s);
     }
   }
@@ -384,8 +383,7 @@ __global__ void transcript_gemm_kernel_consumer(
     int next_k = k_iter + kStages - 1;
     if (next_k < K_TILES) {
       tma_loader::tma_issue_k_tile<ConsumerTmaA, ConsumerTmaB, ConsumerTmaStagedA,
-                                   ConsumerTmaStagedB, kBM, kBN, kBK, kStages,
-                                   ElementIn>(
+                                   ConsumerTmaStagedB, kBM, kBN, kBK, kStages>(
           tma_a, tma_b, tma_pipe, smem.smem_A, smem.smem_B, gA, gB,
           next_k, next_k % kStages);
     }
