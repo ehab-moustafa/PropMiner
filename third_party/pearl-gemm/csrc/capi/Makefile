@@ -272,6 +272,24 @@ ifeq ($(PEARL_GEMM_ARCH),blackwell)
       VERIFY_GEFORCE_OBJS := $(patsubst $(SRC)/%, $(VERIFY_GEFORCE_BUILD)/%.o, $(VERIFY_GEFORCE_SRCS))
     endif
   endif
+  # GeForce v2: PipelineTmaAsync path (ON by default for blackwell).
+  PEARL_GEMM_BLACKWELL_GEFORCE_V2 ?= 1
+  ifeq ($(PEARL_GEMM_BLACKWELL_GEFORCE_V2),1)
+    DEFINES += -DPEARL_GEMM_BLACKWELL_GEFORCE_V2=1
+    PEARL_GEMM_BUILD_KNOBS_STR := $(PEARL_GEMM_BUILD_KNOBS_STR)+geforce_v2
+    PEARL_SM120_GEFORCE_V2_VERIFY_MAIN ?=
+    ifeq ($(PEARL_SM120_GEFORCE_V2_VERIFY_MAIN),1)
+      VERIFY_GEFORCE_V2_BUILD := $(BUILD)/verify_geforce_v2
+      VERIFY_GEFORCE_V2_TARGET := $(BUILD)/verify_transcript_sm120_geforce_v2
+      VERIFY_GEFORCE_V2_DEFINES := -DPEARL_SM120_GEFORCE_V2_VERIFY_MAIN
+      VERIFY_GEFORCE_V2_SRCS := \
+        $(SRC)/blackwell/transcript_gemm_sm120_geforce_v2.cu \
+        $(SRC)/blackwell/transcript_gemm_sm120_geforce.cu \
+        $(SRC)/consumer/transcript_gemm_kernel.cu \
+        $(SRC)/portable/transcript_kernel.cu
+      VERIFY_GEFORCE_V2_OBJS := $(patsubst $(SRC)/%, $(VERIFY_GEFORCE_V2_BUILD)/%.o, $(VERIFY_GEFORCE_V2_SRCS))
+    endif
+  endif
   DEFINES += -DPEARL_GEMM_BUILD_KNOBS=\"$(PEARL_GEMM_BUILD_KNOBS_STR)\"
 endif
 
@@ -360,6 +378,9 @@ ifeq ($(PEARL_GEMM_ARCH),blackwell)
 ifeq ($(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL),1)
   SRCS_BLACKWELL += $(SRC)/blackwell/transcript_gemm_sm120_geforce.cu
 endif
+ifeq ($(PEARL_GEMM_BLACKWELL_GEFORCE_V2),1)
+  SRCS_BLACKWELL += $(SRC)/blackwell/transcript_gemm_sm120_geforce_v2.cu
+endif
 endif
 
 # B200 path: same portable helpers, but the sm_100a tcgen05/TMEM transcript
@@ -405,8 +426,10 @@ OBJS := $(patsubst $(SRC)/%, $(BUILD)/%.o, $(SRCS))
 
 LDLIBS := -lcuda -lcudart -lstdc++ $(EXTRA_LDLIBS)
 
-.PHONY: all clean generate-static-switches verify-geforce-transcript
-ifneq ($(VERIFY_GEFORCE_TARGET),)
+.PHONY: all clean generate-static-switches verify-geforce-transcript verify-geforce-v2-transcript
+ifneq ($(VERIFY_GEFORCE_V2_TARGET),)
+all: $(TARGET) $(VERIFY_GEFORCE_V2_TARGET)
+else ifneq ($(VERIFY_GEFORCE_TARGET),)
 all: $(TARGET) $(VERIFY_GEFORCE_TARGET)
 else
 all: $(TARGET)
@@ -452,6 +475,23 @@ $(VERIFY_GEFORCE_BUILD):
 	@mkdir -p $(VERIFY_GEFORCE_BUILD)
 
 verify-geforce-transcript: $(VERIFY_GEFORCE_TARGET)
+endif
+
+ifneq ($(VERIFY_GEFORCE_V2_TARGET),)
+VERIFY_GEFORCE_V2_NVCC_FLAGS := $(NVCC_FLAGS_BASE) $(LINK_ARCH) $(INCLUDES) $(DEFINES) $(VERIFY_GEFORCE_V2_DEFINES)
+
+$(VERIFY_GEFORCE_V2_TARGET): $(VERIFY_GEFORCE_V2_OBJS) | $(BUILD) $(VERIFY_GEFORCE_V2_BUILD)
+	$(NVCC) $(LINK_ARCH) -o $@ $(VERIFY_GEFORCE_V2_OBJS) -lcuda -lcudart -lstdc++
+	@echo "==> $@"
+
+$(VERIFY_GEFORCE_V2_BUILD)/%.cu.o: $(SRC)/%.cu | $(VERIFY_GEFORCE_V2_BUILD)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(VERIFY_GEFORCE_V2_NVCC_FLAGS) -c $< -o $@
+
+$(VERIFY_GEFORCE_V2_BUILD):
+	@mkdir -p $(VERIFY_GEFORCE_V2_BUILD)
+
+verify-geforce-v2-transcript: $(VERIFY_GEFORCE_V2_TARGET)
 endif
 
 clean:

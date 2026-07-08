@@ -47,6 +47,10 @@
 #include "blackwell/transcript_gemm_sm120_geforce.h"
 #endif
 
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+#include "blackwell/transcript_gemm_sm120_geforce_v2.h"
+#endif
+
 // --- internal: cached per-device cudaDeviceProp ---------------------------
 namespace {
 
@@ -453,12 +457,34 @@ static bool pearl_kernel_env_requests_consumer() {
 static bool pearl_kernel_env_requests_geforce() {
   const char* env = std::getenv("PEARL_GEMM_KERNEL");
   if (!env || !*env) return false;
-  return strcmp(env, "geforce") == 0 || strcmp(env, "tcgen05") == 0 ||
-         strcmp(env, "sm120_tcgen05") == 0 || strcmp(env, "sm120_geforce") == 0;
+  return strcmp(env, "geforce") == 0 || strcmp(env, "geforce_v2") == 0 ||
+         strcmp(env, "tcgen05") == 0 || strcmp(env, "sm120_tcgen05") == 0 ||
+         strcmp(env, "sm120_geforce") == 0;
+}
+
+static bool pearl_kernel_env_requests_geforce_v1() {
+  const char* env = std::getenv("PEARL_GEMM_KERNEL");
+  if (!env || !*env) return false;
+  return strcmp(env, "geforce_v1") == 0;
+}
+
+static bool pearl_kernel_env_requests_geforce_v2() {
+  const char* env = std::getenv("PEARL_GEMM_KERNEL");
+  if (!env || !*env) return false;
+  return strcmp(env, "geforce_v2") == 0;
 }
 
 static int validate_geforce_kernel_selection() {
 #if !defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
+  if (pearl_kernel_env_requests_geforce_v1()) {
+    const char* env = std::getenv("PEARL_GEMM_KERNEL");
+    fprintf(stderr,
+            "[pearl-gemm] ERROR: PEARL_GEMM_KERNEL=%s requests GeForce v1, but "
+            "this build was compiled without PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1 "
+            "(rebuild with v1 enabled or use PEARL_GEMM_KERNEL=consumer)\n",
+            env ? env : "");
+    return -56;
+  }
   if (pearl_kernel_env_requests_geforce()) {
     const char* env = std::getenv("PEARL_GEMM_KERNEL");
     fprintf(stderr,
@@ -470,14 +496,36 @@ static int validate_geforce_kernel_selection() {
     return -53;
   }
 #endif
+#if !defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+  if (pearl_kernel_env_requests_geforce_v2()) {
+    const char* env = std::getenv("PEARL_GEMM_KERNEL");
+    fprintf(stderr,
+            "[pearl-gemm] ERROR: PEARL_GEMM_KERNEL=%s requests GeForce v2, but "
+            "this build was compiled without PEARL_GEMM_BLACKWELL_GEFORCE_V2=1 "
+            "(rebuild with v2 enabled or use PEARL_GEMM_KERNEL=geforce)\n",
+            env ? env : "");
+    return -54;
+  }
+#endif
   return 0;
+}
+#endif
+
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+static bool use_geforce_v2_kernel() {
+  if (pearl_kernel_env_requests_consumer()) return false;
+  if (pearl_kernel_env_requests_geforce_v1()) return false;
+  return true;  // default ON when v2 is compiled in
 }
 #endif
 
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
 static bool use_geforce_experimental_kernel() {
   if (pearl_kernel_env_requests_consumer()) return false;
-  return true;  // default ON when GeForce kernel is compiled in
+#if defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+  if (use_geforce_v2_kernel()) return false;
+#endif
+  return true;  // v1 when v2 not selected (explicit geforce_v1 or v2 not compiled)
 }
 #endif
 
@@ -509,6 +557,18 @@ int warmup_kernels_before_graph_capture() {
     }
   }
 #endif
+#if defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+  if (use_geforce_v2_kernel()) {
+    werr = ::pearl::blackwell::warmup_transcript_gemm_sm120_geforce_v2_attrs();
+    if (werr != cudaSuccess) {
+      fprintf(stderr,
+              "[pearl-gemm] warmup_transcript_gemm_sm120_geforce_v2_attrs "
+              "failed: %s\n",
+              cudaGetErrorString(werr));
+      return -55;
+    }
+  }
+#endif
   if (pearl_gemm_debug_enabled()) {
     fprintf(stderr,
             "[pearl-gemm] warmup OK (transcript consumer kernel attrs)\n");
@@ -522,9 +582,13 @@ int warmup_kernels_before_graph_capture() {
 extern "C" {
 
 PEARL_CAPI_EXPORT const char* pearl_capi_active_kernel_name(void) {
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+  if (use_geforce_v2_kernel()) return "geforce_v2";
+#endif
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
-  return use_geforce_experimental_kernel() ? "geforce" : "consumer";
-#elif defined(PEARL_GEMM_BLACKWELL)
+  if (use_geforce_experimental_kernel()) return "geforce";
+#endif
+#if defined(PEARL_GEMM_BLACKWELL)
   return pearl_kernel_env_requests_geforce() ? "geforce" : "consumer";
 #else
   return "consumer";
@@ -968,6 +1032,21 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
     // transcript buffer to global memory. If PoW pointers are null this
     // intentionally emits nothing.
     cudaError_t launch_err = cudaSuccess;
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+    if (use_geforce_v2_kernel()) {
+      launch_err =
+          ::pearl::blackwell::launch_transcript_gemm_sm120_geforce_v2_headless(
+              static_cast<const int8_t*>(p->ApEA),
+              static_cast<const int8_t*>(p->BpEB),
+              /*C=*/nullptr,
+              m, n, k, r, batch,
+              static_cast<const uint32_t*>(p->pow_target),
+              static_cast<const uint32_t*>(p->pow_key),
+              static_cast<HostSignalSync*>(p->host_signal_sync),
+              static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
+              stream);
+    } else
+#endif
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
     if (use_geforce_experimental_kernel()) {
       launch_err = ::pearl::blackwell::launch_transcript_gemm_sm120_geforce_headless(
