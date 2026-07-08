@@ -107,6 +107,30 @@ Or bake env defaults — `autotune.json` is keyed per GPU UUID and won't auto-ap
 
 ---
 
+## Wedge-proof alternative (process-isolated sweep)
+
+If `--tune-autotune` keeps hanging (100% GPU-util, ~100W, no progress) — a CUDA
+stream wedge seen on some Blackwell driver stacks (e.g. driver 580.x / CUDA 13
+on sm_120a) — use the process-isolated sweep. It runs **each batch as its own
+short `propminer --bench` process** under `timeout`, so a wedged combo only
+kills that child and the sweep continues instead of dying.
+
+```bash
+cd /workspace/PropMiner
+PROPMINER_N_CAP=32768 ./scripts/tune_runtime_safe.sh
+```
+
+- Skips wedged combos (marked `WEDGED`), keeps going, prints a results table.
+- Writes recommended mining env to `~/.cache/propminer/tune_safe_result.env`.
+- Graphs are **off** by default (safe on wedge-prone drivers); set
+  `PROPMINER_TUNE_SAFE_GRAPH=1` to also try graphs.
+
+Then mine with the printed env (batch + `PROPMINER_BENCH_NO_GRAPH=1` +
+`PEARL_GEMM_CONSUMER_CLUSTER_M=1`). Note: results are typically flat across
+batch sizes on the RTX 5090, so any completed sweep is fine.
+
+---
+
 ## Lighter alternative (runtime tune only)
 
 Salad/WSL one-liner — no nvcc, no knob rebuild:
