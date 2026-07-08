@@ -111,8 +111,8 @@ __global__ void transcript_gemm_sm120_geforce_kernel(
     uint32_t const* __restrict__ pow_key,
     HostSignalSync* host_signal_sync,
     HostSignalHeader* host_signal_header_pinned,
-    __grid_constant__ ConsumerTmaA tma_a,
-    __grid_constant__ ConsumerTmaB tma_b) {
+    __grid_constant__ ConsumerTmaA const tma_a,
+    __grid_constant__ ConsumerTmaB const tma_b) {
 
   extern __shared__ uint8_t smem_raw[];
   SharedStorage& smem = *reinterpret_cast<SharedStorage*>(smem_raw);
