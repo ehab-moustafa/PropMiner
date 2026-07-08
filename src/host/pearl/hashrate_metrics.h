@@ -189,7 +189,8 @@ inline void print_hashrate_metrics_json(FILE* out,
                                         uint64_t total_iters = 0,
                                         int bench_seconds = 0,
                                         const char* git_sha = "",
-                                        const char* miner_version = "") {
+                                        const char* miner_version = "",
+                                        const SystemSnapshot* sys = nullptr) {
     std::fprintf(out,
         "{\"ts\":%lld,\"git_sha\":\"%s\",\"miner_version\":\"%s\","
         "\"bench_seconds\":%d,"
@@ -198,7 +199,7 @@ inline void print_hashrate_metrics_json(FILE* out,
         "\"protocol_hps\":%.6e,\"daf\":%llu,\"tops_pct\":%.4f,"
         "\"tiles_per_sec\":%.6e,\"iters_per_sec\":%.6f,"
         "\"batch_ms\":%.3f,\"graph_batch\":%d,"
-        "\"m\":%d,\"n\":%d,\"k\":%d}\n",
+        "\"m\":%d,\"n\":%d,\"k\":%d",
         static_cast<long long>(std::time(nullptr)), git_sha, miner_version,
         bench_seconds, elapsed_sec,
         static_cast<unsigned long long>(total_iters),
@@ -206,6 +207,22 @@ inline void print_hashrate_metrics_json(FILE* out,
         static_cast<unsigned long long>(cfg.difficulty_adjustment_factor()),
         m.tops_pct, m.tiles_per_sec, m.iters_per_sec,
         m.batch_ms, m.batch, m.m, m.n, m.k);
+    if (sys && sys->valid) {
+        std::fprintf(out,
+            ",\"gpu_util_pct\":%d,\"gpu_mem_util_pct\":%d,"
+            "\"gpu_temp_c\":%d,\"gpu_power_w\":%d,\"gpu_power_limit_w\":%d,"
+            "\"vram_used_mb\":%llu,\"vram_total_mb\":%llu,"
+            "\"cpu_util_pct\":%d,\"ram_used_mb\":%llu,\"ram_total_mb\":%llu",
+            sys->gpu_util_pct, sys->gpu_mem_util_pct,
+            sys->gpu_temp_c, sys->gpu_power_w, sys->gpu_power_limit_w,
+            static_cast<unsigned long long>(sys->vram_used_mb),
+            static_cast<unsigned long long>(sys->vram_total_mb),
+            sys->cpu_util_pct,
+            static_cast<unsigned long long>(sys->ram_used_mb),
+            static_cast<unsigned long long>(sys->ram_total_mb));
+    }
+    std::fputc('}', out);
+    std::fputc('\n', out);
 }
 
 } // namespace pearl

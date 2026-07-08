@@ -1409,7 +1409,7 @@ int WorkerOrchestrator::run() {
                                 stdout, final_metrics, tuned_config,
                                 elapsed, bench_iters, cfg_.speed_test_seconds,
                                 bench_git_sha.c_str(),
-                                cfg_.miner_version.c_str());
+                                cfg_.miner_version.c_str(), &sys);
                         }
                     } else {
                         std::cout << "benchmark incomplete: no completed batch"
