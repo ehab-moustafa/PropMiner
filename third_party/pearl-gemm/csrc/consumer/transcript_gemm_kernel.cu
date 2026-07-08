@@ -749,6 +749,7 @@ cudaError_t launch_transcript_gemm(
     err = cudaLaunchKernelEx(&cfg, transcript_gemm_kernel_consumer,
                              A, B, C, transcript,
                              (int)M, (int)N, (int)K, (int)R,
+                             nullptr, nullptr, nullptr, nullptr,
                              nullptr, nullptr, nullptr, nullptr
 #if PEARL_CONSUMER_USE_TMA_EXPERIMENT
                              , tma_a, tma_b
@@ -766,6 +767,7 @@ cudaError_t launch_transcript_gemm(
   if (!use_cluster) {
     transcript_gemm_kernel_consumer<<<grid, block, smem_bytes, stream>>>(
         A, B, C, transcript, (int)M, (int)N, (int)K, (int)R,
+        nullptr, nullptr, nullptr, nullptr,
         nullptr, nullptr, nullptr, nullptr
 #if PEARL_CONSUMER_USE_TMA_EXPERIMENT
         , tma_a, tma_b
