@@ -75,8 +75,13 @@ set(PEARL_GEMM_BLACKWELL_SWIZZLE_BITS "2" CACHE STRING "Blackwell swizzle bits")
 set(PEARL_GEMM_BLACKWELL_MIN_BLOCKS "1" CACHE STRING "Blackwell min blocks per SM")
 set(PEARL_GEMM_BLACKWELL_LOAD_POLICY "cp_async" CACHE STRING
     "Blackwell load policy: cp_async|tma")
-set(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL OFF CACHE BOOL
-    "Compile RTX 5090 warp-specialized TMA+IMMA experimental kernel (NOT tcgen05; default OFF)")
+if(PEARL_GEMM_ARCH STREQUAL "blackwell")
+    set(_PEARL_GEFORCE_KERNEL_DEFAULT ON)
+else()
+    set(_PEARL_GEFORCE_KERNEL_DEFAULT OFF)
+endif()
+set(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL ${_PEARL_GEFORCE_KERNEL_DEFAULT} CACHE BOOL
+    "Compile RTX 5090 warp-specialized TMA+IMMA kernel (NOT tcgen05; ON for blackwell builds)")
 
 # ── Fetch CUTLASS if missing ───────────────────────────────────────────
 include(ExternalProject)

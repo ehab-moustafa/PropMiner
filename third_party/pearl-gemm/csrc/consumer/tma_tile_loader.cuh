@@ -97,15 +97,14 @@ CUTLASS_DEVICE void tma_wait_stage(TmaPipelineStorage<kStages>& pipe, int stg,
 // Issue one K-tile TMA load into pipeline stage `stg` (elect_one producer).
 template <typename TmaA, typename TmaB, typename SmemLayoutStagedA,
           typename SmemLayoutStagedB, int kBM, int kBN, int kBK, int kStages,
-          typename ElementIn, typename TensorGA, typename TensorGB,
-          int kLeaderThread = 0>
+          typename ElementIn, typename TensorGA, typename TensorGB>
 CUTLASS_DEVICE void tma_issue_k_tile(
     TmaA const& tma_a, TmaB const& tma_b,
     TmaPipelineStorage<kStages>& pipe,
     ElementIn* smem_a_base, ElementIn* smem_b_base,
     TensorGA const& gA, TensorGB const& gB,
-    int k_iter, int stg) {
-  if (threadIdx.x != kLeaderThread) return;
+    int k_iter, int stg, int leader_thread = 0) {
+  if (threadIdx.x != leader_thread) return;
 
   BarrierValue* fb = &pipe.full_barrier[stg];
   cutlass::arch::ClusterTransactionBarrier::arrive_and_expect_tx(fb, kTmaBytes<kBM, kBN, kBK, ElementIn>);

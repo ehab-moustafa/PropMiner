@@ -10,8 +10,8 @@
 // consumer::transcript_gemm_kernel_consumer. Validate with
 // scripts/verify_geforce_transcript.sh before enabling in production.
 //
-// Compile: PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1 (default OFF).
-// Runtime: PEARL_GEMM_KERNEL=geforce (aliases: tcgen05, sm120_tcgen05).
+// Compile: PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL=1 (default ON for blackwell).
+// Runtime: default geforce when compiled in; PEARL_GEMM_KERNEL=consumer to opt out.
 //
 // Standalone verify build (from pearl-gemm root, RTX 5090 host):
 //   make -f csrc/capi/Makefile PEARL_GEMM_ARCH=blackwell \
@@ -48,17 +48,26 @@ using namespace pearl::consumer::tma_loader;
 
 static constexpr int kBM = 128;
 static constexpr int kBN = 256;
-static constexpr int kBK = 128;
+#ifndef PEARL_CONSUMER_KBLOCK
+#define PEARL_CONSUMER_KBLOCK 64
+#endif
+#if PEARL_CONSUMER_KBLOCK != 64 && PEARL_CONSUMER_KBLOCK != 128
+#error "PEARL_CONSUMER_KBLOCK must be 64 or 128"
+#endif
+static constexpr int kBK = PEARL_CONSUMER_KBLOCK;
 static constexpr int kAtomK = 32;
 static constexpr int kConsumerThreads = 256;
 static constexpr int kProducerLeader = 256;
 static constexpr int kThreads = 288;
 static constexpr int kFragSize = (kBM * kBN) / kConsumerThreads;
 static constexpr int kTranscriptSlots = 16;
-static constexpr int kStages = 2;
+#ifndef PEARL_CONSUMER_STAGES
+#define PEARL_CONSUMER_STAGES 2
+#endif
+static constexpr int kStages = PEARL_CONSUMER_STAGES;
 
 #ifndef PEARL_CONSUMER_SWIZZLE_BITS
-#define PEARL_CONSUMER_SWIZZLE_BITS 3
+#define PEARL_CONSUMER_SWIZZLE_BITS 2
 #endif
 
 using ElementIn = int8_t;
@@ -167,9 +176,9 @@ __global__ void transcript_gemm_sm120_geforce_kernel(
     for (int s = 0; s < kStages - 1; ++s) {
       if (s < K_TILES) {
         tma_issue_k_tile<ConsumerTmaA, ConsumerTmaB, ConsumerTmaStagedA,
-                         ConsumerTmaStagedB, kBM, kBN, kBK, kStages, ElementIn,
-                         decltype(gA), decltype(gB), kProducerLeader>(
-            tma_a, tma_b, tma_pipe, smem.smem_A, smem.smem_B, gA, gB, s, s);
+                         ConsumerTmaStagedB, kBM, kBN, kBK, kStages, ElementIn>(
+            tma_a, tma_b, tma_pipe, smem.smem_A, smem.smem_B, gA, gB, s, s,
+            kProducerLeader);
       }
     }
   }
@@ -185,10 +194,9 @@ __global__ void transcript_gemm_sm120_geforce_kernel(
       int next_k = k_iter + kStages - 1;
       if (next_k < K_TILES) {
         tma_issue_k_tile<ConsumerTmaA, ConsumerTmaB, ConsumerTmaStagedA,
-                         ConsumerTmaStagedB, kBM, kBN, kBK, kStages, ElementIn,
-                         decltype(gA), decltype(gB), kProducerLeader>(
+                         ConsumerTmaStagedB, kBM, kBN, kBK, kStages, ElementIn>(
             tma_a, tma_b, tma_pipe, smem.smem_A, smem.smem_B, gA, gB,
-            next_k, next_k % kStages);
+            next_k, next_k % kStages, kProducerLeader);
       }
     }
 

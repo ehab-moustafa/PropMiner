@@ -444,6 +444,12 @@ bool pearl_gemm_debug_enabled() {
 }
 
 #if defined(PEARL_GEMM_BLACKWELL)
+static bool pearl_kernel_env_requests_consumer() {
+  const char* env = std::getenv("PEARL_GEMM_KERNEL");
+  if (!env || !*env) return false;
+  return strcmp(env, "consumer") == 0;
+}
+
 static bool pearl_kernel_env_requests_geforce() {
   const char* env = std::getenv("PEARL_GEMM_KERNEL");
   if (!env || !*env) return false;
@@ -470,7 +476,8 @@ static int validate_geforce_kernel_selection() {
 
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
 static bool use_geforce_experimental_kernel() {
-  return pearl_kernel_env_requests_geforce();
+  if (pearl_kernel_env_requests_consumer()) return false;
+  return true;  // default ON when GeForce kernel is compiled in
 }
 #endif
 
