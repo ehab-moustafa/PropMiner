@@ -28,9 +28,8 @@ fi
 # Configure for native Blackwell sm_120a with RTX 5090 knobs.
 # Hard constraints:
 #   - Tile 128x256x128 maps to the 170-SM occupancy grid.
-#   - STAGES=2 with KBLOCK=128 fits shared memory while keeping the Tensor
-#     Core datapath fed.
-#   - SWIZZLE_BITS=3 is the Blackwell-native swizzle from Alpha tuning.
+#   - STAGES=2 with KBLOCK=64 fits shared memory on RTX 5090 (prod tune winner).
+#   - SWIZZLE_BITS=2 won k64-s2-sw2-mb1-cp_async on native Blackwell tune.
 echo "[build] Configuring CMake for PEARL_GEMM_ARCH=blackwell (sm_120a)..."
 cmake -S "${ROOT}" -B "${BUILD_DIR}" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -38,9 +37,9 @@ cmake -S "${ROOT}" -B "${BUILD_DIR}" \
     -DCMAKE_CUDA_ARCHITECTURES=120a \
     -DPEARL_GEMM_BLACKWELL_BM=128 \
     -DPEARL_GEMM_BLACKWELL_BN=256 \
-    -DPEARL_GEMM_BLACKWELL_KBLOCK=128 \
+    -DPEARL_GEMM_BLACKWELL_KBLOCK=64 \
     -DPEARL_GEMM_BLACKWELL_STAGES=2 \
-    -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=3 \
+    -DPEARL_GEMM_BLACKWELL_SWIZZLE_BITS=2 \
     -DPEARL_GEMM_BLACKWELL_MIN_BLOCKS=1 \
     -DPEARL_GEMM_BLACKWELL_LOAD_POLICY=cp_async
 

@@ -53,8 +53,8 @@ setup_cuda_runtime_env() {
 
         export LD_LIBRARY_PATH="${BUNDLED_CUDA}:${WSL_DRIVER_PATH}:${LD_LIBRARY_PATH:-}"
         echo "[env] Set LD_LIBRARY_PATH for WSL2: ${LD_LIBRARY_PATH}" | propminer_log
-    elif [[ -e /dev/nvidia0 ]]; then
-        echo "[env] Native Linux NVIDIA detected (/dev/nvidia0 present)." | propminer_log
+    elif [[ -e /dev/nvidia0 ]] || [[ -e /dev/nvidiactl ]] || compgen -G '/dev/nvidia[0-9]*' >/dev/null; then
+        echo "[env] Native Linux NVIDIA detected (nvidia device nodes present)." | propminer_log
         export LD_LIBRARY_PATH="${BUNDLED_CUDA}:${LD_LIBRARY_PATH:-}"
         echo "[env] Set LD_LIBRARY_PATH for native Linux: ${LD_LIBRARY_PATH}" | propminer_log
     else

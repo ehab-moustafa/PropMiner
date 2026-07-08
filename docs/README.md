@@ -174,9 +174,9 @@ There is no subcommand — mode is selected by flags and environment.
 | Variable | Default | Meaning |
 |---|---|---|
 | `PROP_MINER_CUDA_ARCH` | `blackwell` | Arch profile for host+gemm build |
-| `PEARL_GEMM_BLACKWELL_KBLOCK` | `128` | K-tile depth |
+| `PEARL_GEMM_BLACKWELL_KBLOCK` | `64` | K-tile depth |
 | `PEARL_GEMM_BLACKWELL_STAGES` | `2` | Pipeline stages |
-| `PEARL_GEMM_BLACKWELL_SWIZZLE_BITS` | `3` | Shared-memory swizzle |
+| `PEARL_GEMM_BLACKWELL_SWIZZLE_BITS` | `2` | Shared-memory swizzle |
 | `PEARL_GEMM_BLACKWELL_LOAD_POLICY` | `cp_async` | `tma` = experimental (not prod) |
 | `PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL` | `0` | `1` = build optional TMA+IMMA kernel |
 
@@ -324,9 +324,9 @@ make -j$(nproc)
 
 | Knob | Production default |
 |---|---|
-| KBLOCK | 128 |
+| KBLOCK | 64 |
 | STAGES | 2 |
-| SWIZZLE_BITS | 3 |
+| SWIZZLE_BITS | 2 |
 | MIN_BLOCKS | 1 |
 | LOAD_POLICY | cp_async |
 | BM × BN | 128 × 256 (fixed — proof-canonical) |

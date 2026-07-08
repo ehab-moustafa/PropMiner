@@ -69,9 +69,9 @@ endif()
 # ── Kernel tuning knobs (only affect consumer/Blackwell/Ada builds) ────
 set(PEARL_GEMM_BLACKWELL_BM "128" CACHE STRING "Blackwell consumer tile M")
 set(PEARL_GEMM_BLACKWELL_BN "256" CACHE STRING "Blackwell consumer tile N")
-set(PEARL_GEMM_BLACKWELL_KBLOCK "128" CACHE STRING "Blackwell smem K-tile")
+set(PEARL_GEMM_BLACKWELL_KBLOCK "64" CACHE STRING "Blackwell smem K-tile")
 set(PEARL_GEMM_BLACKWELL_STAGES "2" CACHE STRING "Blackwell pipeline stages")
-set(PEARL_GEMM_BLACKWELL_SWIZZLE_BITS "3" CACHE STRING "Blackwell swizzle bits")
+set(PEARL_GEMM_BLACKWELL_SWIZZLE_BITS "2" CACHE STRING "Blackwell swizzle bits")
 set(PEARL_GEMM_BLACKWELL_MIN_BLOCKS "1" CACHE STRING "Blackwell min blocks per SM")
 set(PEARL_GEMM_BLACKWELL_LOAD_POLICY "cp_async" CACHE STRING
     "Blackwell load policy: cp_async|tma")
