@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | **Not built** |
+| **Status** | **Phase 1 built** (iter_batch grouped; graph path unchanged) |
 | **Priority** | P1 — only if batch strategy changes |
 | **Est. gain** | **0%** at batch=1; **+10–20%** if batch≥4 and kernel efficient |
 | **Effort** | **4–6 weeks** |

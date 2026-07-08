@@ -27,5 +27,11 @@ cudaError_t launch_transcript_gemm_sm120_geforce_v2_headless(
 
 cudaError_t warmup_transcript_gemm_sm120_geforce_v2_attrs();
 
+cudaError_t launch_transcript_gemm_sm120_geforce_v2_headless_grouped(
+    int8_t const* const* h_apea_ptrs, int8_t const* B, int64_t M, int64_t N,
+    int64_t K, int64_t R, int64_t batch, uint32_t const* pow_target,
+    uint32_t const* const* d_pow_key_ptrs, HostSignalSync* d_sync_array,
+    HostSignalHeader** d_header_ptrs, cudaStream_t stream);
+
 }  // namespace blackwell
 }  // namespace pearl

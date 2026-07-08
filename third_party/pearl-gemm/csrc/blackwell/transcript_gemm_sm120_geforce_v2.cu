@@ -13,6 +13,7 @@
 // Compile: PEARL_GEMM_BLACKWELL_GEFORCE_V2=1 (default ON for blackwell).
 // Runtime: default geforce_v2 when compiled in; PEARL_GEMM_KERNEL=geforce_v1 or consumer to opt out.
 
+#include <vector>
 #include <cstdint>
 #include <cassert>
 #include <cstdlib>
@@ -130,6 +131,10 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
     uint32_t const* __restrict__ pow_key,
     HostSignalSync* host_signal_sync,
     HostSignalHeader* host_signal_header_pinned,
+    uint32_t const* const* __restrict__ grouped_pow_key_ptrs,
+    HostSignalSync* grouped_sync_array,
+    HostSignalHeader** grouped_header_ptrs,
+    ConsumerTmaA const* __restrict__ tma_a_group,
     __grid_constant__ ConsumerTmaA const tma_a,
     __grid_constant__ ConsumerTmaB const tma_b) {
 
@@ -145,6 +150,19 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
   const int batch = blockIdx.z;
   const int num_m_tiles = M / kBM;
   const int num_n_tiles = N / kBN;
+
+  ConsumerTmaA tma_a_eff = tma_a;
+  if (tma_a_group != nullptr) {
+    tma_a_eff = tma_a_group[batch];
+  }
+  uint32_t const* pow_key_eff = pow_key;
+  HostSignalSync* host_signal_sync_eff = host_signal_sync;
+  HostSignalHeader* host_signal_header_eff = host_signal_header_pinned;
+  if (grouped_pow_key_ptrs != nullptr) {
+    pow_key_eff = grouped_pow_key_ptrs[batch];
+    host_signal_sync_eff = &grouped_sync_array[batch];
+    host_signal_header_eff = grouped_header_ptrs[batch];
+  }
 
   ConsumerTiledMma tiled_mma;
   auto thr_mma = tiled_mma.get_thread_slice(is_consumer ? consumer_tid : 0);
@@ -165,7 +183,7 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
 
   // TMA copies require gmem views from the grid-constant descriptor, not raw
   // pointers (see transcript_gemm_sm100.cu and geforce v1).
-  Tensor mA = tma_a.get_tma_tensor(make_shape(M, K));
+  Tensor mA = tma_a_eff.get_tma_tensor(make_shape(M, K));
   Tensor mB = tma_b.get_tma_tensor(make_shape(N, K));
   Tensor gA = local_tile(mA, Shape<Int<kBM>, Int<kBK>>{},
                          make_coord(m_tile, _));
@@ -196,7 +214,7 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
   __syncthreads();
 
   if (tid == kProducerLeader) {
-    cute::prefetch_tma_descriptor(tma_a.get_tma_descriptor());
+    cute::prefetch_tma_descriptor(tma_a_eff.get_tma_descriptor());
     cute::prefetch_tma_descriptor(tma_b.get_tma_descriptor());
   }
 
@@ -209,7 +227,7 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
       pipeline.producer_acquire(pipe_write);
       tma_copy_k_tile<kStages, MainloopPipeline, ConsumerTmaA, ConsumerTmaB,
                       SmemLayoutA, SmemLayoutB, kBM, kBN, kBK, ElementIn>(
-          pipeline, pipe_write, tma_a, tma_b, smem.smem_A, smem.smem_B, gA,
+          pipeline, pipe_write, tma_a_eff, tma_b, smem.smem_A, smem.smem_B, gA,
           gB, k_iter);
       pipeline.producer_commit(pipe_write, kTmaTransactionBytes);
       ++pipe_write;
@@ -274,19 +292,19 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
               transcript_local[slot], hash);
     }
 
-    if (pow_target != nullptr && pow_key != nullptr &&
-        host_signal_sync != nullptr && host_signal_header_pinned != nullptr) {
+    if (pow_target != nullptr && pow_key_eff != nullptr &&
+        host_signal_sync_eff != nullptr && host_signal_header_eff != nullptr) {
       Tensor transcript_rmem = make_tensor<uint32_t>(Int<kTranscriptSlots>{});
       CUTLASS_PRAGMA_UNROLL
       for (int s = 0; s < kTranscriptSlots; ++s) {
         transcript_rmem(s) = transcript_local[s];
       }
-      if (pearl::check_pow_target(transcript_rmem, pow_target, pow_key)) {
+      if (pearl::check_pow_target(transcript_rmem, pow_target, pow_key_eff)) {
         auto block_coord =
             cute::make_tuple((int32_t)m_tile, (int32_t)n_tile, (int32_t)batch);
         auto problem_shape = cute::make_tuple(M, N, K, R);
         pearl::write_host_signal_header<ConsumerTiledMma, HeaderTileShape_MNK>(
-            host_signal_sync, host_signal_header_pinned, problem_shape,
+            host_signal_sync_eff, host_signal_header_eff, problem_shape,
             block_coord, consumer_tid, pow_target);
       }
     }
@@ -401,6 +419,10 @@ static cudaError_t launch_v2_impl(int8_t const* A, int8_t const* B,
                                   uint32_t const* pow_key,
                                   HostSignalSync* host_signal_sync,
                                   HostSignalHeader* host_signal_header_pinned,
+                                  uint32_t const* const* grouped_pow_key_ptrs,
+                                  HostSignalSync* grouped_sync_array,
+                                  HostSignalHeader** grouped_header_ptrs,
+                                  ConsumerTmaA const* tma_a_group,
                                   cudaStream_t stream) {
   assert(M % kBM == 0 && N % kBN == 0 && K % kBK == 0 && R % kBK == 0);
   assert(K % R == 0);
@@ -417,8 +439,9 @@ static cudaError_t launch_v2_impl(int8_t const* A, int8_t const* B,
   get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
 
   transcript_gemm_sm120_geforce_v2_kernel<<<grid, block, smem_bytes, stream>>>(
-      A, B, C, transcript, (int)M, (int)N, (int)K, (int)R, pow_target,
-      pow_key, host_signal_sync, host_signal_header_pinned, tma_a, tma_b);
+      A, B, C, transcript, (int)M, (int)N, (int)K, (int)R, pow_target, pow_key,
+      host_signal_sync, host_signal_header_pinned, grouped_pow_key_ptrs,
+      grouped_sync_array, grouped_header_ptrs, tma_a_group, tma_a, tma_b);
   return cudaGetLastError();
 }
 
@@ -428,7 +451,8 @@ cudaError_t launch_transcript_gemm_sm120_geforce_v2(
     int8_t const* A, int8_t const* B, uint32_t* transcript, int64_t M,
     int64_t N, int64_t K, int64_t R, int64_t batch, cudaStream_t stream) {
   return launch_v2_impl(A, B, nullptr, transcript, M, N, K, R, batch, nullptr,
-                        nullptr, nullptr, nullptr, stream);
+                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                        nullptr, stream);
 }
 
 cudaError_t launch_transcript_gemm_sm120_geforce_v2_headless(
@@ -438,7 +462,46 @@ cudaError_t launch_transcript_gemm_sm120_geforce_v2_headless(
     HostSignalHeader* host_signal_header_pinned, cudaStream_t stream) {
   return launch_v2_impl(A, B, C, nullptr, M, N, K, R, batch, pow_target,
                         pow_key, host_signal_sync, host_signal_header_pinned,
-                        stream);
+                        nullptr, nullptr, nullptr, nullptr, stream);
+}
+
+cudaError_t launch_transcript_gemm_sm120_geforce_v2_headless_grouped(
+    int8_t const* const* h_apea_ptrs, int8_t const* B, int64_t M, int64_t N,
+    int64_t K, int64_t R, int64_t batch, uint32_t const* pow_target,
+    uint32_t const* const* d_pow_key_ptrs, HostSignalSync* d_sync_array,
+    HostSignalHeader** d_header_ptrs, cudaStream_t stream) {
+  assert(h_apea_ptrs != nullptr);
+  assert(d_pow_key_ptrs != nullptr);
+  assert(d_sync_array != nullptr);
+  assert(d_header_ptrs != nullptr);
+
+  std::vector<ConsumerTmaA> tma_a_host((size_t)batch);
+  ConsumerTmaB tma_b;
+  build_v2_tma_descriptors(h_apea_ptrs[0], B, (int)M, (int)N, (int)K,
+                           tma_a_host[0], tma_b);
+  for (int64_t g = 1; g < batch; ++g) {
+    build_v2_tma_descriptors(h_apea_ptrs[g], B, (int)M, (int)N, (int)K,
+                             tma_a_host[(size_t)g], tma_b);
+  }
+
+  ConsumerTmaA* d_tma_a_group = nullptr;
+  cudaError_t err = cudaMallocAsync(
+      reinterpret_cast<void**>(&d_tma_a_group),
+      sizeof(ConsumerTmaA) * (size_t)batch, stream);
+  if (err != cudaSuccess) return err;
+  err = cudaMemcpyAsync(d_tma_a_group, tma_a_host.data(),
+                        sizeof(ConsumerTmaA) * (size_t)batch,
+                        cudaMemcpyHostToDevice, stream);
+  if (err != cudaSuccess) {
+    cudaFreeAsync(d_tma_a_group, stream);
+    return err;
+  }
+
+  err = launch_v2_impl(h_apea_ptrs[0], B, nullptr, nullptr, M, N, K, R, batch,
+                       pow_target, nullptr, nullptr, nullptr, d_pow_key_ptrs,
+                       d_sync_array, d_header_ptrs, d_tma_a_group, stream);
+  cudaFreeAsync(d_tma_a_group, stream);
+  return err;
 }
 
 cudaError_t warmup_transcript_gemm_sm120_geforce_v2_attrs() {

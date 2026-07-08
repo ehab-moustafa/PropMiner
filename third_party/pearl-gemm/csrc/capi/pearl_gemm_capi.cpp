@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
+#include <vector>
 
 #include "tensor_hash/tensor_hash_decl.hpp"
 #include "blake3/blake3_constants.hpp"
@@ -49,6 +50,10 @@
 
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
 #include "blackwell/transcript_gemm_sm120_geforce_v2.h"
+#endif
+
+#if defined(PEARL_GEMM_GROUPED_GEMM)
+#include "gemm/transcript_gemm_grouped.h"
 #endif
 
 // --- internal: cached per-device cudaDeviceProp ---------------------------
@@ -404,6 +409,17 @@ struct PearlCapiWorkspace {
   uint64_t*        graph_seed_lo_dev = nullptr;   // device slot
   bool             graph_seed_lo_dev_owned = true; // false for _ex caller-owned pointer
 
+#if defined(PEARL_GEMM_GROUPED_GEMM)
+  int8_t*          grouped_apea_dev = nullptr;
+  uint8_t*         grouped_commitA_dev = nullptr;
+  int8_t**         d_apea_ptrs = nullptr;
+  uint32_t**       d_pow_key_ptrs = nullptr;
+  HostSignalSync*  d_sync_array = nullptr;
+  HostSignalHeader** d_header_ptrs = nullptr;
+  int32_t          grouped_pool_capacity = 0;
+  size_t           grouped_apea_slot_bytes = 0;
+#endif
+
   void* noiseA_ptr() const {
     return na_bytes ? static_cast<char*>(base_ptr) + off_noiseA : nullptr;
   }
@@ -437,6 +453,201 @@ void destroy_iter_graph(PearlCapiWorkspace* ws) {
   ws->graph_ready = false;
   ws->graph_batch_count = 0;
 }
+
+#if defined(PEARL_GEMM_GROUPED_GEMM)
+static void free_grouped_pools(PearlCapiWorkspace* ws, cudaStream_t stream) {
+  if (!ws) return;
+  auto free_async = [&](void*& p) {
+    if (p) {
+      cudaFreeAsync(p, stream);
+      p = nullptr;
+    }
+  };
+  free_async(reinterpret_cast<void*&>(ws->grouped_apea_dev));
+  free_async(reinterpret_cast<void*&>(ws->grouped_commitA_dev));
+  free_async(reinterpret_cast<void*&>(ws->d_apea_ptrs));
+  free_async(reinterpret_cast<void*&>(ws->d_pow_key_ptrs));
+  free_async(reinterpret_cast<void*&>(ws->d_sync_array));
+  free_async(reinterpret_cast<void*&>(ws->d_header_ptrs));
+  ws->grouped_pool_capacity = 0;
+  ws->grouped_apea_slot_bytes = 0;
+}
+
+static bool pearl_grouped_gemm_enabled(int32_t count) {
+  if (count < pearl::grouped::kGroupedGemmMinBatch) return false;
+  if (count > pearl::grouped::kGroupedGemmMaxBatch) return false;
+  const char* env = std::getenv("PEARL_GEMM_GROUPED");
+  if (env && env[0]) {
+    if (env[0] == '0') return false;
+    if (strcmp(env, "off") == 0 || strcmp(env, "false") == 0) return false;
+  }
+  return true;
+}
+
+static int ensure_grouped_pools(PearlCapiWorkspace* ws, int32_t count,
+                                cudaStream_t stream) {
+  if (!ws || count <= 0) return -1;
+  if (count > pearl::grouped::kGroupedGemmMaxBatch) return -57;
+  const size_t apea_slot =
+      static_cast<size_t>(ws->params.m) * static_cast<size_t>(ws->params.k);
+  if (ws->grouped_pool_capacity >= count &&
+      ws->grouped_apea_slot_bytes == apea_slot) {
+    return 0;
+  }
+  free_grouped_pools(ws, stream);
+  ws->grouped_apea_slot_bytes = apea_slot;
+  const size_t apea_bytes = apea_slot * static_cast<size_t>(count);
+  const size_t commit_bytes = 32u * static_cast<size_t>(count);
+  if (cudaMallocAsync(reinterpret_cast<void**>(&ws->grouped_apea_dev),
+                      apea_bytes, stream) != cudaSuccess) {
+    free_grouped_pools(ws, stream);
+    return -58;
+  }
+  if (cudaMallocAsync(reinterpret_cast<void**>(&ws->grouped_commitA_dev),
+                      commit_bytes, stream) != cudaSuccess) {
+    free_grouped_pools(ws, stream);
+    return -59;
+  }
+  if (cudaMallocAsync(reinterpret_cast<void**>(&ws->d_apea_ptrs),
+                      sizeof(int8_t*) * static_cast<size_t>(count),
+                      stream) != cudaSuccess) {
+    free_grouped_pools(ws, stream);
+    return -60;
+  }
+  if (cudaMallocAsync(reinterpret_cast<void**>(&ws->d_pow_key_ptrs),
+                      sizeof(uint32_t*) * static_cast<size_t>(count),
+                      stream) != cudaSuccess) {
+    free_grouped_pools(ws, stream);
+    return -61;
+  }
+  if (cudaMallocAsync(reinterpret_cast<void**>(&ws->d_sync_array),
+                      sizeof(HostSignalSync) * static_cast<size_t>(count),
+                      stream) != cudaSuccess) {
+    free_grouped_pools(ws, stream);
+    return -62;
+  }
+  if (cudaMallocAsync(reinterpret_cast<void**>(&ws->d_header_ptrs),
+                      sizeof(HostSignalHeader*) * static_cast<size_t>(count),
+                      stream) != cudaSuccess) {
+    free_grouped_pools(ws, stream);
+    return -68;
+  }
+  ws->grouped_pool_capacity = count;
+  return 0;
+}
+
+static int upload_grouped_ptr_arrays(PearlCapiWorkspace* ws, int32_t count,
+                                     void* const* host_signal_header_batch,
+                                     cudaStream_t stream) {
+  std::vector<int8_t*> h_apea((size_t)count);
+  std::vector<uint32_t*> h_pow((size_t)count);
+  std::vector<HostSignalHeader*> h_headers((size_t)count);
+  for (int32_t i = 0; i < count; ++i) {
+    h_apea[(size_t)i] =
+        ws->grouped_apea_dev +
+        static_cast<ptrdiff_t>(i) *
+            static_cast<ptrdiff_t>(ws->grouped_apea_slot_bytes);
+    h_pow[(size_t)i] = reinterpret_cast<uint32_t*>(
+        ws->grouped_commitA_dev + static_cast<size_t>(i) * 32u);
+    h_headers[(size_t)i] =
+        static_cast<HostSignalHeader*>(host_signal_header_batch[i]);
+  }
+  if (cudaMemcpyAsync(ws->d_apea_ptrs, h_apea.data(),
+                      sizeof(int8_t*) * static_cast<size_t>(count),
+                      cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+    return -63;
+  }
+  if (cudaMemcpyAsync(ws->d_pow_key_ptrs, h_pow.data(),
+                      sizeof(uint32_t*) * static_cast<size_t>(count),
+                      cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+    return -64;
+  }
+  if (cudaMemsetAsync(ws->d_sync_array, 0,
+                      sizeof(HostSignalSync) * static_cast<size_t>(count),
+                      stream) != cudaSuccess) {
+    return -65;
+  }
+  if (cudaMemcpyAsync(ws->d_header_ptrs, h_headers.data(),
+                      sizeof(HostSignalHeader*) * static_cast<size_t>(count),
+                      cudaMemcpyHostToDevice, stream) != cudaSuccess) {
+    return -69;
+  }
+  return 0;
+}
+
+static int pearl_capi_iter_prefix(PearlCapiWorkspace* ws, uint64_t seed_lo,
+                                  uint8_t* commit_a_dev, void* stream_void) {
+  const PearlCapiWorkspaceParams& p = ws->params;
+  const int device_id = ws->device_id;
+  cudaStream_t stream = static_cast<cudaStream_t>(stream_void);
+  int rc;
+
+  rc = pearl_capi_lcg_int7_fill(p.A, static_cast<int64_t>(p.m) * p.k, seed_lo,
+                                p.sigma_seed, stream_void);
+  if (rc != 0) return rc;
+
+  rc = pearl_capi_tensor_hash(
+      static_cast<const uint8_t*>(p.A),
+      static_cast<uint32_t>(static_cast<int64_t>(p.m) * p.k),
+      static_cast<uint8_t*>(p.AHash), static_cast<const uint8_t*>(p.Key),
+      p.th_num_blocks, p.th_threads, p.th_stages, p.th_leaves,
+      static_cast<uint8_t*>(p.Roots), device_id, stream_void);
+  if (rc != 0) return rc;
+
+  rc = pearl_capi_commitment_hash_from_merkle_roots(
+      static_cast<const uint8_t*>(p.AHash),
+      static_cast<const uint8_t*>(p.BHash),
+      static_cast<const uint8_t*>(p.Key), commit_a_dev,
+      static_cast<uint8_t*>(p.CommitB), device_id, stream_void);
+  if (rc != 0) return rc;
+
+  return pearl_capi_noise_gen(
+      p.r, p.m, p.n, p.k, p.EAL, p.EAL_fp16, p.EAR_R_major, p.EAR_K_major,
+      nullptr, nullptr, nullptr, nullptr,
+      static_cast<const uint8_t*>(commit_a_dev), nullptr, stream_void);
+}
+
+static int pearl_capi_build_apea(PearlCapiWorkspace* ws, int8_t* apea_dev,
+                                 void* stream_void) {
+#ifdef PEARL_GEMM_PORTABLE
+  using namespace pearl::capi::portable;
+  const PearlCapiWorkspaceParams& p = ws->params;
+  cudaStream_t stream = static_cast<cudaStream_t>(stream_void);
+  const int m = p.m, k = p.k, r = p.r;
+  int32_t* noiseA_scratch = nullptr;
+  bool na_owned = false;
+  size_t na_bytes = std::max(scratch_bytes_for_matmul_i32(m, r),
+                             scratch_bytes_for_matmul_i32(m, k));
+  if (ws->na_bytes >= na_bytes && ws->noiseA_ptr() != nullptr) {
+    noiseA_scratch = static_cast<int32_t*>(ws->noiseA_ptr());
+  } else {
+    if (cudaMallocAsync(reinterpret_cast<void**>(&noiseA_scratch), na_bytes,
+                        stream) != cudaSuccess) {
+      return -30;
+    }
+    na_owned = true;
+  }
+  int rc = int8_matmul_into_fp16_div(
+      static_cast<const int8_t*>(p.A),
+      static_cast<const int8_t*>(p.EBL_K_major), p.AxEBL_fp16, noiseA_scratch,
+      m, r, k, 14, stream);
+  if (rc == 0) {
+    rc = int8_add_clamp_to_int8(
+        static_cast<const int8_t*>(p.A), static_cast<const int8_t*>(p.EAL),
+        static_cast<const int8_t*>(p.EAR_R_major), apea_dev, noiseA_scratch, m,
+        k, r, stream);
+  }
+  if (na_owned) cudaFreeAsync(noiseA_scratch, stream);
+  return rc;
+#else
+  (void)ws;
+  (void)apea_dev;
+  (void)stream_void;
+  return -66;
+#endif
+}
+
+#endif  // PEARL_GEMM_GROUPED_GEMM (pool helpers)
 
 bool pearl_gemm_debug_enabled() {
   static int cached = -1;
@@ -528,6 +739,89 @@ static bool use_geforce_experimental_kernel() {
   return true;  // v1 when v2 not selected (explicit geforce_v1 or v2 not compiled)
 }
 #endif
+
+#if defined(PEARL_GEMM_GROUPED_GEMM)
+static int pearl_capi_launch_grouped_gemm(
+    PearlCapiWorkspace* ws, int32_t count,
+    void* const* host_signal_header_pinned_batch, void* stream_void) {
+  const PearlCapiNoisyGemmParams& ng = ws->ng_template;
+  cudaStream_t stream = static_cast<cudaStream_t>(stream_void);
+  const int m = ng.m, n = ng.n, k = ng.k, r = ng.r;
+  const int64_t batch = count;
+
+  std::vector<int8_t*> h_apea((size_t)count);
+  for (int32_t i = 0; i < count; ++i) {
+    h_apea[(size_t)i] =
+        ws->grouped_apea_dev +
+        static_cast<ptrdiff_t>(i) *
+            static_cast<ptrdiff_t>(ws->grouped_apea_slot_bytes);
+  }
+
+  cudaError_t launch_err = cudaSuccess;
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+  if (use_geforce_v2_kernel()) {
+    launch_err =
+        ::pearl::blackwell::launch_transcript_gemm_sm120_geforce_v2_headless_grouped(
+            h_apea.data(), static_cast<const int8_t*>(ng.BpEB), m, n, k, r,
+            batch, static_cast<const uint32_t*>(ng.pow_target),
+            ws->d_pow_key_ptrs, ws->d_sync_array, ws->d_header_ptrs, stream);
+  } else
+#endif
+  {
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
+    if (use_geforce_experimental_kernel()) {
+      fprintf(stderr,
+              "[pearl-gemm] WARN: grouped GEMM unsupported on GeForce v1; "
+              "using consumer kernel\n");
+    }
+#endif
+    launch_err = pearl::consumer::launch_transcript_gemm_headless_grouped(
+        ws->d_apea_ptrs, static_cast<const int8_t*>(ng.BpEB), m, n, k, r,
+        batch, static_cast<const uint32_t*>(ng.pow_target), ws->d_pow_key_ptrs,
+        ws->d_sync_array, ws->d_header_ptrs, stream);
+  }
+  if (launch_err != cudaSuccess) return transcript_launch_rc(launch_err);
+  return 0;
+}
+
+static int pearl_capi_iter_batch_grouped(
+    void* workspace_ptr, uint64_t seed_lo_start,
+    void* const* host_signal_header_pinned_batch, int32_t count,
+    void* stream_void) {
+  auto* ws = static_cast<PearlCapiWorkspace*>(workspace_ptr);
+  cudaStream_t stream = static_cast<cudaStream_t>(stream_void);
+#if defined(PEARL_GEMM_BLACKWELL)
+  {
+    int vrc = validate_geforce_kernel_selection();
+    if (vrc != 0) return vrc;
+  }
+#endif
+  int rc = ensure_grouped_pools(ws, count, stream);
+  if (rc != 0) return rc;
+
+  for (int32_t i = 0; i < count; ++i) {
+    uint8_t* commit_slot =
+        ws->grouped_commitA_dev + static_cast<size_t>(i) * 32u;
+    int8_t* apea_slot =
+        ws->grouped_apea_dev +
+        static_cast<ptrdiff_t>(i) *
+            static_cast<ptrdiff_t>(ws->grouped_apea_slot_bytes);
+    rc = pearl_capi_iter_prefix(ws, seed_lo_start + static_cast<uint64_t>(i),
+                                commit_slot, stream_void);
+    if (rc != 0) return rc;
+    rc = pearl_capi_build_apea(ws, apea_slot, stream_void);
+    if (rc != 0) return rc;
+  }
+
+  rc = upload_grouped_ptr_arrays(ws, count, host_signal_header_pinned_batch,
+                                 stream);
+  if (rc != 0) return rc;
+
+  return pearl_capi_launch_grouped_gemm(ws, count,
+                                        host_signal_header_pinned_batch,
+                                        stream_void);
+}
+#endif  // PEARL_GEMM_GROUPED_GEMM
 
 int warmup_kernels_before_graph_capture() {
 #if defined(PEARL_GEMM_BLACKWELL)
@@ -673,6 +967,9 @@ PEARL_CAPI_EXPORT int pearl_capi_workspace_free(void* workspace,
   cudaStream_t stream = static_cast<cudaStream_t>(stream_void);
   int rc = 0;
   destroy_iter_graph(ws);
+#if defined(PEARL_GEMM_GROUPED_GEMM)
+  free_grouped_pools(ws, stream);
+#endif
   if (ws->base_ptr) {
     if (cudaFreeAsync(ws->base_ptr, stream) != cudaSuccess) rc = -31;
   }
@@ -1394,6 +1691,14 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch(
 
   auto* ws = static_cast<PearlCapiWorkspace*>(workspace_ptr);
   if (!ws->params_installed) return -3;
+
+#if defined(PEARL_GEMM_GROUPED_GEMM)
+  if (pearl_grouped_gemm_enabled(count)) {
+    return pearl_capi_iter_batch_grouped(workspace_ptr, seed_lo_start,
+                                         host_signal_header_pinned_batch, count,
+                                         stream_void);
+  }
+#endif
 
   for (int32_t i = 0; i < count; ++i) {
     int rc = pearl_capi_iter(workspace_ptr,

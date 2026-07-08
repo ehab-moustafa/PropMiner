@@ -290,6 +290,12 @@ ifeq ($(PEARL_GEMM_ARCH),blackwell)
       VERIFY_GEFORCE_V2_OBJS := $(patsubst $(SRC)/%, $(VERIFY_GEFORCE_V2_BUILD)/%.o, $(VERIFY_GEFORCE_V2_SRCS))
     endif
   endif
+  # Ptr-array grouped GEMM (ON by default for blackwell; batch>=4 runtime gate).
+  PEARL_GEMM_GROUPED_GEMM ?= 1
+  ifeq ($(PEARL_GEMM_GROUPED_GEMM),1)
+    DEFINES += -DPEARL_GEMM_GROUPED_GEMM=1
+    PEARL_GEMM_BUILD_KNOBS_STR := $(PEARL_GEMM_BUILD_KNOBS_STR)+grouped
+  endif
   DEFINES += -DPEARL_GEMM_BUILD_KNOBS=\"$(PEARL_GEMM_BUILD_KNOBS_STR)\"
 endif
 

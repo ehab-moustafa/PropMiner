@@ -95,7 +95,12 @@ static int run_self_test() {
     GpuWorker worker(0, 0, cfg, &sink);
     worker.set_sigma(ctx);
     worker.set_target_nbits(job.target_nbits);
-    worker.set_matmuls_per_poll(prod_mode ? 8 : 8);
+    int self_test_batch = prod_mode ? 8 : 8;
+    if (const char* batch_env = std::getenv("PROPMINER_BATCH")) {
+        self_test_batch = std::atoi(batch_env);
+        if (self_test_batch < 1) self_test_batch = 1;
+    }
+    worker.set_matmuls_per_poll(self_test_batch);
     worker.start();
 
     ShareFound share;

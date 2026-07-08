@@ -231,7 +231,12 @@ __global__ void transcript_gemm_kernel_consumer(
     uint32_t const*   __restrict__ pow_target,
     uint32_t const*   __restrict__ pow_key,
     HostSignalSync*               host_signal_sync,
-    HostSignalHeader*             host_signal_header_pinned
+    HostSignalHeader*             host_signal_header_pinned,
+    // Grouped GEMM (nullptr = serial single-A path):
+    int8_t const* const*          grouped_apea_ptrs,
+    uint32_t const* const*        grouped_pow_key_ptrs,
+    HostSignalSync*               grouped_sync_array,
+    HostSignalHeader**            grouped_header_ptrs
 #if PEARL_CONSUMER_USE_TMA_EXPERIMENT
     , __grid_constant__ ConsumerTmaA tma_a
     , __grid_constant__ ConsumerTmaB tma_b
@@ -245,6 +250,17 @@ __global__ void transcript_gemm_kernel_consumer(
   const int n_tile = blockIdx.y;
   const int batch  = blockIdx.z;
   const int tid    = threadIdx.x;
+
+  int8_t const* A_gmem_eff = A_gmem;
+  uint32_t const* pow_key_eff = pow_key;
+  HostSignalSync* host_signal_sync_eff = host_signal_sync;
+  HostSignalHeader* host_signal_header_eff = host_signal_header_pinned;
+  if (grouped_apea_ptrs != nullptr) {
+    A_gmem_eff = grouped_apea_ptrs[batch];
+    pow_key_eff = grouped_pow_key_ptrs[batch];
+    host_signal_sync_eff = &grouped_sync_array[batch];
+    host_signal_header_eff = grouped_header_ptrs[batch];
+  }
 
   const int num_m_tiles = M / kBM;
   const int num_n_tiles = N / kBN;
@@ -280,7 +296,7 @@ __global__ void transcript_gemm_kernel_consumer(
   // K is a multiple of 128 and the row stride is K, so each row begins on a
   // 128-byte boundary, matching the RTX 5090 L2 cache-line granularity and
   // keeping cp.async loads from crossing cache lines.
-  Tensor mA = make_tensor(make_gmem_ptr(A_gmem),
+  Tensor mA = make_tensor(make_gmem_ptr(A_gmem_eff),
                           make_shape(M, K),
                           make_stride(K, _1{}));
   Tensor mB = make_tensor(make_gmem_ptr(B_gmem),
@@ -486,8 +502,8 @@ __global__ void transcript_gemm_kernel_consumer(
   // debugging; the important trick appears to be keeping the XOR transcript
   // in registers and checking the target here instead of spilling 16 words
   // per thread to gmem and launching transcript_finalize_kernel.
-  if (pow_target != nullptr && pow_key != nullptr &&
-      host_signal_sync != nullptr && host_signal_header_pinned != nullptr) {
+  if (pow_target != nullptr && pow_key_eff != nullptr &&
+      host_signal_sync_eff != nullptr && host_signal_header_eff != nullptr) {
     Tensor transcript_rmem = make_tensor<uint32_t>(
         Int<kTranscriptSlots>{});
     CUTLASS_PRAGMA_UNROLL
@@ -496,13 +512,13 @@ __global__ void transcript_gemm_kernel_consumer(
     }
 
     bool block_found = pearl::check_pow_target(
-        transcript_rmem, pow_target, pow_key);
+        transcript_rmem, pow_target, pow_key_eff);
     if (block_found) {
       auto block_coord = cute::make_tuple(
           (int32_t)m_tile, (int32_t)n_tile, (int32_t)batch);
       auto problem_shape = cute::make_tuple(M, N, K, R);
       pearl::write_host_signal_header<ConsumerTiledMma, HeaderTileShape_MNK>(
-          host_signal_sync, host_signal_header_pinned,
+          host_signal_sync_eff, host_signal_header_eff,
           problem_shape, block_coord, tid, pow_target);
     }
   }
@@ -814,7 +830,8 @@ cudaError_t launch_transcript_gemm_headless(
                              A, B, C, nullptr,
                              (int)M, (int)N, (int)K, (int)R,
                              pow_target, pow_key,
-                             host_signal_sync, host_signal_header_pinned
+                             host_signal_sync, host_signal_header_pinned,
+                             nullptr, nullptr, nullptr, nullptr
 #if PEARL_CONSUMER_USE_TMA_EXPERIMENT
                              , tma_a, tma_b
 #endif
@@ -832,13 +849,117 @@ cudaError_t launch_transcript_gemm_headless(
     transcript_gemm_kernel_consumer<<<grid, block, smem_bytes, stream>>>(
         A, B, C, nullptr, (int)M, (int)N, (int)K, (int)R,
         pow_target, pow_key,
-        host_signal_sync, host_signal_header_pinned
+        host_signal_sync, host_signal_header_pinned,
+        nullptr, nullptr, nullptr, nullptr
 #if PEARL_CONSUMER_USE_TMA_EXPERIMENT
         , tma_a, tma_b
 #endif
         );
   }
   return cudaGetLastError();
+}
+
+static cudaError_t launch_transcript_gemm_headless_grouped_impl(
+    int8_t const* const* ApEA_ptrs, int8_t const* B,
+    int64_t M, int64_t N, int64_t K, int64_t R, int64_t batch,
+    uint32_t const* pow_target,
+    uint32_t const* const* pow_key_ptrs,
+    HostSignalSync* sync_array,
+    HostSignalHeader** header_ptrs,
+    cudaStream_t stream) {
+  assert(M % kBM == 0);
+  assert(N % kBN == 0);
+  assert(K % kBK == 0);
+  assert(R % kBK == 0);
+  assert(K % R == 0);
+  assert(ApEA_ptrs != nullptr);
+  assert(pow_key_ptrs != nullptr);
+  assert(sync_array != nullptr);
+  assert(header_ptrs != nullptr);
+
+  dim3 grid((unsigned)(M / kBM), (unsigned)(N / kBN), (unsigned)batch);
+  dim3 block(kThreads);
+  size_t smem_bytes = sizeof(SharedStorage);
+
+  cudaError_t err = ensure_transcript_kernel_attrs(smem_bytes);
+  if (err != cudaSuccess) return err;
+
+  int dev = -1;
+  cudaGetDevice(&dev);
+  int sm_major = 0;
+  if (dev >= 0) {
+    cudaDeviceGetAttribute(&sm_major, cudaDevAttrComputeCapabilityMajor, dev);
+  }
+  int cluster_m = read_cluster_m_env();
+  if (cluster_m < 0) cluster_m = PEARL_CONSUMER_DEFAULT_CLUSTER_M;
+  bool use_cluster = (sm_major >= 12) && (cluster_m > 1) &&
+                     ((grid.x % (unsigned)cluster_m) == 0);
+
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+  // Production blackwell builds use cp_async (TMA experiment off). When TMA
+  // experiment is enabled, grouped launch builds A TMA from slot 0 only — use
+  // cp_async policy for grouped batch>=4 or GeForce v2 default path.
+  ConsumerTmaA tma_a;
+  ConsumerTmaB tma_b;
+  build_consumer_tma_descriptors(ApEA_ptrs[0], B, (int)M, (int)N, (int)K,
+                                 tma_a, tma_b);
+#endif
+
+  int8_t const* A_dummy = ApEA_ptrs[0];
+  (void)cudaGetLastError();
+  if (use_cluster) {
+    cudaLaunchConfig_t cfg = {};
+    cfg.gridDim = grid;
+    cfg.blockDim = block;
+    cfg.dynamicSmemBytes = smem_bytes;
+    cfg.stream = stream;
+    cudaLaunchAttribute attrs[1] = {};
+    attrs[0].id = cudaLaunchAttributeClusterDimension;
+    attrs[0].val.clusterDim.x = (unsigned)cluster_m;
+    attrs[0].val.clusterDim.y = 1;
+    attrs[0].val.clusterDim.z = 1;
+    cfg.attrs = attrs;
+    cfg.numAttrs = 1;
+    err = cudaLaunchKernelEx(
+        &cfg, transcript_gemm_kernel_consumer, A_dummy, B, nullptr, nullptr,
+        (int)M, (int)N, (int)K, (int)R, pow_target, nullptr, nullptr, nullptr,
+        ApEA_ptrs, pow_key_ptrs, sync_array, header_ptrs
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+        ,
+        tma_a, tma_b
+#endif
+    );
+    if (err != cudaSuccess) {
+      std::fprintf(stderr,
+                   "[pearl-gemm] WARN: grouped cluster_m=%d launch failed (%s); "
+                   "falling back\n",
+                   cluster_m, cudaGetErrorString(err));
+      (void)cudaGetLastError();
+      use_cluster = false;
+    }
+  }
+  if (!use_cluster) {
+    transcript_gemm_kernel_consumer<<<grid, block, smem_bytes, stream>>>(
+        A_dummy, B, nullptr, nullptr, (int)M, (int)N, (int)K, (int)R,
+        pow_target, nullptr, nullptr, nullptr, ApEA_ptrs, pow_key_ptrs,
+        sync_array, header_ptrs
+#if PEARL_CONSUMER_USE_TMA_EXPERIMENT
+        ,
+        tma_a, tma_b
+#endif
+    );
+  }
+  return cudaGetLastError();
+}
+
+cudaError_t launch_transcript_gemm_headless_grouped(
+    int8_t const* const* ApEA_ptrs, int8_t const* BpEB, int64_t M, int64_t N,
+    int64_t K, int64_t R, int64_t batch, uint32_t const* pow_target,
+    uint32_t const* const* pow_key_ptrs, HostSignalSync* sync_array,
+    HostSignalHeader** header_ptrs, cudaStream_t stream) {
+  return launch_transcript_gemm_headless_grouped_impl(
+      ApEA_ptrs, BpEB, M, N, K, R, batch, pow_target, pow_key_ptrs,
+      sync_array, header_ptrs, stream);
 }
 
 // Host-side warmup: cudaFuncSetAttribute is illegal inside graph capture.

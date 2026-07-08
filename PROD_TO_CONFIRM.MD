@@ -32,6 +32,26 @@ Run **first** on the 5090 after any kernel/deploy change. v2 uses `PipelineTmaAs
 
 ---
 
+## #2 — Grouped GEMM (default ON at batch≥4 on blackwell)
+
+Activates only when `pearl_capi_iter_batch` receives **count ≥ 4**. Prod default `PROPMINER_BATCH=1` → **no behavior change** until batch is raised.
+
+| # | Confirm | Script? |
+|---|---------|---------|
+| 1 | Build knob `+grouped` in `libpearl_gemm_capi.so`. | **Manual** — `strings build/libpearl_gemm_capi.so \| grep grouped` |
+| 2 | batch=1 self-test unchanged (grouped off). | **Yes** — `PROPMINER_BATCH=1` self-test |
+| 3 | batch=4 serial vs grouped smoke (self-test passes both). | **Yes** — `./scripts/verify_grouped_gemm_transcript.sh` |
+| 4 | batch=3 uses serial path only (below threshold). | **Yes** — in verify script step [4/4] |
+| 5 | Pool soak with `PROPMINER_BATCH=4` ≥1 h if enabling batch in prod. | **No script** — pool dashboard |
+
+**Rollback (no rebuild):** `PEARL_GEMM_GROUPED=0` forces serial loop even at batch≥4.
+
+**Build requirement:** `-DPEARL_GEMM_GROUPED_GEMM=ON` (default ON for blackwell).
+
+**Audit checklist:** `DISCUSSION_WITH_AI/plans/02-ptr-array-grouped-gemm/AUDIT.md`
+
+---
+
 ## Deploy & baseline
 
 | # | Confirm | Script? |

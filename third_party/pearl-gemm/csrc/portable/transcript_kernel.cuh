@@ -93,6 +93,12 @@ cudaError_t launch_transcript_gemm_headless(
 // Set dynamic smem / cluster attrs before graph capture (not capturable).
 cudaError_t warmup_transcript_kernel_consumer_attrs();
 
+cudaError_t launch_transcript_gemm_headless_grouped(
+    int8_t const* const* ApEA_ptrs, int8_t const* BpEB, int64_t M, int64_t N,
+    int64_t K, int64_t R, int64_t batch, uint32_t const* pow_target,
+    uint32_t const* const* pow_key_ptrs, HostSignalSync* sync_array,
+    HostSignalHeader** header_ptrs, cudaStream_t stream);
+
 }  // namespace consumer
 
 namespace legacy {
