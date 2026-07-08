@@ -144,13 +144,15 @@ There is no subcommand — mode is selected by flags and environment.
 | `PROPMINER_MODE` | `full` (Docker) | `mine`, `full`, `test`, `tune`, `batch-tune`, `cluster-tune`, `tune-prod` |
 | `PROPMINER_RESTART_ON_EXIT` | `1` | Restart miner on crash (`run_mining.sh`) |
 | `PROPMINER_USE_TUNE_CACHE` | `1` | Load `autotune.json` for cluster/carveout |
-| `PROPMINER_BATCH` | cache → 4 | Matmuls per poll |
+| `PROPMINER_BATCH` | cache → 1 | Matmuls per poll (default 1 at prod N) |
+| `PROPMINER_GRAPH_BATCH` | cache → 1 | CUDA graph capture depth (default 1) |
 | `PROPMINER_AUTOTUNE` | `0` | `0` off, `1` cache/sweep, `2` require knob cache, `force` re-sweep |
-| `PEARL_GEMM_CONSUMER_CLUSTER_M` | `2` | Thread-block cluster: **1**=off, **2** or **4**=on |
+| `PEARL_GEMM_CONSUMER_CLUSTER_M` | `1` | Thread-block cluster: **1**=off, **2** or **4**=on |
 | `PEARL_GEMM_CONSUMER_CARVEOUT` | from cache | L1/shared carveout % (0–100) |
 | `PROPMINER_DEFER_SHARE_GPU` | on | `0` = share rebuild back inline on the mine loop |
 | `PROPMINER_BCOL_CACHE` | on | `0` = legacy full n×k B expansion in share path |
 | `PROPMINER_ASYNC_SEED` | on | `0` = synchronous seed upload (watch shares 30 min after deploy) |
+| `PROPMINER_ASYNC_JOB_INSTALL` | off | `1` = install the next job's resident B on a background thread while the current job keeps mining (proof-critical job-switch path; opt-in) |
 | `PROP_MINER_SELF_TEST_PROD` | off | `1` = self-test at full prod N |
 
 ### Benchmark / validation
@@ -217,8 +219,9 @@ Then mine with caches (default in `run_mining.sh`).
 | N | Largest VRAM fit: **262144** → 131072 → 65536 → … |
 | K, R | 128 |
 | Bench N cap | 32768 (`--bench` only) |
-| Default mine batch | 4 (from cache after tune) |
-| Prod `cluster_m` | 2 (aggressive default) |
+| Default mine batch | 1 (env/cache can override) |
+| Default graph batch | 1 (env/cache can override) |
+| Prod `cluster_m` | 1 (env/tune can override) |
 | CTAs per GEMM @ N=262144 | 65,536 (tail wave on 170 SMs is expected) |
 
 **Optimizations active in prod path:**

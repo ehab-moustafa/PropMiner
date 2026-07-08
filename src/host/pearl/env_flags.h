@@ -25,6 +25,15 @@ inline bool bcol_targeted_expand_enabled() {
     return !(env && env[0] == '0');
 }
 
+// Async job installation (PROPMINER_ASYNC_JOB_INSTALL, default OFF): when a new
+// pool job arrives, install its resident B (GPU expand + tensor-hash + noise +
+// Merkle) on a background thread while the current job keeps mining, then do a
+// fast swap on the worker thread. Default OFF — this touches the proof-critical
+// job-switch path; enable only after watching accepted-share rate on the rig.
+inline bool async_job_install_enabled() {
+    return env_truthy("PROPMINER_ASYNC_JOB_INSTALL");
+}
+
 // Async seed conveyor (default ON): upload the next graph sub-batch's seed on
 // the dedicated copy stream while the CPU copies out the previous sub-batch's
 // headers, instead of a synchronous H2D on the compute stream. The upload is

@@ -5,11 +5,12 @@ env-var kill switch. Roll them out in this order; validate between steps.
 
 ## What changed
 
-| Feature | Default in binary | Kill switch |
+| Feature | Default in binary | Kill switch / opt-in |
 |---|---|---|
 | 1. Targeted B-column expansion (share path skips full n×k B re-hash) | **ON** | `PROPMINER_BCOL_CACHE=0` |
 | 2. Deferred share handling (share rebuild on side thread, GPU keeps mining) | **ON** | `PROPMINER_DEFER_SHARE_GPU=0` |
 | 3. Async seed conveyor (next sub-batch seed uploads on copy stream) | **ON** | `PROPMINER_ASYNC_SEED=0` |
+| 4. Async job installation (next job's resident B installs on a background thread; GPU keeps mining the old job until a fast swap) | **OFF** (opt-in) | `PROPMINER_ASYNC_JOB_INSTALL=1` to enable |
 
 No proof math, share encoding, or transcript logic was touched.
 `ShareBuilder::VerifyShare` still gates every submission, so a regression shows
@@ -48,6 +49,37 @@ up as dropped/rejected shares in logs — never silent bad submissions.
 4. **Judge success** on pool-side accepted share rate over ≥1 h vs the
    previous deployment, not just local TMAD/s.
 
+5. **(Optional) Enable async job installation** only after 1–3 are proven
+   stable. It removes the GPU idle window on every job switch, but touches the
+   proof-critical job-switch path and cannot be validated on a Mac.
+
+   ```bash
+   PROPMINER_ASYNC_JOB_INSTALL=1 ./build/propminer ... # add to run env
+   ```
+
+   - The first job of a session still installs synchronously; only rotations
+     (job 2+) overlap. During an overlapping install the GPU holds a **second
+     resident-B set** (~2.2 GiB at N=262144/K=4096) plus a one-time **noise-B
+     staging workspace** (~4 GiB at that shape) and shares SMs with the install
+     kernels, so hashrate dips slightly during the swap window instead of
+     dropping to zero.
+   - **VRAM guard**: before each background install the miner checks free VRAM
+     (`cudaMemGetInfo`); if there isn't room for the staging workspace + a second
+     resident-B set + 512 MiB margin, it logs `async-install-fallback
+     reason=insufficient_vram` and does a normal synchronous install instead.
+     This makes the flag OOM-safe. **Consequence at N=262144/K=4096 on a 32 GiB
+     5090 with a ~79% baseline: there is not enough headroom, so async will
+     self-disable and you'll see the fallback log every rotation — it only
+     actually engages at smaller shapes / with more free VRAM.**
+   - Watch `async-install-request` / `-ready` / `-swap` traces and, above all,
+     **accepted vs rejected share rate**. Any rise in superseded-job,
+     `verify-fail`, or `claimed_hash_mismatch` rejects → `PROPMINER_ASYNC_JOB_INSTALL=0`
+     (or just unset it) and restart to return to the synchronous switch.
+   - Safety: the swap drains both compute streams and all deferred-share work
+     before rebinding B pointers, every share pins its own `sigma_ctx`, and a
+     background install failure falls back to a synchronous install — mining is
+     never wedged on a stale job.
+
 ## Rollback (instant, no rebuild)
 
 | Symptom | Action |
@@ -55,7 +87,8 @@ up as dropped/rejected shares in logs — never silent bad submissions.
 | verify-fail / claimed_hash_mismatch on shares | `PROPMINER_BCOL_CACHE=0` and restart |
 | Shares dropped after defer enabled, hangs at job switch | `PROPMINER_DEFER_SHARE_GPU=0` and restart |
 | Rejects/mismatches after async seed enabled | `PROPMINER_ASYNC_SEED=0` and restart |
-| Anything unclear | set all three: `PROPMINER_BCOL_CACHE=0 PROPMINER_DEFER_SHARE_GPU=0 PROPMINER_ASYNC_SEED=0` → exact pre-change behavior |
+| Superseded/verify rejects after async job install enabled | `PROPMINER_ASYNC_JOB_INSTALL=0` (or unset) and restart |
+| Anything unclear | `PROPMINER_BCOL_CACHE=0 PROPMINER_DEFER_SHARE_GPU=0 PROPMINER_ASYNC_SEED=0 PROPMINER_ASYNC_JOB_INSTALL=0` → exact pre-change behavior |
 
 ## Validation record (Mac, host-only)
 

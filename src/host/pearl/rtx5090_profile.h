@@ -33,10 +33,14 @@ struct Rtx5090Profile {
     static constexpr int kDefaultK = 128;
     static constexpr int kDefaultR = 128;
 
-    // Matmuls queued per GPU poll (cargo volume per execution).
-    static constexpr int kDefaultMineBatch = 32;
-    // CUDA graph capture depth (staging queue per graph launch).
-    static constexpr int kDefaultGraphBatch = 8;
+    // Matmuls queued per GPU poll (cargo volume per execution). Default 1: at
+    // production N (262144) each matmul is already ~30 ms, so batching adds
+    // little and batch==graph_batch==1 avoids the multi-sub-batch seed/header
+    // code paths that caused past job-switch bugs. Override via PROPMINER_BATCH.
+    static constexpr int kDefaultMineBatch = 1;
+    // CUDA graph capture depth (staging queue per graph launch). Default 1 so
+    // there is exactly one sub-batch per launch. Override via PROPMINER_GRAPH_BATCH.
+    static constexpr int kDefaultGraphBatch = 1;
     static constexpr int kMaxMineBatch = 32;
     static constexpr int kDefaultBatch = kDefaultMineBatch;  // legacy alias
 
@@ -54,8 +58,10 @@ struct Rtx5090Profile {
     };
 
     // Default production N cap (Salad/Kryptex Stratum K=4096 VRAM headroom).
-    // Set PROPMINER_N_CAP=0 for uncapped VRAM pick (up to 262144), or PROPMINER_N_CAP=N.
-    static constexpr int kDefaultProdNCap = 131072;
+    // 262144 is the largest validated N on the 5090 and maximizes sustained
+    // TMAD/s; pick_n_for_vram() falls back to a smaller N if VRAM is tight.
+    // Set PROPMINER_N_CAP=0 for uncapped, or PROPMINER_N_CAP=N to cap lower.
+    static constexpr int kDefaultProdNCap = 262144;
 
     // Bench/tune/mine share production N (pick_n_for_vram). Override via PROPMINER_N_CAP.
     static constexpr int kLegacySmallN = 32768;

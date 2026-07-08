@@ -302,6 +302,7 @@ void GpuWorker::start() {
     pause_flag_ = false;
     running_ = true;
     start_share_gpu_thread();
+    start_async_install_thread();
     thread_ = std::thread(&GpuWorker::run, this);
 }
 
@@ -309,6 +310,7 @@ void GpuWorker::stop() {
     stop_flag_ = true;
     if (thread_.joinable()) thread_.join();
     stop_share_gpu_thread();
+    stop_async_install_thread();
     running_ = false;
 }
 
@@ -426,6 +428,203 @@ void GpuWorker::set_sigma(std::shared_ptr<SigmaContext> ctx) {
     sigma_ = std::move(ctx);
 }
 
+bool GpuWorker::async_job_install_enabled() {
+    // Single source of truth: pearl::async_job_install_enabled() in env_flags.h.
+    // Cached because run() reads it every loop iteration.
+    static const int cached = pearl::async_job_install_enabled() ? 1 : 0;
+    return cached == 1;
+}
+
+void GpuWorker::start_async_install_thread() {
+    if (!async_job_install_enabled() || async_install_thread_started_) return;
+    async_stop_.store(false);
+    async_install_thread_ = std::thread(&GpuWorker::async_install_loop, this);
+    async_install_thread_started_ = true;
+}
+
+void GpuWorker::stop_async_install_thread() {
+    if (!async_install_thread_started_) return;
+    {
+        std::lock_guard<std::mutex> lk(async_mtx_);
+        async_stop_.store(true);
+    }
+    async_cv_.notify_all();
+    if (async_install_thread_.joinable()) async_install_thread_.join();
+    async_install_thread_started_ = false;
+    {
+        std::lock_guard<std::mutex> lk(async_mtx_);
+        async_pending_.reset();
+        async_ready_.reset();
+        async_failed_.reset();
+    }
+    async_requested_.reset();
+    if (install_workspace_) {
+        pearl_capi_workspace_free(install_workspace_, install_stream_);
+        install_workspace_ = nullptr;
+    }
+    if (install_stream_) { cuStreamDestroy(install_stream_); install_stream_ = nullptr; }
+    if (install_copy_stream_) { cuStreamDestroy(install_copy_stream_); install_copy_stream_ = nullptr; }
+}
+
+void GpuWorker::submit_async_install(const std::shared_ptr<SigmaContext>& ctx) {
+    // Worker-thread only. Dedup: don't re-request a sigma we already handed off.
+    if (!ctx || ctx == async_requested_) return;
+    async_requested_ = ctx;
+    {
+        std::lock_guard<std::mutex> lk(async_mtx_);
+        async_pending_ = ctx;
+    }
+    async_cv_.notify_one();
+    share_trace("async-install-request",
+                "gpu=" + std::to_string(device_index_) +
+                " sigma=" + hex_prefix(ctx->job().sigma.data(),
+                                       ctx->job().sigma.size(), 4));
+}
+
+std::shared_ptr<SigmaContext> GpuWorker::take_async_ready() {
+    std::lock_guard<std::mutex> lk(async_mtx_);
+    std::shared_ptr<SigmaContext> ready = std::move(async_ready_);
+    async_ready_.reset();
+    return ready;
+}
+
+bool GpuWorker::async_vram_headroom_ok(bool need_workspace) {
+    size_t free_bytes = 0, total_bytes = 0;
+    if (cudaMemGetInfo(&free_bytes, &total_bytes) != cudaSuccess) {
+        return false;  // can't tell -> be conservative, use sync install
+    }
+    const size_t n = static_cast<size_t>(cfg_.n);
+    const size_t k = static_cast<size_t>(cfg_.k);
+    const size_t r = static_cast<size_t>(cfg_.r);
+    // One ResidentBState set (mirrors ResidentBState::allocate): b + bpeb (n*k
+    // each), ebr (n*r), ebr_fp16 + earx_bpeb (2*n*r each), ebl_r + ebl_k (k*r
+    // each), b_scales (n*4), leaf_cvs (n*k/1024*32 = n*k/32), plus small fixed.
+    const size_t resident_b = 2 * n * k + 5 * n * r + 2 * k * r + 4 * n +
+                              (n * k) / 32 + 4096;
+    // Staging workspace holds only the noise_B scratch: max(n*k, n*r) * 4 bytes.
+    const size_t staging = need_workspace
+                               ? n * std::max(k, r) * sizeof(int32_t)
+                               : 0;
+    const size_t margin = static_cast<size_t>(512) << 20;  // 512 MiB
+    const size_t need = resident_b + staging + margin;
+    return free_bytes >= need;
+}
+
+void GpuWorker::async_install_loop() {
+    // Bind this thread to the same device/primary context as the worker thread.
+    CUDA_CHECK(cudaSetDevice(device_index_));
+    CUDA_CHECK(cudaFree(0));
+    check_cuda(cuStreamCreate(&install_stream_, CU_STREAM_NON_BLOCKING),
+               "install stream");
+    check_cuda(cuStreamCreate(&install_copy_stream_, CU_STREAM_NON_BLOCKING),
+               "install copy stream");
+
+    while (true) {
+        std::shared_ptr<SigmaContext> to_install;
+        {
+            std::unique_lock<std::mutex> lk(async_mtx_);
+            async_cv_.wait(lk, [&] {
+                return async_stop_.load() || async_pending_ != nullptr;
+            });
+            // On shutdown, drop any pending install immediately — no point
+            // spending seconds on an install we will never mine.
+            if (async_stop_.load()) break;
+            to_install = std::move(async_pending_);
+            async_pending_.reset();
+        }
+        if (!to_install) continue;
+
+        // Mark this sigma as failed so the mining thread falls back to a
+        // synchronous install instead of wedging on the stale job.
+        auto mark_failed = [&](const char* reason) {
+            std::lock_guard<std::mutex> lk(async_mtx_);
+            async_failed_ = to_install;
+            share_log("async-install-fallback",
+                      "gpu=" + std::to_string(device_index_) +
+                      " reason=" + reason);
+        };
+
+        // VRAM guard: an async install briefly holds a SECOND resident-B set
+        // (plus, the first time, the staging workspace) on top of the live job.
+        // If there is not enough free VRAM, skip async and let the worker do a
+        // synchronous install (which reuses ping/pong workspaces and has a lower
+        // peak). This makes the feature OOM-safe even when enabled at a shape
+        // that does not fit.
+        if (!async_vram_headroom_ok(install_workspace_ == nullptr)) {
+            mark_failed("insufficient_vram");
+            continue;
+        }
+
+        // Staging workspace for noise_B scratch only (with_noise_A=0 drops the
+        // ~1 GiB transcript + noise_A pools the install path never touches).
+        // Allocated once, reused. Must NOT be a ping/pong workspace (those are
+        // live on the mining thread).
+        if (!install_workspace_) {
+            void* ws = nullptr;
+            int rc = pearl_capi_workspace_alloc(cfg_.m, cfg_.n, cfg_.k, cfg_.r,
+                                                /*with_noise_A=*/0,
+                                                /*with_noise_B=*/1,
+                                                &ws, install_stream_);
+            if (rc != 0 || !ws) {
+                mark_failed("staging_workspace_alloc");
+                continue;  // worker falls back to synchronous install
+            }
+            install_workspace_ = ws;
+        }
+
+        try {
+            // Full resident-B install on staging stream/workspace. Idempotent;
+            // never reuse an already-installed context (orchestrator always
+            // hands us a fresh SigmaContext per job).
+            to_install->install(install_stream_, install_workspace_,
+                                 device_index_, install_copy_stream_);
+            // Publish as ready. If a previous ready sigma was never consumed
+            // (worker superseded it), free its resident-B here so we do not
+            // accumulate more than one leaked set under fast job churn.
+            std::shared_ptr<SigmaContext> superseded;
+            {
+                std::lock_guard<std::mutex> lk(async_mtx_);
+                superseded = std::move(async_ready_);
+                async_ready_ = to_install;
+            }
+            if (superseded && superseded != to_install) {
+                superseded->resident().free(install_stream_);
+            }
+            share_trace("async-install-ready",
+                        "gpu=" + std::to_string(device_index_) +
+                        " sigma=" + hex_prefix(to_install->job().sigma.data(),
+                                               to_install->job().sigma.size(), 4));
+        } catch (const std::exception& ex) {
+            // Mark failed so the worker thread falls back to a synchronous
+            // install for this sigma — mining is never left wedged on a stale job.
+            {
+                std::lock_guard<std::mutex> lk(async_mtx_);
+                async_failed_ = to_install;
+            }
+            share_log("async-install-fail",
+                      "gpu=" + std::to_string(device_index_) +
+                      " reason=exception err=" + ex.what());
+        } catch (...) {
+            {
+                std::lock_guard<std::mutex> lk(async_mtx_);
+                async_failed_ = to_install;
+            }
+            share_log("async-install-fail",
+                      "gpu=" + std::to_string(device_index_) +
+                      " reason=unknown_exception");
+        }
+    }
+}
+
+bool GpuWorker::async_install_failed(const std::shared_ptr<SigmaContext>& ctx) {
+    std::lock_guard<std::mutex> lk(async_mtx_);
+    if (async_failed_ && async_failed_ == ctx) {
+        async_failed_.reset();
+        return true;
+    }
+    return false;
+}
+
 void GpuWorker::set_target_nbits(uint32_t nbits) {
     target_nbits_.store(nbits);
     target_dirty_.store(true);
@@ -469,7 +668,7 @@ double GpuWorker::hashrate() const {
     return hashrate_.load();
 }
 
-void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
+void GpuWorker::ensure_half_workspace(HalfBuffers& half) {
     // Workspace: allocate once per half, reused across σ rotations.  Keep both
     // noise_A and noise_B scratchpads so σ-install can reuse the same pool.
     if (!half.workspace) {
@@ -479,10 +678,24 @@ void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
         if (rc != 0 || !ws) throw std::runtime_error("workspace_alloc failed");
         half.workspace = ws;
     }
+}
+
+void GpuWorker::install_sigma(SigmaContext& ctx, HalfBuffers& half) {
+    ensure_half_workspace(half);
 
     // Ensure resident B state is allocated and computed on device.  Idempotent;
     // on the second half it reuses the already-installed buffers owned by ctx.
     ctx.install(half.stream, half.workspace, device_index_, merkle_copy_stream_);
+
+    bind_sigma_to_half(ctx, half);
+}
+
+void GpuWorker::bind_sigma_to_half(SigmaContext& ctx, HalfBuffers& half) {
+    // ctx.install() must already have populated ctx.resident(). This is the
+    // worker-thread-only tail: it binds device pointers into the half workspace,
+    // uploads the PoW target, and captures the CUDA graph. It touches only this
+    // half's stream/buffers plus the shared (read-only after install) resident B.
+    ensure_half_workspace(half);
 
     const uint32_t nbits = ctx.job().target_nbits ? ctx.job().target_nbits
                                                   : target_nbits_.load();
@@ -1106,7 +1319,28 @@ void GpuWorker::run() {
             }
         }
 
+        const bool async_install = async_job_install_enabled();
+
+        if (new_sigma && async_install && current_sigma) {
+            if (async_install_failed(new_sigma)) {
+                // Background install threw for this sigma — fall through to the
+                // synchronous path below so we never wedge on a stale job.
+                share_log("async-install-fallback",
+                          "gpu=" + std::to_string(device_index_) +
+                          " reason=sync_install_after_async_fail");
+            } else {
+                // Keep mining the current sigma and hand the new one to the
+                // background installer. The swap happens below once its resident
+                // B is ready — the mining loop never blocks on the install.
+                submit_async_install(new_sigma);
+                new_sigma.reset();
+            }
+        }
+
         if (new_sigma) {
+            // Synchronous install: first job (nothing to mine yet) or async
+            // disabled. Blocks the loop while resident B is built — unchanged
+            // proven path.
             if (defer_share_gpu_enabled()) {
                 wait_until_half_free(*ping);
                 wait_until_half_free(*pong);
@@ -1117,7 +1351,49 @@ void GpuWorker::run() {
             install_sigma(*current_sigma, *pong);
             target_dirty_.store(false);
             first = true;
-        } else if (target_dirty_.exchange(false)) {
+        } else if (async_install) {
+            // Swap in a background-installed sigma if one is ready AND it is
+            // still the latest sigma the pool published (else it is stale and
+            // dropped; the newer one is already being installed).
+            std::shared_ptr<SigmaContext> ready = take_async_ready();
+            if (ready) {
+                std::shared_ptr<SigmaContext> want;
+                {
+                    std::lock_guard<std::mutex> lk(sigma_mtx_);
+                    want = sigma_;
+                }
+                if (ready == want && ready != current_sigma) {
+                    // Same barriers as the synchronous path: drain deferred
+                    // shares and both compute streams before rebinding the B
+                    // pointers, so no in-flight batch/share reads the old B.
+                    if (defer_share_gpu_enabled()) {
+                        wait_until_half_free(*ping);
+                        wait_until_half_free(*pong);
+                    }
+                    check_cuda(cuStreamSynchronize(ping_.stream),
+                               "async swap drain ping");
+                    check_cuda(cuStreamSynchronize(pong_.stream),
+                               "async swap drain pong");
+                    current_sigma = ready;
+                    batch = matmuls_per_poll_.load();
+                    bind_sigma_to_half(*current_sigma, *ping);
+                    bind_sigma_to_half(*current_sigma, *pong);
+                    target_dirty_.store(false);
+                    first = true;
+                    share_trace("async-install-swap",
+                                "gpu=" + std::to_string(device_index_) +
+                                " sigma=" + hex_prefix(current_sigma->job().sigma.data(),
+                                                       current_sigma->job().sigma.size(), 4));
+                } else if (ready != current_sigma) {
+                    // Stale installed sigma (pool already superseded it). It was
+                    // never mined and no share references it, so free its
+                    // resident-B now instead of leaking a full set.
+                    ready->resident().free(ping_.stream);
+                }
+            }
+        }
+
+        if (!new_sigma && target_dirty_.exchange(false)) {
             const uint32_t nbits = target_nbits_.load();
             upload_pow_target_both_halves(nbits);
             check_cuda(cuStreamSynchronize(ping_.stream), "vardiff pow_target sync ping");

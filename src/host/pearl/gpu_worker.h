@@ -141,7 +141,12 @@ private:
     };
 
     void run();
+    void ensure_half_workspace(HalfBuffers& half);
     void install_sigma(SigmaContext& ctx, HalfBuffers& half);
+    // Worker-thread-only tail of install_sigma: bind resident B + this half's A
+    // buffers into the half workspace, upload the PoW target, and capture the
+    // CUDA graph. Assumes ctx.install() has already populated ctx.resident().
+    void bind_sigma_to_half(SigmaContext& ctx, HalfBuffers& half);
     void prepare_graph(HalfBuffers& half);
     void queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count);
 
@@ -180,6 +185,26 @@ private:
     void wait_until_half_free(HalfBuffers& half);
     void start_share_gpu_thread();
     void stop_share_gpu_thread();
+
+    // Async job installation (PROPMINER_ASYNC_JOB_INSTALL). Background thread
+    // runs ctx->install() on staging resources while the mining loop keeps
+    // running the current sigma; the worker thread then swaps via
+    // bind_sigma_to_half once the install is ready.
+    static bool async_job_install_enabled();
+    void start_async_install_thread();
+    void stop_async_install_thread();
+    void async_install_loop();
+    // Hand a newly requested sigma to the background installer (deduped on ptr).
+    void submit_async_install(const std::shared_ptr<SigmaContext>& ctx);
+    // Return a fully-installed sigma ready to swap in (or nullptr), clearing it.
+    std::shared_ptr<SigmaContext> take_async_ready();
+    // True (and clears the marker) if the background install of `ctx` failed, so
+    // the worker can fall back to a synchronous install instead of stalling.
+    bool async_install_failed(const std::shared_ptr<SigmaContext>& ctx);
+    // Conservative free-VRAM check before a background install. `need_workspace`
+    // adds the one-time staging workspace to the estimate. Returns false (skip
+    // async, use sync) when headroom is tight so the async path can never OOM.
+    bool async_vram_headroom_ok(bool need_workspace);
 
     // Scan batch for all PoW hits (status==1). Caller must sync stream first.
     std::vector<int> scan_winners(HalfBuffers& half, int batch);
@@ -243,6 +268,21 @@ private:
     std::atomic<bool> share_stop_{false};
     std::thread share_thread_;
     bool share_thread_started_ = false;
+
+    // Async job installation (PROPMINER_ASYNC_JOB_INSTALL). Staging resources are
+    // owned by the background installer thread and reused across installs.
+    void* install_workspace_ = nullptr;
+    CUstream install_stream_ = nullptr;
+    CUstream install_copy_stream_ = nullptr;
+    std::thread async_install_thread_;
+    std::mutex async_mtx_;
+    std::condition_variable async_cv_;
+    std::shared_ptr<SigmaContext> async_pending_;   // requested, not yet installed
+    std::shared_ptr<SigmaContext> async_ready_;     // installed, ready to swap
+    std::shared_ptr<SigmaContext> async_failed_;    // install threw; sync fallback
+    std::shared_ptr<SigmaContext> async_requested_; // worker-thread dedup marker
+    std::atomic<bool> async_stop_{false};
+    bool async_install_thread_started_ = false;
 };
 
 } // namespace pearl
