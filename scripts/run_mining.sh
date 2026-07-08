@@ -162,6 +162,7 @@ if [[ "${RESTART_ON_EXIT}" == "0" ]]; then
 fi
 
 # Production: keep container alive — retry on any exit (pool blips, Salad SIGTERM races).
+STALL_RESTART_DELAY="${PROPMINER_STALL_RESTART_DELAY_SEC:-3}"
 while true; do
     maybe_auto_update_release
     run_mine_loop
@@ -169,6 +170,11 @@ while true; do
     if [[ "${rc}" -eq 0 && -n "${PROPMINER_ONCE:-}" ]]; then
         echo "[mine] propminer exited cleanly (PROPMINER_ONCE=1); stopping." | propminer_log
         exit 0
+    fi
+    if [[ "${rc}" -eq 42 ]]; then
+        echo "[mine] propminer wedged GPU (stall guard rc=42); fast restart in ${STALL_RESTART_DELAY}s..." | propminer_log
+        sleep "${STALL_RESTART_DELAY}"
+        continue
     fi
     echo "[mine] propminer exited rc=${rc}; restarting in 10s..." | propminer_log
     sleep 10

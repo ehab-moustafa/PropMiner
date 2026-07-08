@@ -29,4 +29,45 @@ inline long long stall_restart_ms() {
     return 30000;  // 30s: a healthy batch is well under 1s.
 }
 
+// PeakMiner/BzMiner-style thermal pause (0 = disabled).
+// PROPMINER_GPU_TEMP_STOP: pause mining when GPU temp (C) reaches this value.
+// PROPMINER_GPU_TEMP_START: resume when temp drops to or below this (default:
+//   stop-10 when only stop is set).
+inline int gpu_temp_stop_c() {
+    const char* env = std::getenv("PROPMINER_GPU_TEMP_STOP");
+    if (!env || !env[0]) return 0;
+    const int v = std::atoi(env);
+    return v > 0 ? v : 0;
+}
+
+inline int gpu_temp_start_c() {
+    const char* env = std::getenv("PROPMINER_GPU_TEMP_START");
+    const int stop = gpu_temp_stop_c();
+    if (!env || !env[0]) {
+        return stop > 10 ? stop - 10 : 0;
+    }
+    const int v = std::atoi(env);
+    return v > 0 ? v : 0;
+}
+
+// Max failure retries per tune combo (process-isolated sweep scripts).
+inline int tune_max_retries() {
+    const char* env = std::getenv("PROPMINER_TUNE_MAX_RETRIES");
+    if (env && env[0]) {
+        const int v = std::atoi(env);
+        if (v >= 1 && v <= 10) return v;
+    }
+    return 3;
+}
+
+// Fast supervisor restart delay after wedged GPU exit (exit code 42).
+inline int stall_restart_delay_sec() {
+    const char* env = std::getenv("PROPMINER_STALL_RESTART_DELAY_SEC");
+    if (env && env[0]) {
+        const int v = std::atoi(env);
+        if (v >= 0 && v <= 60) return v;
+    }
+    return 3;
+}
+
 }  // namespace pearl

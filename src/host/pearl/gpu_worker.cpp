@@ -276,6 +276,8 @@ void GpuWorker::check_cuda(CUresult r, const char* msg) {
 }
 
 void GpuWorker::start() {
+    stop_flag_ = false;
+    pause_flag_ = false;
     running_ = true;
     start_share_gpu_thread();
     thread_ = std::thread(&GpuWorker::run, this);
@@ -989,6 +991,12 @@ void GpuWorker::run() {
     uint64_t gpu_hits_since_log = 0;
 
     while (!stop_flag_) {
+        if (pause_flag_.load()) {
+            if (watchdog_) watchdog_->heartbeat();
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            continue;
+        }
+
         std::shared_ptr<SigmaContext> new_sigma;
         {
             std::lock_guard<std::mutex> lk(sigma_mtx_);

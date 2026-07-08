@@ -107,27 +107,41 @@ Or bake env defaults — `autotune.json` is keyed per GPU UUID and won't auto-ap
 
 ---
 
-## Wedge-proof alternative (process-isolated sweep)
+## Wedge-proof alternative (process-isolated sweep with retries)
 
-If `--tune-autotune` keeps hanging (100% GPU-util, ~100W, no progress) — a CUDA
-stream wedge seen on some Blackwell driver stacks (e.g. driver 580.x / CUDA 13
-on sm_120a) — use the process-isolated sweep. It runs **each batch as its own
-short `propminer --bench` process** under `timeout`, so a wedged combo only
-kills that child and the sweep continues instead of dying.
+The default runtime tune (`tune_runtime_prod.sh`) now uses **process-isolated**
+sweep with **3 retries per combo** (configurable). Each batch runs as its own
+short `propminer --bench` under `timeout`; wedges only kill that child.
 
 ```bash
 cd /workspace/PropMiner
 PROPMINER_N_CAP=32768 ./scripts/tune_runtime_safe.sh
+# or via tune-prod step 2 (isolated is default):
+PROPMINER_SKIP_KNOB_TUNE=1 PROPMINER_N_CAP=32768 ./scripts/tune_prod_5090.sh
 ```
 
-- Skips wedged combos (marked `WEDGED`), keeps going, prints a results table.
-- Writes recommended mining env to `~/.cache/propminer/tune_safe_result.env`.
-- Graphs are **off** by default (safe on wedge-prone drivers); set
-  `PROPMINER_TUNE_SAFE_GRAPH=1` to also try graphs.
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `PROPMINER_TUNE_ISOLATED` | `1` | Safe per-process sweep (recommended) |
+| `PROPMINER_TUNE_MAX_RETRIES` | `3` | Attempts per combo before FAILED |
+| `PROPMINER_TUNE_RETRY_COOLDOWN_SEC` | `3` | Cooldown + GPU reset between retries |
+| `PROPMINER_TUNE_SAFE_GRAPH` | `0` | Graphs off during sweep (safe) |
 
-Then mine with the printed env (batch + `PROPMINER_BENCH_NO_GRAPH=1` +
-`PEARL_GEMM_CONSUMER_CLUSTER_M=1`). Note: results are typically flat across
-batch sizes on the RTX 5090, so any completed sweep is fine.
+Output: `~/.cache/propminer/tune_safe_result.env` with fleet mining env.
+
+Legacy monolithic `--tune-autotune`: `PROPMINER_TUNE_ISOLATED=0` (fragile on wedges).
+
+---
+
+## Production resilience (mining)
+
+| Feature | Env | Default |
+|---------|-----|---------|
+| Hung-GPU stall guard | `PROPMINER_STALL_RESTART_MS` | `30000` (exit rc=42) |
+| Fast restart after stall | `PROPMINER_STALL_RESTART_DELAY_SEC` | `3` (vs 10s other exits) |
+| Shell supervisor loop | `PROPMINER_RESTART_ON_EXIT` | `1` |
+| Thermal pause | `PROPMINER_GPU_TEMP_STOP` / `_START` | off (set e.g. 85/75) |
+| In-process watchdog | default on | republishes job on soft stall |
 
 ---
 

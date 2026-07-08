@@ -65,6 +65,11 @@ public:
 
     void set_watchdog(Watchdog* wd) { watchdog_ = wd; }
 
+    // Orchestrator thermal pause (PeakMiner-style): worker spins idle without
+    // tearing down CUDA context.
+    void set_paused(bool paused) { pause_flag_.store(paused); }
+    bool paused() const { return pause_flag_.load(); }
+
 private:
     struct HalfBuffers {
         CUdeviceptr a = 0;
@@ -191,6 +196,7 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_flag_{false};
+    std::atomic<bool> pause_flag_{false};
     std::thread thread_;
 
     void upload_pow_target(HalfBuffers& half, uint32_t nbits);

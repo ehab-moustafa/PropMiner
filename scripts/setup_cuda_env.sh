@@ -26,6 +26,9 @@ setup_cuda_runtime_env() {
     export PROPMINER_N_CAP="${PROPMINER_N_CAP:-131072}"
     export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-EAGER}"
     export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
+    # Hung-GPU recovery: exit on wedged CUDA stream so supervisor restarts fresh.
+    export PROPMINER_STALL_RESTART_MS="${PROPMINER_STALL_RESTART_MS:-30000}"
+    export PROPMINER_STALL_RESTART_DELAY_SEC="${PROPMINER_STALL_RESTART_DELAY_SEC:-3}"
 
     if [[ -e /dev/dxg ]]; then
         echo "[env] WSL2 detected (/dev/dxg present)." | propminer_log

@@ -1,30 +1,22 @@
 #!/usr/bin/env bash
-# Process-isolated runtime batch sweep — survives GPU/driver wedges.
+# Process-isolated runtime batch sweep — survives GPU/driver wedges with retries.
 #
-# Why this exists:
-#   `propminer --tune-autotune` runs every candidate combo inside ONE process.
-#   On some Blackwell driver stacks (e.g. 580.x / CUDA 13 on sm_120a) a CUDA
-#   stream can wedge (100% util, ~100W, no forward progress). A wedged context
-#   cannot be recovered in-process, so a single bad combo hangs (or _Exit()s)
-#   the whole sweep and no autotune.json is produced.
+# Each combo runs as its own short-lived `propminer --bench` process under
+# `timeout`. On wedge/stall/timeout the child is killed; we retry up to
+# PROPMINER_TUNE_MAX_RETRIES (default 3) with a cooldown before marking FAILED.
 #
-#   This script instead runs EACH combo as its own short-lived `propminer
-#   --bench` process guarded by `timeout`. If a combo wedges, only that child
-#   is killed; the sweep records it as failed and continues to the next combo.
-#
-# Result: a recommended PROPMINER_BATCH / PROPMINER_GRAPH_BATCH for mining,
-#   plus a per-combo results table. Mining consumes these via env directly
-#   (no per-UUID autotune.json needed), which is what the fleet wants anyway.
+# This replaces the fragile single-process `--tune-autotune` sweep on wedge-prone
+# Blackwell stacks (driver 580.x / sm_120a) where a wedged CUDA context cannot
+# be recovered in-process.
 #
 # Usage: ./scripts/tune_runtime_safe.sh [seconds_per_combo] [batch_list]
-#   ./scripts/tune_runtime_safe.sh                # 15s per combo, default batches
-#   ./scripts/tune_runtime_safe.sh 20 "1 2 4 8"   # custom
 #
 # Env:
-#   PROPMINER_N_CAP           N ceiling (must match mining). Default 131072.
-#   PROPMINER_TUNE_SAFE_GRAPH 1 = also try CUDA graphs (default 0 = graphs off,
-#                             the safe path on wedge-prone drivers).
-#   PROPMINER_BUILD_DIR       Build dir with propminer. Default build_remote_test.
+#   PROPMINER_N_CAP                 N ceiling (must match mining). Default 131072.
+#   PROPMINER_TUNE_MAX_RETRIES      Attempts per combo before FAILED (default 3).
+#   PROPMINER_TUNE_RETRY_COOLDOWN_SEC Cooldown between retries (default 3).
+#   PROPMINER_TUNE_SAFE_GRAPH       1 = try CUDA graphs (default 0 = off).
+#   PROPMINER_BUILD_DIR             Build dir with propminer.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,14 +25,12 @@ BIN="${BUILD_DIR}/propminer"
 PER="${1:-15}"
 BATCHES="${2:-1 2 4 6 8 10 12 16 20 24 32}"
 
-# Abandon a wedged combo quickly instead of waiting the full 30s watchdog.
+MAX_RETRIES="${PROPMINER_TUNE_MAX_RETRIES:-3}"
+COOLDOWN_SEC="${PROPMINER_TUNE_RETRY_COOLDOWN_SEC:-3}"
 export PROPMINER_STALL_RESTART_MS="${PROPMINER_STALL_RESTART_MS:-12000}"
 export PROPMINER_N_CAP="${PROPMINER_N_CAP:-131072}"
 export PROPMINER_USE_STRATUM="${PROPMINER_USE_STRATUM:-1}"
-
 USE_GRAPH="${PROPMINER_TUNE_SAFE_GRAPH:-0}"
-
-# Hard wall-clock cap per combo: bench window + build/warmup + watchdog margin.
 TIMEOUT_S=$(( PER + 45 ))
 
 source "${ROOT}/scripts/setup_cuda_env.sh"
@@ -58,24 +48,35 @@ fi
 RESULTS="${BUILD_DIR}/tune_safe_results.txt"
 : > "${RESULTS}"
 
-echo "===== PropMiner process-isolated safe batch sweep ====="
+echo "===== PropMiner resilient process-isolated batch sweep ====="
 echo "[safe-tune] bin=${BIN}"
-echo "[safe-tune] N_CAP=${PROPMINER_N_CAP} per=${PER}s timeout=${TIMEOUT_S}s graphs=${USE_GRAPH}"
+echo "[safe-tune] N_CAP=${PROPMINER_N_CAP} per=${PER}s timeout=${TIMEOUT_S}s"
+echo "[safe-tune] retries=${MAX_RETRIES} cooldown=${COOLDOWN_SEC}s graphs=${USE_GRAPH}"
 echo "[safe-tune] batches: ${BATCHES}"
 echo ""
 
 best_batch=""
 best_rate=0
+failed_count=0
+wedged_count=0
 
-run_one() {
-    # $1 = batch. Prints the parsed tmad_per_sec (or empty on fail).
+gpu_cooldown() {
+    pkill -f "${BIN}" 2>/dev/null || true
+    sleep 1
+    # Best-effort GPU reset between retries (may fail on some hosts — harmless).
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi --gpu-reset -i 0 >/dev/null 2>&1 || true
+    fi
+    sleep "${COOLDOWN_SEC}"
+}
+
+run_one_attempt() {
     local batch="$1"
     local out
     local graph_env=()
     if [[ "${USE_GRAPH}" != "1" ]]; then
         graph_env=(PROPMINER_BENCH_NO_GRAPH=1)
     fi
-    # Each combo is its own process; `timeout` SIGKILLs a wedge (-k grace).
     out="$(timeout -k 5 "${TIMEOUT_S}" env \
         "${graph_env[@]}" \
         PROPMINER_BENCH_JSON=1 \
@@ -91,7 +92,6 @@ run_one() {
         echo "WEDGED(stall)"
         return
     fi
-    # Parse "tmad_per_sec": <number> from the JSON bench line.
     local rate
     rate="$(printf '%s\n' "${out}" \
         | grep -o '"tmad_per_sec"[^,}]*' \
@@ -104,13 +104,48 @@ run_one() {
     echo "${rate}"
 }
 
+run_one_with_retries() {
+    local batch="$1"
+    local attempt=1
+    local res=""
+    while (( attempt <= MAX_RETRIES )); do
+        res="$(run_one_attempt "${batch}")"
+        case "${res}" in
+            WEDGED*|NO_RESULT*)
+                if (( attempt < MAX_RETRIES )); then
+                    echo "[safe-tune]   batch=${batch} attempt ${attempt}/${MAX_RETRIES}: ${res} — retrying after cooldown" >&2
+                    gpu_cooldown
+                    ((attempt++))
+                    continue
+                fi
+                echo "${res}"
+                return
+                ;;
+            *)
+                if (( attempt > 1 )); then
+                    echo "[safe-tune]   batch=${batch} recovered on attempt ${attempt}/${MAX_RETRIES}" >&2
+                fi
+                echo "${res}"
+                return
+                ;;
+        esac
+    done
+    echo "${res}"
+}
+
 for b in ${BATCHES}; do
     printf '[safe-tune] batch=%-3s ... ' "${b}"
-    res="$(run_one "${b}")"
+    res="$(run_one_with_retries "${b}")"
     case "${res}" in
-        WEDGED*|NO_RESULT*)
-            echo "${res} (skipped)"
-            echo "batch=${b} result=${res}" >> "${RESULTS}"
+        WEDGED*)
+            echo "${res} (failed after ${MAX_RETRIES} attempts)"
+            echo "batch=${b} result=${res} attempts=${MAX_RETRIES}" >> "${RESULTS}"
+            ((wedged_count++)) || true
+            ;;
+        NO_RESULT*)
+            echo "${res} (failed after ${MAX_RETRIES} attempts)"
+            echo "batch=${b} result=${res} attempts=${MAX_RETRIES}" >> "${RESULTS}"
+            ((failed_count++)) || true
             ;;
         *)
             echo "${res} TMAD/s"
@@ -125,12 +160,13 @@ done
 
 echo ""
 echo "===== Safe sweep complete ====="
+echo "[safe-tune] wedged=${wedged_count} no_result=${failed_count}"
 sort -t= -k3 -g "${RESULTS}" 2>/dev/null || cat "${RESULTS}"
 echo ""
 
 if [[ -z "${best_batch}" ]]; then
-    echo "[safe-tune] ERROR: every combo wedged or produced no result."
-    echo "[safe-tune] This pod's GPU/driver may be unstable — try a different instance."
+    echo "[safe-tune] ERROR: every combo failed after ${MAX_RETRIES} attempts each."
+    echo "[safe-tune] Try a different RunPod instance/driver, or raise PROPMINER_TUNE_MAX_RETRIES."
     exit 1
 fi
 
@@ -149,6 +185,8 @@ echo "  PROPMINER_BATCH=${best_batch}"
 echo "  ${graph_batch_line}"
 echo "  ${graph_line}"
 echo "  PEARL_GEMM_CONSUMER_CLUSTER_M=1"
+echo "  PROPMINER_STALL_RESTART_MS=30000"
+echo "  PROPMINER_STALL_RESTART_DELAY_SEC=3"
 echo "  PROPMINER_AUTOTUNE=0"
 echo "  PROPMINER_USE_TUNE_CACHE=0"
 echo ""
@@ -162,6 +200,8 @@ mkdir -p "$(dirname "${ENV_OUT}")"
     echo "${graph_batch_line}"
     [[ "${USE_GRAPH}" != "1" ]] && echo "PROPMINER_BENCH_NO_GRAPH=1"
     echo "PEARL_GEMM_CONSUMER_CLUSTER_M=1"
+    echo "PROPMINER_STALL_RESTART_MS=30000"
+    echo "PROPMINER_STALL_RESTART_DELAY_SEC=3"
     echo "PROPMINER_AUTOTUNE=0"
     echo "PROPMINER_USE_TUNE_CACHE=0"
 } > "${ENV_OUT}"

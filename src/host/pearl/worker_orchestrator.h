@@ -120,6 +120,7 @@ private:
     std::atomic<uint64_t> shares_submitted_{0};
     std::atomic<uint64_t> shares_accepted_{0};
     std::atomic<uint64_t> shares_rejected_{0};
+    bool thermal_paused_ = false;
     int reconnect_attempt_ = 0;
     std::string last_pool_error_;
 

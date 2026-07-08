@@ -234,6 +234,12 @@ while true; do
         echo "[mine] clean exit (PROPMINER_ONCE=1)"
         exit 0
     fi
+    if [[ "${rc}" -eq 42 ]]; then
+        STALL_DELAY="${PROPMINER_STALL_RESTART_DELAY_SEC:-3}"
+        echo "[mine] wedged GPU (stall rc=42); fast restart in ${STALL_DELAY}s"
+        sleep "${STALL_DELAY}"
+        continue
+    fi
     echo "[mine] propminer exited rc=${rc}; restart in 10s"
     sleep 10
 done

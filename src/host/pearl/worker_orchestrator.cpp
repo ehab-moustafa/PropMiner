@@ -1191,6 +1191,29 @@ int WorkerOrchestrator::run() {
             const int primary_gpu =
                 indices.empty() ? 0 : indices.front();
             SystemSnapshot sys = sys_telemetry.sample(primary_gpu, 4000);
+
+            // Thermal pause (PeakMiner/BzMiner-style): pause GPU workers when hot,
+            // resume when cooled — without tearing down CUDA context.
+            const int temp_stop = gpu_temp_stop_c();
+            if (temp_stop > 0 && sys.gpu_temp_c >= 0) {
+                const int temp_start = gpu_temp_start_c();
+                if (!thermal_paused_ && sys.gpu_temp_c >= temp_stop) {
+                    for (auto& w : workers_) w->set_paused(true);
+                    thermal_paused_ = true;
+                    std::fprintf(stderr,
+                        "[thermal] GPU %d temp=%dC >= %dC — mining paused "
+                        "(resume at <=%dC; PROPMINER_GPU_TEMP_STOP=0 to disable)\n",
+                        primary_gpu, sys.gpu_temp_c, temp_stop, temp_start);
+                } else if (thermal_paused_ &&
+                           (temp_start <= 0 || sys.gpu_temp_c <= temp_start)) {
+                    for (auto& w : workers_) w->set_paused(false);
+                    thermal_paused_ = false;
+                    std::fprintf(stderr,
+                        "[thermal] GPU %d cooled to %dC — mining resumed\n",
+                        primary_gpu, sys.gpu_temp_c);
+                }
+            }
+
             if (use_stratum_.load() && stratum_client_ &&
                 stratum_client_->connected()) {
                 sys.pool_share_diff = stratum_client_->effective_share_difficulty();
