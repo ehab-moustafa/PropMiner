@@ -1500,7 +1500,7 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
     (void)p->EBR; (void)p->EBR_fp16; (void)p->EARxBpEB_fp16;
     (void)p->EAR_K_major; (void)p->EBL_R_major; (void)p->EAL_fp16;
     return 0;
-#else
+#endif
     // Non-PORTABLE fallback: noisy_gemm via PearlAPIParams.
     // Wrapped in braces to create a local C++ scope — avoids duplicate
     // variable declarations (ws, m, n, k, r) with the PORTABLE block above.
