@@ -66,5 +66,16 @@ if [[ -n "${JSON_LINE}" ]]; then
     echo "[bench] Appended to ${RESULTS_DIR}/bench_history.jsonl"
 fi
 
+# Auto-run Nsight Compute profiling after benchmark (unless disabled).
+# Set PROFILING_DISABLED=1 to skip profiling on a given run.
+if [[ "${PROFILING_DISABLED:-0}" != "1" ]]; then
+    echo ""
+    echo "[profiling] Running Nsight Compute profile on the built binary..."
+    "${ROOT}/scripts/profile_gemm_ncu.sh" 0 geforce_v2 >> "${RESULTS_DIR}/profile_$(date +%Y%m%d_%H%M%S).log" 2>&1 || {
+        echo "[profiling] ncu not available or failed (install Nsight Compute to enable automatic profiling)." >&2
+        echo "[profiling] Skip next run: PROFILING_DISABLED=1 ./scripts/build_and_benchmark.sh" >&2
+    }
+fi
+
 echo "[bench] Log: ${LOG}"
 echo "[bench] Done."
