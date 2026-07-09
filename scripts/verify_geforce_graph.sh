@@ -20,6 +20,11 @@ fi
 
 echo "== GeForce v2 CUDA graph replay gate =="
 
+if [[ ! -f "${ROOT}/third_party/pearl-gemm/third_party/cutlass/include/cute/atom/mma_atom.hpp" ]]; then
+  echo "Initializing git submodules (cutlass)..."
+  git -C "${ROOT}" submodule update --init --recursive third_party/pearl-gemm/third_party/cutlass
+fi
+
 if [[ ! -x "${GRAPH_BIN}" ]]; then
   echo "Building verify_geforce_v2_graph..."
   make -C "${PEARL_MAKE}" -j"${JOBS}" \

@@ -291,7 +291,7 @@ ifeq ($(PEARL_GEMM_ARCH),blackwell)
     endif
     PEARL_SM120_GEFORCE_V2_GRAPH_VERIFY ?=
     ifeq ($(PEARL_SM120_GEFORCE_V2_GRAPH_VERIFY),1)
-      VERIFY_GEFORCE_V2_GRAPH_BUILD := $(BUILD)/verify_geforce_v2_graph
+      VERIFY_GEFORCE_V2_GRAPH_BUILD := $(BUILD)/verify_geforce_v2_graph_objs
       VERIFY_GEFORCE_V2_GRAPH_TARGET := $(BUILD)/verify_geforce_v2_graph
       VERIFY_GEFORCE_V2_GRAPH_SRCS := \
         $(SRC)/blackwell/transcript_gemm_sm120_geforce_v2.cu \
