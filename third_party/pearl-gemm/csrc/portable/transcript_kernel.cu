@@ -49,6 +49,12 @@ namespace portable {
 
 using namespace cute;
 
+// ─── Constant-memory pow_target ───────────────────────────────────────────
+// pow_target is read-only by every thread in the finalize kernel.  By placing
+// it in constant memory (4 KiB cache) we avoid re-fetching it from global
+// memory on every load — the L1/const cache typically serves it in 1 cycle.
+__device__ __constant__ uint32_t d_pow_target_const[8];
+
 // Compile-time tile parameters.  Both production-shipped tile shapes
 // (R=64 and R=128) share these — see static_switch_matmul.h.
 static constexpr int bM = kCanonicalTranscriptBM;
@@ -129,12 +135,94 @@ __global__ void transcript_snapshot_kernel(
       prev, hash);
 }
 
+// ─── PTX-based BLAKE3 helpers ────────────────────────────────────────────
+// PTX 32-bit right rotate via shf.l.wrap.b32.
+//   shf.l.wrap.b32 d, x, x, n  =>  d = (x << n) | (x >> (32-n)) = rotl(x, n)
+// which is semantically identical to rightrotate32(x, n) = (x << (32-n)) | (x >> n).
+CUTLASS_DEVICE
+uint32_t ptx_rightrotate32(uint32_t x, unsigned int n) {
+  uint32_t r;
+  asm("shf.l.wrap.b32 %0, %1, %1, %2;" : "=r"(r) : "r"(x), "r"(n));
+  return r;
+}
+
+// BLAKE3_ROUND macro that uses PTX rotate instead of software rotate.
+// Identical to BLAKE3_ROUND() in blake3.cuh except rightrotate32 -> ptx_rightrotate32.
+#define BLAKE3_ROUND_PTX()                                                          \
+  do {                                                                              \
+    rState(0) = add32(rState(0), add32(rState(4), rBlock(0)));                      \
+    rState(12) = ptx_rightrotate32(rState(12) ^ rState(0), 16);                     \
+    rState(8) = add32(rState(8), rState(12));                                       \
+    rState(4) = ptx_rightrotate32(rState(4) ^ rState(8), 12);                       \
+    rState(0) = add32(rState(0), add32(rState(4), rBlock(1)));                      \
+    rState(12) = ptx_rightrotate32(rState(12) ^ rState(0), 8);                      \
+    rState(8) = add32(rState(8), rState(12));                                       \
+    rState(4) = ptx_rightrotate32(rState(4) ^ rState(8), 7);                        \
+    rState(1) = add32(rState(1), add32(rState(5), rBlock(2)));                      \
+    rState(13) = ptx_rightrotate32(rState(13) ^ rState(1), 16);                     \
+    rState(9) = add32(rState(9), rState(13));                                       \
+    rState(5) = ptx_rightrotate32(rState(5) ^ rState(9), 12);                       \
+    rState(1) = add32(rState(1), add32(rState(5), rBlock(3)));                      \
+    rState(13) = ptx_rightrotate32(rState(13) ^ rState(1), 8);                      \
+    rState(9) = add32(rState(9), rState(13));                                       \
+    rState(5) = ptx_rightrotate32(rState(5) ^ rState(9), 7);                        \
+    rState(2) = add32(rState(2), add32(rState(6), rBlock(4)));                      \
+    rState(14) = ptx_rightrotate32(rState(14) ^ rState(2), 16);                     \
+    rState(10) = add32(rState(10), rState(14));                                     \
+    rState(6) = ptx_rightrotate32(rState(6) ^ rState(10), 12);                      \
+    rState(2) = add32(rState(2), add32(rState(6), rBlock(5)));                      \
+    rState(14) = ptx_rightrotate32(rState(14) ^ rState(2), 8);                      \
+    rState(10) = add32(rState(10), rState(14));                                     \
+    rState(6) = ptx_rightrotate32(rState(6) ^ rState(10), 7);                       \
+    rState(3) = add32(rState(3), add32(rState(7), rBlock(6)));                      \
+    rState(15) = ptx_rightrotate32(rState(15) ^ rState(3), 16);                     \
+    rState(11) = add32(rState(11), rState(15));                                     \
+    rState(7) = ptx_rightrotate32(rState(7) ^ rState(11), 12);                      \
+    rState(3) = add32(rState(3), add32(rState(7), rBlock(7)));                      \
+    rState(15) = ptx_rightrotate32(rState(15) ^ rState(3), 8);                      \
+    rState(11) = add32(rState(11), rState(15));                                     \
+    rState(7) = ptx_rightrotate32(rState(7) ^ rState(11), 7);                       \
+    rState(0) = add32(rState(0), add32(rState(5), rBlock(8)));                      \
+    rState(15) = ptx_rightrotate32(rState(15) ^ rState(0), 16);                     \
+    rState(10) = add32(rState(10), rState(15));                                     \
+    rState(5) = ptx_rightrotate32(rState(5) ^ rState(10), 12);                      \
+    rState(0) = add32(rState(0), add32(rState(5), rBlock(9)));                      \
+    rState(15) = ptx_rightrotate32(rState(15) ^ rState(0), 8);                      \
+    rState(10) = add32(rState(10), rState(15));                                     \
+    rState(5) = ptx_rightrotate32(rState(5) ^ rState(10), 7);                       \
+    rState(1) = add32(rState(1), add32(rState(6), rBlock(10)));                     \
+    rState(12) = ptx_rightrotate32(rState(12) ^ rState(1), 16);                     \
+    rState(11) = add32(rState(11), rState(12));                                     \
+    rState(6) = ptx_rightrotate32(rState(6) ^ rState(11), 12);                      \
+    rState(1) = add32(rState(1), add32(rState(6), rBlock(11)));                     \
+    rState(12) = ptx_rightrotate32(rState(12) ^ rState(1), 8);                      \
+    rState(11) = add32(rState(11), rState(12));                                     \
+    rState(6) = ptx_rightrotate32(rState(6) ^ rState(11), 7);                       \
+    rState(2) = add32(rState(2), add32(rState(7), rBlock(12)));                     \
+    rState(13) = ptx_rightrotate32(rState(13) ^ rState(2), 16);                     \
+    rState(8) = add32(rState(8), rState(13));                                       \
+    rState(7) = ptx_rightrotate32(rState(7) ^ rState(8), 12);                       \
+    rState(2) = add32(rState(2), add32(rState(7), rBlock(13)));                     \
+    rState(13) = ptx_rightrotate32(rState(13) ^ rState(2), 8);                      \
+    rState(8) = add32(rState(8), rState(13));                                       \
+    rState(7) = ptx_rightrotate32(rState(7) ^ rState(8), 7);                        \
+    rState(3) = add32(rState(3), add32(rState(4), rBlock(14)));                     \
+    rState(14) = ptx_rightrotate32(rState(14) ^ rState(3), 16);                     \
+    rState(9) = add32(rState(9), rState(14));                                       \
+    rState(4) = ptx_rightrotate32(rState(4) ^ rState(9), 12);                       \
+    rState(3) = add32(rState(3), add32(rState(4), rBlock(15)));                     \
+    rState(14) = ptx_rightrotate32(rState(14) ^ rState(3), 8);                      \
+    rState(9) = add32(rState(9), rState(14));                                       \
+    rState(4) = ptx_rightrotate32(rState(4) ^ rState(9), 7);                        \
+  } while (0)
+
 // ─── Finalize kernel ───────────────────────────────────────────────────────
 // Grid:   (M/bM, N/bN, batch)
 // Block:  kNumMmaThreads (256)
 // Per (m_tile, n_tile, batch, thread):
 //   - Loads its 16-u32 transcript from gmem into rmem.
-//   - BLAKE3-compresses (single keyed block) with pow_key as initial chaining.
+//   - BLAKE3-compresses (single keyed block) with pow_key as initial chaining
+//     using inlined compress with PTX rotate instructions.
 //   - Compares 256-bit hash <= pow_target (LE word order, MSW first).
 //   - If hit: atomic-CAS lock on host_signal_sync, write a HostSignalHeader
 //     with this thread's (tile_coord, partition_C coords, mma sizes, target).
@@ -161,18 +249,90 @@ __global__ void transcript_finalize_kernel(
                  + n_tile;
   int64_t tx_idx = base * per_tile_thread + (int64_t)tid * per_tile;
 
-  // Load transcript into a CUTE rmem tensor.
+  // Load transcript into a CUTE rmem tensor using 4x LDG128 for coalesced 64-byte loads.
+  uint128_t tmp[4];
+  CUTLASS_PRAGMA_UNROLL
+  for (int i = 0; i < 4; ++i) {
+    tmp[i] = transcript[tx_idx + i * 4];
+  }
+
   Tensor transcript_rmem = make_tensor<uint32_t>(
       Int<blake3::MSG_BLOCK_SIZE_U32>{});
   CUTLASS_PRAGMA_UNROLL
-  for (int i = 0; i < (int)blake3::MSG_BLOCK_SIZE_U32; ++i) {
-    transcript_rmem(i) = transcript[tx_idx + i];
+  for (int i = 0; i < 16; ++i) {
+    transcript_rmem(i) = reinterpret_cast<uint32_t*>(&tmp[0])[i];
   }
 
-  bool block_found = pearl::check_pow_target(
-      transcript_rmem, pow_target, pow_key);
+  // ─── Inline BLAKE3 compress with PTX rotates ───────────────────────────
+  // Byte-identical to check_pow_target but uses PTX shf.l.wrap.b32 rotates.
 
-  if (block_found) {
+  // Local tensors for message block, chaining value, and state
+  Tensor rBlock = make_tensor<uint32_t>(Int<blake3::MSG_BLOCK_SIZE_U32>{});
+  Tensor rHash  = make_tensor<uint32_t>(Int<blake3::CHAINING_VALUE_SIZE_U32>{});
+  Tensor rState = make_tensor<uint32_t>(Int<blake3::MSG_BLOCK_SIZE_U32>{});
+  Tensor rOrigBlock = make_tensor<uint32_t>(Int<blake3::MSG_BLOCK_SIZE_U32>{});
+
+  // Load transcript into rBlock
+  CUTLASS_PRAGMA_UNROLL
+  for (int i = 0; i < (int)blake3::MSG_BLOCK_SIZE_U32; ++i) {
+    rBlock(i) = transcript_rmem(i);
+  }
+
+  // Load pow_key as initial chaining value (rHash)
+  CUTLASS_PRAGMA_UNROLL
+  for (int i = 0; i < (int)blake3::CHAINING_VALUE_SIZE_U32; ++i) {
+    rHash(i) = pow_key[i];
+  }
+
+  // Initialize state: top half = chaining value, bottom half = IV + params
+  CUTLASS_PRAGMA_UNROLL
+  for (int i = 0; i < (int)blake3::CHAINING_VALUE_SIZE_U32; ++i) {
+    rState(i) = rHash(i);
+  }
+  rState(8)  = blake3::IV0;
+  rState(9)  = blake3::IV1;
+  rState(10) = blake3::IV2;
+  rState(11) = blake3::IV3;
+  rState(12) = 0ULL;                          // counter low
+  rState(13) = 0ULL >> 32;                    // counter high
+  rState(14) = blake3::MSG_BLOCK_SIZE;        // block_len = 64
+  rState(15) = blake3::KEYED_HASH | blake3::CHUNK_START | blake3::CHUNK_END | blake3::ROOT;
+
+  // 6 rounds + permutation
+  CUTLASS_PRAGMA_UNROLL
+  for (int i = 0; i < 6; ++i) {
+    BLAKE3_ROUND_PTX();
+    BLAKE3_PERMUTE();
+  }
+  // Final round (no permutation)
+  BLAKE3_ROUND_PTX();
+
+  // XOR top and bottom halves to produce the 8-word hash
+  CUTLASS_PRAGMA_UNROLL
+  for (int i = 0; i < (int)blake3::CHAINING_VALUE_SIZE_U32; ++i) {
+    rHash(i) = rState(i) ^ rState(i + 8);
+  }
+
+  // ─── MSW-first uint256 comparison: hash <= pow_target ──────────────────
+  // Use constant-memory pow_target (d_pow_target_const) for 1-cycle loads.
+  bool block_found = true;
+  CUTLASS_PRAGMA_UNROLL
+  for (int i = blake3::CHAINING_VALUE_SIZE_U32 - 1; i >= 0; --i) {
+    uint32_t target_i = d_pow_target_const[i];
+    if (rHash(i) > target_i) {
+      block_found = false;
+      break;
+    }
+    if (rHash(i) < target_i) {
+      break;
+    }
+  }
+
+  // Warp-level early exit: skip the atomic CAS entirely if no thread in the
+  // warp found a hit.  This avoids wasted global atomics from threads that
+  // would only read the CAS failure and return.
+  bool warp_hit = __any_sync(0xffffffffu, block_found);
+  if (warp_hit && block_found) {
     // Block coord = (m_tile, n_tile, batch).  Same convention as H100
     // tile_scheduler.
     auto block_coord = cute::make_tuple(
@@ -211,6 +371,9 @@ void launch_transcript_finalize(
     cudaStream_t stream) {
   assert(M % bM == 0);
   assert(N % bN == 0);
+  // Copy pow_target to constant memory so every thread fetches it from the
+  // 4 KiB const cache (1-cycle latency) instead of global memory.
+  cudaMemcpyToSymbol(d_pow_target_const, pow_target, 8 * sizeof(uint32_t));
   dim3 grid((unsigned)(M / bM), (unsigned)(N / bN), (unsigned)batch);
   dim3 block((unsigned)kNumMmaThreads);
   transcript_finalize_kernel<<<grid, block, 0, stream>>>(

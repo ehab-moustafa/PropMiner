@@ -11,6 +11,10 @@ namespace pearl {
 
 using namespace cute;
 
+// Constant memory copy of pow_target for transcript_finalize_kernel.
+// Populated by launch_transcript_finalize via cudaMemcpyToSymbol.
+extern __device__ __constant__ uint32_t d_pow_target_const[8];
+
 // Rotation amount for hash accumulation mixing
 static constexpr int HASH_ACCUMULATE_ROTATION = 13;
 

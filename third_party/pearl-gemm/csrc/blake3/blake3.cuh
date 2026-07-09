@@ -164,7 +164,11 @@ u32 add32(u32 x, u32 y) {
 
 CUTLASS_DEVICE
 u32 rightrotate32(u32 x, u32 n) {
-  return (x << (32 - n)) | (x >> n);
+  u32 r;
+  // shf.l.wrap.b32 does a LEFT rotate: (x << n) | (x >> (32-n)).
+  // To get a RIGHT rotate by n we left-rotate by (32-n).
+  asm("shf.l.wrap.b32 %0, %1, %1, %2;" : "=r"(r) : "r"(x), "r"(32 - n));
+  return r;
 }
 
 // Compress a 64-byte message block
