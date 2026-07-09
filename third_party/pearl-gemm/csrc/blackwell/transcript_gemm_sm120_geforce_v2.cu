@@ -378,6 +378,13 @@ static cudaError_t ensure_v2_device_tma_pool(int dev) {
   return err;
 }
 
+static void build_v2_tma_descriptors(int8_t const* A, int8_t const* B, int Mi,
+                                     int Ni, int Ki, ConsumerTmaA& tma_a,
+                                     ConsumerTmaB& tma_b);
+static void get_v2_tma_descriptors(int8_t const* A, int8_t const* B, int Mi,
+                                   int Ni, int Ki, ConsumerTmaA& tma_a,
+                                   ConsumerTmaB& tma_b);
+
 static cudaError_t upload_v2_tma_to_device(int8_t const* A, int8_t const* B,
                                            int Mi, int Ni, int Ki,
                                            ConsumerTmaA const** out_d_a,
