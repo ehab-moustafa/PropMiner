@@ -800,7 +800,14 @@ void GpuWorker::ensure_half_workspace(HalfBuffers& half) {
         void* ws = nullptr;
         int rc = pearl_capi_workspace_alloc(cfg_.m, cfg_.n, cfg_.k, cfg_.r,
                                             1, 1, &ws, half.stream);
-        if (rc != 0 || !ws) throw std::runtime_error("workspace_alloc failed");
+        if (rc != 0 || !ws) {
+            cudaError_t last = cudaGetLastError();
+            throw std::runtime_error(
+                std::string("workspace_alloc failed rc=") + std::to_string(rc) +
+                (last != cudaSuccess
+                     ? std::string(" cuda=") + cudaGetErrorString(last)
+                     : ""));
+        }
         half.workspace = ws;
     }
 }
@@ -1513,12 +1520,22 @@ void GpuWorker::run() {
             }
             current_sigma = new_sigma;
             batch = matmuls_per_poll_.load();
-            install_sigma(*current_sigma, *ping);
-            install_sigma(*current_sigma, *pong);
-            if (triple_buffer_active_) {
-                install_sigma(*current_sigma, third_);
+            try {
+                install_sigma(*current_sigma, *ping);
+                install_sigma(*current_sigma, *pong);
+                if (triple_buffer_active_) {
+                    install_sigma(*current_sigma, third_);
+                }
+                capture_graphs_for_halves();
+            } catch (const std::exception& ex) {
+                std::fprintf(stderr,
+                    "[gpu] sigma install failed gpu=%d: %s "
+                    "(restart process if cuda=illegal memory access)\n",
+                    device_index_, ex.what());
+                current_sigma.reset();
+                first = true;
+                continue;
             }
-            capture_graphs_for_halves();
             target_dirty_.store(false);
             first = true;
         } else if (async_install) {

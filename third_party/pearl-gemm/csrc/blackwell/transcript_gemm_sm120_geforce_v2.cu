@@ -514,17 +514,19 @@ static cudaError_t launch_v2_impl(int8_t const* A, int8_t const* B,
   ConsumerTmaB const* d_tma_b = nullptr;
   if (tma_a_group == nullptr) {
     if (in_graph_capture) {
-      // Descriptors pre-uploaded via prepare_geforce_v2_tma_for_graph().
-      // Must pass valid __grid_constant__ bytes (not zeros) — graph freezes them.
+      // Graph replay on sm_120 must use __grid_constant__ TMA only. Passing
+      // device-resident descriptor pointers captures their values in the graph
+      // but replay still dereferences gmem outside the graph snapshot → illegal
+      // access. Pre-upload via prepare_geforce_v2_tma_for_graph() fills h_tma_*;
+      // copy those bytes into grid_constant params (frozen for replay).
       std::lock_guard<std::mutex> lock(g_v2_dev_tma.mu);
-      d_tma_a = g_v2_dev_tma.d_tma_a;
-      d_tma_b = g_v2_dev_tma.d_tma_b;
-      if (d_tma_a == nullptr || d_tma_b == nullptr ||
-          g_v2_dev_tma.h_tma_a == nullptr || g_v2_dev_tma.h_tma_b == nullptr) {
+      if (g_v2_dev_tma.h_tma_a == nullptr || g_v2_dev_tma.h_tma_b == nullptr) {
         return cudaErrorInvalidConfiguration;
       }
       tma_a = *g_v2_dev_tma.h_tma_a;
       tma_b = *g_v2_dev_tma.h_tma_b;
+      d_tma_a = nullptr;
+      d_tma_b = nullptr;
     } else {
       get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
       err = upload_v2_tma_to_device(A, B, (int)M, (int)N, (int)K, &d_tma_a,
