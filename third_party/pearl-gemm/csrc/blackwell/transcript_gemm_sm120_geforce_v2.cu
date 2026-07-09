@@ -57,8 +57,10 @@ static constexpr int kBN = 256;
 static constexpr int kBK = PEARL_CONSUMER_KBLOCK;
 static constexpr int kAtomK = 32;
 static constexpr int kConsumerThreads = 256;
-static constexpr int kProducerLeader = 256;
-static constexpr int kThreads = 288;
+static constexpr int kProducerLeader = kConsumerThreads;
+// 256 consumers + 1 producer — do NOT pad to 288; extra threads that exit
+// early while the pipeline is still running cause illegal memory access on sm_120.
+static constexpr int kThreads = kConsumerThreads + 1;
 static constexpr int kFragSize = (kBM * kBN) / kConsumerThreads;
 static constexpr int kTranscriptSlots = 16;
 #ifndef PEARL_CONSUMER_STAGES
