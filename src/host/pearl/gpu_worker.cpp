@@ -913,7 +913,7 @@ void GpuWorker::capture_graphs_for_halves() {
             prepare_graph(half);
         } catch (const std::exception& ex) {
             std::fprintf(stderr,
-                "[gpu] cuda graph unavailable gpu=%d: %s (using iter_batch)\n",
+                "[gpu] cuda graph unavailable gpu=%d: %s\n",
                 device_index_, ex.what());
             std::fprintf(stderr,
                 "[gpu] debug: run ./scripts/debug_geforce_v2.sh or set "
@@ -931,6 +931,16 @@ void GpuWorker::capture_graphs_for_halves() {
     try_capture(pong_);
     if (triple_buffer_active_) {
         try_capture(third_);
+    }
+    if (gpu_poisoned) {
+        graph_validation_poisoned_ = true;
+        std::fprintf(stderr,
+            "[gpu] CUDA context poisoned by graph validation replay on gpu=%d.\n"
+            "[gpu] iter_batch cannot run in this process after illegal access.\n"
+            "[gpu] To mine now: set PROPMINER_BENCH_NO_GRAPH=1 and restart.\n"
+            "[gpu] Diagnostic: ./scripts/verify_geforce_graph.sh\n",
+            device_index_);
+        std::_Exit(96);
     }
 }
 

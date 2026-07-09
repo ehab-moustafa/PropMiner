@@ -244,6 +244,7 @@ private:
     HalfBuffers pong_;
     HalfBuffers third_;
     bool triple_buffer_active_ = false;
+    bool graph_validation_poisoned_ = false;
 
     // Pipeline stall instrumentation (wait_until_half_free wall time).
     std::atomic<uint64_t> half_wait_ms_total_{0};
