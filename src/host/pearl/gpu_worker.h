@@ -142,7 +142,7 @@ private:
         // Share-GPU deferral: non-zero while side thread holds this half for proof prep.
         std::atomic<int> share_jobs_pending{0};
 
-        void allocate(const MiningConfig& cfg, int device_id, CUstream s);
+        void allocate(const MiningConfig& cfg, int batch, int device_id, CUstream s);
         void free();
     };
 

@@ -10,6 +10,12 @@
 
 #include <cuda_runtime.h>
 
+#if defined(__linux__)
+#include <sched.h>
+#include <pthread.h>
+#include <unistd.h>
+#endif
+
 #include "host_signal_header.h"
 #include "merkle_utils.h"
 #include "pearl_blake3.h"
@@ -97,13 +103,13 @@ namespace {
     }
 }
 
-void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CUstream s) {
+void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int batch, int device_id, CUstream s) {
     stream = s;
     size_t a_bytes = static_cast<size_t>(cfg.m) * cfg.k;
-    // In pure-miner mode the kernel accumulates the transcript in registers and
-    // never materialises C in HBM.  We still allocate a small C buffer because
-    // the C API install_params expects a non-null pointer; it is not read.
-    size_t c_bytes = static_cast<size_t>(cfg.m) * cfg.n * sizeof(uint16_t);
+    // Pure-miner mode: C is never materialised in HBM (transcript stays in
+    // registers).  Passing nullptr to the C API is safe — the kernel guards
+    // with `if (C_gmem != nullptr)` and SkipCStore=true elides the epilogue.
+    // Skipping this allocation frees 8-12 GiB for larger N dimensions.
     size_t eal_bytes = static_cast<size_t>(cfg.m) * cfg.r;
     size_t ear_r_bytes = static_cast<size_t>(cfg.k) * cfg.r;
     size_t ear_k_bytes = static_cast<size_t>(cfg.r) * cfg.k;
@@ -129,8 +135,9 @@ void GpuWorker::HalfBuffers::allocate(const MiningConfig& cfg, int device_id, CU
     check(cuMemAlloc(&ax_ebl_fp16, ax_ebl_bytes), "ax_ebl_fp16 alloc");
     check(cuMemAlloc(&apea, apea_bytes), "apea alloc");
     check(cuMemAlloc(&a_scales, a_scales_bytes), "a_scales alloc");
-    check(cuMemAlloc(&c, c_bytes), "c alloc");
+    // c = nullptr (pure-miner: transcript in registers, C never materialised)
     check(cuMemAlloc(&sync, 256), "sync alloc");
+    // Transcript buffer is allocated by the C API workspace (not here).
     check(cuMemAlloc(&pow_target, 32), "pow_target alloc");
 
     // Device-side seed pointer for the extended graph path.  One 8-byte seed
@@ -270,15 +277,15 @@ GpuWorker::GpuWorker(int device_index, int gpu_index,
     CUDA_CHECK(cudaEventCreateWithFlags(&seed_copy_done_event_,
                                         cudaEventDisableTiming));
 
-    ping_.allocate(cfg_, device_index_, ping_.stream);
-    pong_.allocate(cfg_, device_index_, pong_.stream);
+    ping_.allocate(cfg_, Rtx5090Profile::kDefaultMineBatch, device_index_, ping_.stream);
+    pong_.allocate(cfg_, Rtx5090Profile::kDefaultMineBatch, device_index_, pong_.stream);
 
     if (triple_buffer_enabled() && defer_share_gpu_enabled() &&
         triple_vram_headroom_ok()) {
         try {
             check_cuda(cuStreamCreate(&third_.stream, CU_STREAM_NON_BLOCKING),
                        "third stream");
-            third_.allocate(cfg_, device_index_, third_.stream);
+            third_.allocate(cfg_, Rtx5090Profile::kDefaultMineBatch, device_index_, third_.stream);
             triple_buffer_active_ = true;
             size_t free_bytes = 0, total_bytes = 0;
             cudaMemGetInfo(&free_bytes, &total_bytes);
@@ -569,13 +576,19 @@ bool GpuWorker::triple_vram_headroom_ok() const {
     const size_t n = static_cast<size_t>(cfg_.n);
     const size_t k = static_cast<size_t>(cfg_.k);
     const size_t r = static_cast<size_t>(cfg_.r);
+    // Per-iteration transcript size (workspace pool).
+    const size_t transcript_iter = static_cast<size_t>(m / cfg_.bM) *
+                                   static_cast<size_t>(n / cfg_.bN) * 256 * 16 * 4;
+    // Batched transcript device buffer (allocated per half).
+    const int batch = matmuls_per_poll_.load();
+    const size_t transcript_device =
+        static_cast<size_t>(batch) * transcript_iter;
+    // Per-half device buffers + batched transcript buffer for BLAKE3 offload.
     const size_t half_device = 2 * m * k + m * n * 2 + 6 * m * r + 2 * k * r +
-                               m * 4 + (m * k) / 32 + 4096;
+                               m * 4 + (m * k) / 32 + 4096 + transcript_device;
     const size_t noise_b = n * std::max(k, r) * sizeof(int32_t);
     const size_t noise_a = std::max(m * r, m * k) * sizeof(int32_t);
-    const size_t transcript = static_cast<size_t>(m / cfg_.bM) *
-                              static_cast<size_t>(n / cfg_.bN) * 256 * 16 * 4;
-    const size_t workspace_per_half = noise_b + noise_a + transcript + (1ULL << 20);
+    const size_t workspace_per_half = noise_b + noise_a + transcript_iter + (1ULL << 20);
     const size_t resident_b = 2 * n * k + 5 * n * r + 2 * k * r + 4 * n +
                               (n * k) / 32 + 4096;
     const size_t margin = 512ULL << 20;
@@ -843,10 +856,8 @@ void GpuWorker::bind_sigma_to_half(SigmaContext& ctx, HalfBuffers& half) {
     p.AxEBL_fp16 = reinterpret_cast<void*>(half.ax_ebl_fp16);
     p.ApEA = reinterpret_cast<void*>(half.apea);
     p.A_scales = reinterpret_cast<void*>(half.a_scales);
-    // In pure-miner mode the kernel accumulates the transcript in registers and
-    // never materialises C in HBM.  The buffer is still allocated so install_params
-    // receives a non-null pointer, but it is not read.
-    p.C = reinterpret_cast<void*>(half.c);
+    // Pure-miner: C=nullptr — transcript stays in registers, C never materialised.
+    p.C = nullptr;
     p.host_signal_sync = reinterpret_cast<void*>(half.sync);
     p.pow_target = reinterpret_cast<void*>(half.pow_target);
     p.pow_key = reinterpret_cast<void*>(half.commit_a);
@@ -1406,6 +1417,21 @@ bool GpuWorker::handle_trigger(HalfBuffers& half,
 }
 
 void GpuWorker::run() {
+#if defined(__linux__)
+    // Pin this thread to a specific CPU core for cache locality.
+    // Round-robin across cores: GPU 0 → core 0, GPU 1 → core 1, etc.
+    // This avoids cache thrashing in the hot mining loop.
+    {
+        long ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+        if (ncpus > 0) {
+            cpu_set_t mask;
+            CPU_ZERO(&mask);
+            CPU_SET(device_index_ % static_cast<long>(ncpus), &mask);
+            pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask);
+        }
+    }
+#endif
+
     HalfBuffers* ping = &ping_;
     HalfBuffers* pong = &pong_;
 

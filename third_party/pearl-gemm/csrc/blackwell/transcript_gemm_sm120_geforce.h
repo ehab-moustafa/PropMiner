@@ -22,7 +22,7 @@ cudaError_t launch_transcript_gemm_sm120_geforce(
     cudaStream_t stream);
 
 cudaError_t launch_transcript_gemm_sm120_geforce_headless(
-    int8_t const* A, int8_t const* B, int32_t* C,
+    int8_t const* A, int8_t const* B, int32_t* C, uint32_t* transcript,
     int64_t M, int64_t N, int64_t K, int64_t R, int64_t batch,
     uint32_t const* pow_target, uint32_t const* pow_key,
     HostSignalSync* host_signal_sync,

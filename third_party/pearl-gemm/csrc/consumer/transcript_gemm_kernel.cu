@@ -116,6 +116,12 @@ static_assert(kBM == 128 && kBN == 256,
               "shared-memory budget and 96 MB L2 cache-line granularity");
 static constexpr int kTranscriptSlots = 16;           // = MSG_BLOCK_SIZE_U32
 
+// Verify transcript layout matches transcript_finalize_kernel expectations.
+static_assert(kTranscriptSlots == 16,
+              "kTranscriptSlots must equal 16 to match transcript_finalize_kernel");
+static_assert(kThreads == 256,
+              "kThreads must equal 256 to match transcript_finalize_kernel");
+
 using ElementIn  = int8_t;
 using ElementAcc = int32_t;
 
@@ -496,39 +502,16 @@ __global__ void transcript_gemm_kernel_consumer(
             transcript_local[slot], hash);
   }
 
-  // ── Optional in-kernel finalization ─────────────────────────────────
+  // ── Write final transcript to gmem for separate finalize kernel ─────
+  // The transcript is always written here; BLAKE3 compress + target check
+  // are performed by the separate transcript_finalize_kernel, which reads
+  // this buffer and writes HostSignalHeader on a hit.
   //
-  // Alpha's 5090 miner exposes a "headless_mine_kernel" and xored_tile
-  // debugging; the important trick appears to be keeping the XOR transcript
-  // in registers and checking the target here instead of spilling 16 words
-  // per thread to gmem and launching transcript_finalize_kernel.
-  if (pow_target != nullptr && pow_key_eff != nullptr &&
-      host_signal_sync_eff != nullptr && host_signal_header_eff != nullptr) {
-    Tensor transcript_rmem = make_tensor<uint32_t>(
-        Int<kTranscriptSlots>{});
-    CUTLASS_PRAGMA_UNROLL
-    for (int s = 0; s < kTranscriptSlots; ++s) {
-      transcript_rmem(s) = transcript_local[s];
-    }
-
-    bool block_found = pearl::check_pow_target(
-        transcript_rmem, pow_target, pow_key_eff);
-    if (block_found) {
-      auto block_coord = cute::make_tuple(
-          (int32_t)m_tile, (int32_t)n_tile, (int32_t)batch);
-      auto problem_shape = cute::make_tuple(M, N, K, R);
-      pearl::write_host_signal_header<ConsumerTiledMma, HeaderTileShape_MNK>(
-          host_signal_sync_eff, host_signal_header_eff,
-          problem_shape, block_coord, tid, pow_target);
-    }
-  }
-
-  // ── Write final transcript to gmem ──────────────────────────────────
   // Layout matches transcript_kernel.cu's transcript_snapshot_kernel:
   //   base = ((batch * num_m_tiles + m_tile) * num_n_tiles + n_tile)
   //          * (kThreads * kTranscriptSlots)
   //   tx_idx = base + tid * kTranscriptSlots + slot
-  if (transcript != nullptr) {
+  {
     int64_t base = ((int64_t)batch * num_m_tiles + m_tile)
                    * num_n_tiles + n_tile;
     int64_t tx_off = base * (int64_t)kThreads * kTranscriptSlots
@@ -781,6 +764,7 @@ cudaError_t launch_transcript_gemm_headless(
     int8_t  const* A,
     int8_t  const* B,
     int32_t*       C,
+    uint32_t*      transcript,
     int64_t M, int64_t N, int64_t K, int64_t R, int64_t batch,
     uint32_t const* pow_target, uint32_t const* pow_key,
     HostSignalSync* host_signal_sync,
@@ -829,7 +813,7 @@ cudaError_t launch_transcript_gemm_headless(
     cfg.attrs = attrs;
     cfg.numAttrs = 1;
     err = cudaLaunchKernelEx(&cfg, transcript_gemm_kernel_consumer,
-                             A, B, C, nullptr,
+                             A, B, C, transcript,
                              (int)M, (int)N, (int)K, (int)R,
                              pow_target, pow_key,
                              host_signal_sync, host_signal_header_pinned,
@@ -849,7 +833,7 @@ cudaError_t launch_transcript_gemm_headless(
   }
   if (!use_cluster) {
     transcript_gemm_kernel_consumer<<<grid, block, smem_bytes, stream>>>(
-        A, B, C, nullptr, (int)M, (int)N, (int)K, (int)R,
+        A, B, C, transcript, (int)M, (int)N, (int)K, (int)R,
         pow_target, pow_key,
         host_signal_sync, host_signal_header_pinned,
         nullptr, nullptr, nullptr, nullptr
@@ -863,6 +847,7 @@ cudaError_t launch_transcript_gemm_headless(
 
 static cudaError_t launch_transcript_gemm_headless_grouped_impl(
     int8_t const* const* ApEA_ptrs, int8_t const* B,
+    uint32_t* transcript,
     int64_t M, int64_t N, int64_t K, int64_t R, int64_t batch,
     uint32_t const* pow_target,
     uint32_t const* const* pow_key_ptrs,
@@ -923,8 +908,9 @@ static cudaError_t launch_transcript_gemm_headless_grouped_impl(
     cfg.attrs = attrs;
     cfg.numAttrs = 1;
     err = cudaLaunchKernelEx(
-        &cfg, transcript_gemm_kernel_consumer, A_dummy, B, nullptr, nullptr,
-        (int)M, (int)N, (int)K, (int)R, pow_target, nullptr, nullptr, nullptr,
+        &cfg, transcript_gemm_kernel_consumer, A_dummy, B, nullptr, transcript,
+        (int)M, (int)N, (int)K, (int)R,
+        nullptr, nullptr, nullptr, nullptr,
         ApEA_ptrs, pow_key_ptrs, sync_array, header_ptrs
 #if PEARL_CONSUMER_USE_TMA_EXPERIMENT
         ,
@@ -942,8 +928,8 @@ static cudaError_t launch_transcript_gemm_headless_grouped_impl(
   }
   if (!use_cluster) {
     transcript_gemm_kernel_consumer<<<grid, block, smem_bytes, stream>>>(
-        A_dummy, B, nullptr, nullptr, (int)M, (int)N, (int)K, (int)R,
-        pow_target, nullptr, nullptr, nullptr, ApEA_ptrs, pow_key_ptrs,
+        A_dummy, B, nullptr, transcript, (int)M, (int)N, (int)K, (int)R,
+        nullptr, nullptr, nullptr, nullptr, ApEA_ptrs, pow_key_ptrs,
         sync_array, header_ptrs
 #if PEARL_CONSUMER_USE_TMA_EXPERIMENT
         ,
@@ -958,9 +944,11 @@ cudaError_t launch_transcript_gemm_headless_grouped(
     int8_t const* const* ApEA_ptrs, int8_t const* BpEB, int64_t M, int64_t N,
     int64_t K, int64_t R, int64_t batch, uint32_t const* pow_target,
     uint32_t const* const* pow_key_ptrs, HostSignalSync* sync_array,
-    HostSignalHeader** header_ptrs, cudaStream_t stream) {
+    HostSignalHeader** header_ptrs,
+    uint32_t* transcript,
+    cudaStream_t stream) {
   return launch_transcript_gemm_headless_grouped_impl(
-      ApEA_ptrs, BpEB, M, N, K, R, batch, pow_target, pow_key_ptrs,
+      ApEA_ptrs, BpEB, transcript, M, N, K, R, batch, pow_target, pow_key_ptrs,
       sync_array, header_ptrs, stream);
 }
 

@@ -757,6 +757,23 @@ static int pearl_capi_launch_grouped_gemm(
             static_cast<ptrdiff_t>(ws->grouped_apea_slot_bytes);
   }
 
+  // Allocate transcript buffer for BLAKE3 offload (gmem round-trip).
+  // Size: batch × (M/bM) × (N/bN) × 256 × 16 × 4 bytes
+  int64_t tr_elems = pearl::portable::transcript_buffer_elems(m, n, batch);
+  size_t tr_bytes = sizeof(uint32_t) * (size_t)tr_elems;
+  uint32_t* transcript = nullptr;
+  bool tr_owned = false;
+  if (ws && ws->transcript_bytes >= tr_bytes &&
+      ws->transcript_ptr() != nullptr) {
+    transcript = static_cast<uint32_t*>(ws->transcript_ptr());
+  } else {
+    if (cudaMallocAsync(reinterpret_cast<void**>(&transcript),
+                        tr_bytes, stream) != cudaSuccess) {
+      return -32;
+    }
+    tr_owned = true;
+  }
+
   cudaError_t launch_err = cudaSuccess;
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
   if (use_geforce_v2_kernel()) {
@@ -764,7 +781,8 @@ static int pearl_capi_launch_grouped_gemm(
         ::pearl::blackwell::launch_transcript_gemm_sm120_geforce_v2_headless_grouped(
             h_apea.data(), static_cast<const int8_t*>(ng.BpEB), m, n, k, r,
             batch, static_cast<const uint32_t*>(ng.pow_target),
-            ws->d_pow_key_ptrs, ws->d_sync_array, ws->d_header_ptrs, stream);
+            ws->d_pow_key_ptrs, ws->d_sync_array, ws->d_header_ptrs,
+            transcript, stream);
   } else
 #endif
   {
@@ -778,9 +796,32 @@ static int pearl_capi_launch_grouped_gemm(
     launch_err = pearl::consumer::launch_transcript_gemm_headless_grouped(
         ws->d_apea_ptrs, static_cast<const int8_t*>(ng.BpEB), m, n, k, r,
         batch, static_cast<const uint32_t*>(ng.pow_target), ws->d_pow_key_ptrs,
-        ws->d_sync_array, ws->d_header_ptrs, stream);
+        ws->d_sync_array, ws->d_header_ptrs,
+        transcript, stream);
   }
-  if (launch_err != cudaSuccess) return transcript_launch_rc(launch_err);
+  if (launch_err != cudaSuccess) {
+    if (tr_owned) cudaFreeAsync(transcript, stream);
+    return transcript_launch_rc(launch_err);
+  }
+
+  // Finalize: BLAKE3 + target check + HostSignalHeader write per batch.
+  for (int32_t i = 0; i < count; ++i) {
+    pearl::portable::launch_transcript_finalize(
+        transcript + pearl::portable::transcript_buffer_elems(m, n, static_cast<int64_t>(i)),
+        m, n, 1,
+        static_cast<const uint32_t*>(ng.pow_target),
+        static_cast<const uint32_t*>(ng.pow_key),
+        static_cast<HostSignalSync*>(&ws->d_sync_array[i]),
+        static_cast<HostSignalHeader*>(host_signal_header_pinned_batch[i]),
+        m, n, k, r, stream);
+  }
+  cudaError_t finalize_err = cudaGetLastError();
+  if (finalize_err != cudaSuccess) {
+    if (tr_owned) cudaFreeAsync(transcript, stream);
+    return transcript_finalize_rc(finalize_err);
+  }
+
+  if (tr_owned) cudaFreeAsync(transcript, stream);
   return 0;
 }
 
@@ -926,7 +967,7 @@ PEARL_CAPI_EXPORT int pearl_capi_workspace_alloc(int32_t m, int32_t n,
         : 0;
     ws->transcript_bytes = with_noise_A
         ? sizeof(uint32_t) *
-          static_cast<size_t>(pearl::portable::transcript_buffer_elems(m, n, 1))
+          static_cast<size_t>(pearl::portable::transcript_buffer_elems(m, n, r))
         : 0;
 #else
     // H100 / CUTLASS path doesn't use these helpers — workspace is a no-op
@@ -1284,34 +1325,90 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
     const int64_t batch = 1;
 
 #if defined(PEARL_GEMM_VOLTA)
-    cudaError_t launch_err = pearl::legacy::launch_transcript_gemm_dp4a_headless(
-        static_cast<const int8_t*>(p->ApEA),
-        static_cast<const int8_t*>(p->BpEB),
-        /*C=*/nullptr,
-        m, n, k, r, batch,
-        static_cast<const uint32_t*>(p->pow_target),
-        static_cast<const uint32_t*>(p->pow_key),
-        static_cast<HostSignalSync*>(p->host_signal_sync),
-        static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
-        stream);
-    if (launch_err != cudaSuccess) return transcript_launch_rc(launch_err);
+    // Volta: two-kernel sequence via legacy DP4A + portable finalize.
+    {
+      uint32_t* tr_vol = nullptr;
+      bool tr_owned_vol = false;
+      size_t tr_bytes_vol = sizeof(uint32_t) *
+          (size_t)pearl::portable::transcript_buffer_elems(m, n, batch);
+      if (ws && ws->transcript_bytes >= tr_bytes_vol &&
+          ws->transcript_ptr() != nullptr) {
+        tr_vol = static_cast<uint32_t*>(ws->transcript_ptr());
+      } else {
+        if (cudaMallocAsync(reinterpret_cast<void**>(&tr_vol),
+                            tr_bytes_vol, stream) != cudaSuccess) {
+          return -32;
+        }
+        tr_owned_vol = true;
+      }
+      cudaError_t la = pearl::turing::launch_transcript_gemm(
+          static_cast<const int8_t*>(p->ApEA),
+          static_cast<const int8_t*>(p->BpEB),
+          /*C=*/nullptr, tr_vol,
+          m, n, k, r, batch, stream);
+      if (la != cudaSuccess) {
+        if (tr_owned_vol) cudaFreeAsync(tr_vol, stream);
+        return transcript_launch_rc(la);
+      }
+      pearl::portable::launch_transcript_finalize(
+          tr_vol, m, n, batch,
+          static_cast<const uint32_t*>(p->pow_target),
+          static_cast<const uint32_t*>(p->pow_key),
+          static_cast<HostSignalSync*>(p->host_signal_sync),
+          static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
+          m, n, k, r, stream);
+      cudaError_t fe = cudaGetLastError();
+      if (fe != cudaSuccess) {
+        if (tr_owned_vol) cudaFreeAsync(tr_vol, stream);
+        return transcript_finalize_rc(fe);
+      }
+      if (tr_owned_vol) cudaFreeAsync(tr_vol, stream);
+    }
 
     (void)p->C; (void)p->A_scales; (void)p->B_scales;
     (void)p->EBR; (void)p->EBR_fp16; (void)p->EARxBpEB_fp16;
     (void)p->EAR_K_major; (void)p->EBL_R_major; (void)p->EAL_fp16;
     return 0;
 #elif defined(PEARL_GEMM_TURING)
-    cudaError_t launch_err = pearl::turing::launch_transcript_gemm_headless(
-        static_cast<const int8_t*>(p->ApEA),
-        static_cast<const int8_t*>(p->BpEB),
-        /*C=*/nullptr,
-        m, n, k, r, batch,
-        static_cast<const uint32_t*>(p->pow_target),
-        static_cast<const uint32_t*>(p->pow_key),
-        static_cast<HostSignalSync*>(p->host_signal_sync),
-        static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
-        stream);
-    if (launch_err != cudaSuccess) return transcript_launch_rc(launch_err);
+    // Turing: two-kernel sequence — GEMM writes transcript, finalize does BLAKE3.
+    {
+      uint32_t* tr_tur = nullptr;
+      bool tr_owned_tur = false;
+      size_t tr_bytes_tur = sizeof(uint32_t) *
+          (size_t)pearl::portable::transcript_buffer_elems(m, n, batch);
+      if (ws && ws->transcript_bytes >= tr_bytes_tur &&
+          ws->transcript_ptr() != nullptr) {
+        tr_tur = static_cast<uint32_t*>(ws->transcript_ptr());
+      } else {
+        if (cudaMallocAsync(reinterpret_cast<void**>(&tr_tur),
+                            tr_bytes_tur, stream) != cudaSuccess) {
+          return -32;
+        }
+        tr_owned_tur = true;
+      }
+      cudaError_t la = pearl::turing::launch_transcript_gemm(
+          static_cast<const int8_t*>(p->ApEA),
+          static_cast<const int8_t*>(p->BpEB),
+          /*C=*/nullptr, tr_tur,
+          m, n, k, r, batch, stream);
+      if (la != cudaSuccess) {
+        if (tr_owned_tur) cudaFreeAsync(tr_tur, stream);
+        return transcript_launch_rc(la);
+      }
+      pearl::portable::launch_transcript_finalize(
+          tr_tur, m, n, batch,
+          static_cast<const uint32_t*>(p->pow_target),
+          static_cast<const uint32_t*>(p->pow_key),
+          static_cast<HostSignalSync*>(p->host_signal_sync),
+          static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
+          m, n, k, r, stream);
+      cudaError_t fe = cudaGetLastError();
+      if (fe != cudaSuccess) {
+        if (tr_owned_tur) cudaFreeAsync(tr_tur, stream);
+        return transcript_finalize_rc(fe);
+      }
+      if (tr_owned_tur) cudaFreeAsync(tr_tur, stream);
+    }
 
     (void)p->C; (void)p->A_scales; (void)p->B_scales;
     (void)p->EBR; (void)p->EBR_fp16; (void)p->EARxBpEB_fp16;
@@ -1324,53 +1421,80 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
       if (vrc != 0) return vrc;
     }
 #endif
-    // Production consumer mining is headless: keep the XOR transcript
-    // in registers, emit only a winning host signal, and never spill the
-    // transcript buffer to global memory. If PoW pointers are null this
-    // intentionally emits nothing.
+    // Production consumer mining — two-kernel sequence:
+    //   1. GEMM kernel writes transcript to gmem (no BLAKE3)
+    //   2. Finalize kernel reads transcript, runs BLAKE3 + target check,
+    //      writes HostSignalHeader on hit.
+    //
+    // If PoW pointers are null this intentionally emits nothing.
+    uint32_t* transcript = nullptr;
+    bool tr_owned = false;
+    size_t tr_bytes = 0;
+    int64_t tr_elems = 0;
+
+    // Allocate transcript buffer from workspace (or per-call).
+    if (ws && ws->transcript_bytes > 0 && ws->transcript_ptr() != nullptr) {
+      transcript = static_cast<uint32_t*>(ws->transcript_ptr());
+    } else {
+      tr_elems = pearl::portable::transcript_buffer_elems(m, n, batch);
+      tr_bytes = sizeof(uint32_t) * (size_t)tr_elems;
+      if (cudaMallocAsync(reinterpret_cast<void**>(&transcript),
+                          tr_bytes, stream) != cudaSuccess) {
+        return -32;
+      }
+      tr_owned = true;
+    }
+
     cudaError_t launch_err = cudaSuccess;
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
     if (use_geforce_v2_kernel()) {
       launch_err =
-          ::pearl::blackwell::launch_transcript_gemm_sm120_geforce_v2_headless(
+          ::pearl::blackwell::launch_transcript_gemm_sm120_geforce_v2(
               static_cast<const int8_t*>(p->ApEA),
               static_cast<const int8_t*>(p->BpEB),
-              /*C=*/nullptr,
+              transcript,
               m, n, k, r, batch,
-              static_cast<const uint32_t*>(p->pow_target),
-              static_cast<const uint32_t*>(p->pow_key),
-              static_cast<HostSignalSync*>(p->host_signal_sync),
-              static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
               stream);
     } else
 #endif
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_KERNEL)
     if (use_geforce_experimental_kernel()) {
-      launch_err = ::pearl::blackwell::launch_transcript_gemm_sm120_geforce_headless(
+      launch_err = ::pearl::blackwell::launch_transcript_gemm_sm120_geforce(
           static_cast<const int8_t*>(p->ApEA),
           static_cast<const int8_t*>(p->BpEB),
-          /*C=*/nullptr,
+          transcript,
           m, n, k, r, batch,
-          static_cast<const uint32_t*>(p->pow_target),
-          static_cast<const uint32_t*>(p->pow_key),
-          static_cast<HostSignalSync*>(p->host_signal_sync),
-          static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
           stream);
     } else
 #endif
     {
-      launch_err = pearl::consumer::launch_transcript_gemm_headless(
+      launch_err = pearl::consumer::launch_transcript_gemm(
           static_cast<const int8_t*>(p->ApEA),
           static_cast<const int8_t*>(p->BpEB),
-          /*C=*/nullptr,
+          /*C=*/nullptr, transcript,
           m, n, k, r, batch,
-          static_cast<const uint32_t*>(p->pow_target),
-          static_cast<const uint32_t*>(p->pow_key),
-          static_cast<HostSignalSync*>(p->host_signal_sync),
-          static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
           stream);
     }
-    if (launch_err != cudaSuccess) return transcript_launch_rc(launch_err);
+    if (launch_err != cudaSuccess) {
+      if (tr_owned) cudaFreeAsync(transcript, stream);
+      return transcript_launch_rc(launch_err);
+    }
+
+    // Finalize: BLAKE3 + target check + HostSignalHeader write.
+    pearl::portable::launch_transcript_finalize(
+        transcript, m, n, batch,
+        static_cast<const uint32_t*>(p->pow_target),
+        static_cast<const uint32_t*>(p->pow_key),
+        static_cast<HostSignalSync*>(p->host_signal_sync),
+        static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
+        m, n, k, r, stream);
+    cudaError_t finalize_err = cudaGetLastError();
+    if (finalize_err != cudaSuccess) {
+      if (tr_owned) cudaFreeAsync(transcript, stream);
+      return transcript_finalize_rc(finalize_err);
+    }
+
+    if (tr_owned) cudaFreeAsync(transcript, stream);
 
     (void)p->C; (void)p->A_scales; (void)p->B_scales;
     (void)p->EBR; (void)p->EBR_fp16; (void)p->EARxBpEB_fp16;

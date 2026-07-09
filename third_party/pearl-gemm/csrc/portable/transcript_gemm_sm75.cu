@@ -174,30 +174,23 @@ __global__ void transcript_gemm_kernel_sm75(
     }
   }
 
-  if (pow_target != nullptr && pow_key != nullptr &&
-      host_signal_sync != nullptr && host_signal_header_pinned != nullptr) {
-    Tensor transcript_rmem = make_tensor<uint32_t>(Int<kTranscriptSlots>{});
-    CUTLASS_PRAGMA_UNROLL
-    for (int s = 0; s < kTranscriptSlots; ++s) {
-      transcript_rmem(s) = transcript_local[s];
-    }
-
-    if (pearl::check_pow_target(transcript_rmem, pow_target, pow_key)) {
-      auto block_coord = cute::make_tuple(
-          static_cast<int32_t>(m_tile),
-          static_cast<int32_t>(n_tile),
-          static_cast<int32_t>(batch));
-      auto problem_shape = cute::make_tuple(M, N, K, R);
-      pearl::write_host_signal_header<Sm75TiledMma, HeaderTileShape_MNK>(
-          host_signal_sync, host_signal_header_pinned,
-          problem_shape, block_coord, tid, pow_target);
-    }
-  }
-
-  if (transcript != nullptr) {
+  // ── Write final transcript to gmem for separate finalize kernel ─────
+  // The transcript is always written here; BLAKE3 compress + target check
+  // are performed by the separate transcript_finalize_kernel, which reads
+  // this buffer and writes HostSignalHeader on a hit.
+  //
+  // Layout matches transcript_kernel.cu's transcript_finalize_kernel:
+  //   base = ((batch * num_m_tiles + m_tile) * num_n_tiles + n_tile)
+  //          * (256 * 16)
+  //   tx_idx = base + tid * 16 + slot
+  // Even though this kernel uses 32 threads, we write with 256-thread
+  // stride so the finalize kernel (launched with 256 threads) reads
+  // the correct data for tid in [0,31].  Threads 32..255 read zeros
+  // (buffer is zeroed before each noisy_gemm call) and find no hit.
+  {
     int64_t base = ((int64_t)batch * num_m_tiles + m_tile)
                    * num_n_tiles + n_tile;
-    int64_t tx_off = base * (int64_t)kThreads * kTranscriptSlots
+    int64_t tx_off = base * (int64_t)256 * kTranscriptSlots
                      + (int64_t)tid * kTranscriptSlots;
     CUTLASS_PRAGMA_UNROLL
     for (int s = 0; s < kTranscriptSlots; ++s) {
@@ -248,6 +241,7 @@ cudaError_t launch_transcript_gemm_headless(
     int8_t const* A,
     int8_t const* B,
     int32_t* C,
+    uint32_t* transcript,
     int64_t M, int64_t N, int64_t K, int64_t R, int64_t batch,
     uint32_t const* pow_target, uint32_t const* pow_key,
     HostSignalSync* host_signal_sync,
@@ -265,7 +259,7 @@ cudaError_t launch_transcript_gemm_headless(
   dim3 block(kThreads);
   (void)cudaGetLastError();
   transcript_gemm_kernel_sm75<<<grid, block, sizeof(SharedStorage), stream>>>(
-      A, B, C, nullptr,
+      A, B, C, transcript,
       static_cast<int>(M), static_cast<int>(N),
       static_cast<int>(K), static_cast<int>(R),
       pow_target, pow_key,

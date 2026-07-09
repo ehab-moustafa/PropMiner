@@ -249,24 +249,11 @@ __global__ void transcript_gemm_sm120_geforce_kernel(
               transcript_local[slot], hash);
     }
 
-    if (pow_target != nullptr && pow_key != nullptr &&
-        host_signal_sync != nullptr && host_signal_header_pinned != nullptr) {
-      Tensor transcript_rmem = make_tensor<uint32_t>(Int<kTranscriptSlots>{});
-      CUTLASS_PRAGMA_UNROLL
-      for (int s = 0; s < kTranscriptSlots; ++s) {
-        transcript_rmem(s) = transcript_local[s];
-      }
-      if (pearl::check_pow_target(transcript_rmem, pow_target, pow_key)) {
-        auto block_coord =
-            cute::make_tuple((int32_t)m_tile, (int32_t)n_tile, (int32_t)batch);
-        auto problem_shape = cute::make_tuple(M, N, K, R);
-        pearl::write_host_signal_header<ConsumerTiledMma, HeaderTileShape_MNK>(
-            host_signal_sync, host_signal_header_pinned, problem_shape,
-            block_coord, consumer_tid, pow_target);
-      }
-    }
-
-    if (transcript != nullptr) {
+    // ── Write final transcript to gmem for separate finalize kernel ─────
+    // The transcript is always written here; BLAKE3 compress + target check
+    // are performed by the separate transcript_finalize_kernel, which reads
+    // this buffer and writes HostSignalHeader on a hit.
+    {
       int64_t base = ((int64_t)batch * num_m_tiles + m_tile) * num_n_tiles +
                      n_tile;
       int64_t tx_off = base * (int64_t)kConsumerThreads * kTranscriptSlots +
@@ -352,10 +339,11 @@ cudaError_t launch_transcript_gemm_sm120_geforce(
 }
 
 cudaError_t launch_transcript_gemm_sm120_geforce_headless(
-    int8_t const* A, int8_t const* B, int32_t* C, int64_t M, int64_t N,
-    int64_t K, int64_t R, int64_t batch, uint32_t const* pow_target,
-    uint32_t const* pow_key, HostSignalSync* host_signal_sync,
-    HostSignalHeader* host_signal_header_pinned, cudaStream_t stream) {
+    int8_t const* A, int8_t const* B, int32_t* C, uint32_t* transcript,
+    int64_t M, int64_t N, int64_t K, int64_t R, int64_t batch,
+    uint32_t const* pow_target, uint32_t const* pow_key,
+    HostSignalSync* host_signal_sync, HostSignalHeader* host_signal_header_pinned,
+    cudaStream_t stream) {
   assert(M % kBM == 0 && N % kBN == 0 && K % kBK == 0 && R % kBK == 0);
   assert(K % R == 0);
 
@@ -371,7 +359,7 @@ cudaError_t launch_transcript_gemm_sm120_geforce_headless(
   build_geforce_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
 
   transcript_gemm_sm120_geforce_kernel<<<grid, block, smem_bytes, stream>>>(
-      A, B, C, nullptr, (int)M, (int)N, (int)K, (int)R, pow_target, pow_key,
+      A, B, C, transcript, (int)M, (int)N, (int)K, (int)R, pow_target, pow_key,
       host_signal_sync, host_signal_header_pinned, tma_a, tma_b);
   return cudaGetLastError();
 }

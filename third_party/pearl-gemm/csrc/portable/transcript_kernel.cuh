@@ -77,13 +77,17 @@ cudaError_t launch_transcript_gemm(
     int64_t M, int64_t N, int64_t K, int64_t R, int64_t batch,
     cudaStream_t stream);
 
-// Consumer mining fast path: finalizes the per-thread transcript in the GEMM
-// kernel and writes HostSignalHeader directly on a hit. This avoids the
-// transcript gmem spill/read and the separate finalize kernel.
+// Consumer mining fast path — now uses two-kernel sequence:
+//   1. GEMM kernel writes transcript to gmem (no BLAKE3 inline)
+//   2. launch_transcript_finalize reads transcript, runs BLAKE3 + target check,
+//      writes HostSignalHeader on hit.
+// The transcript buffer must be allocated by the caller (via
+// portable::transcript_buffer_elems).
 cudaError_t launch_transcript_gemm_headless(
     int8_t  const* A,
     int8_t  const* B,
     int32_t*       C,
+    uint32_t*      transcript,
     int64_t M, int64_t N, int64_t K, int64_t R, int64_t batch,
     uint32_t const* pow_target, uint32_t const* pow_key,
     HostSignalSync* host_signal_sync,
@@ -97,7 +101,8 @@ cudaError_t launch_transcript_gemm_headless_grouped(
     int8_t const* const* ApEA_ptrs, int8_t const* BpEB, int64_t M, int64_t N,
     int64_t K, int64_t R, int64_t batch, uint32_t const* pow_target,
     uint32_t const* const* pow_key_ptrs, HostSignalSync* sync_array,
-    HostSignalHeader** header_ptrs, cudaStream_t stream);
+    HostSignalHeader** header_ptrs,
+    uint32_t* transcript, cudaStream_t stream);
 
 }  // namespace consumer
 
@@ -135,6 +140,7 @@ cudaError_t launch_transcript_gemm_headless(
     int8_t  const* A,
     int8_t  const* B,
     int32_t*       C,
+    uint32_t*      transcript,
     int64_t M, int64_t N, int64_t K, int64_t R, int64_t batch,
     uint32_t const* pow_target, uint32_t const* pow_key,
     HostSignalSync* host_signal_sync,
