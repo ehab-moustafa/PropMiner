@@ -15,12 +15,15 @@ tune_knob_smem_bytes() {
     echo $((384 * kblock * stages))
 }
 
-# Shared memory per CTA must fit RTX 5090 ~164 KiB budget (leave margin).
+# RTX 5090 GeForce (sm_120): per-block SMEM opt-in max is 99 KiB (+ margin).
+# Matches transcript_gemm_sm120_geforce_v2.cu kMaxSmemBytes.
+readonly TUNE_KNOB_SMEM_MAX_BYTES=101376
+
 tune_knob_smem_ok() {
     local kblock="${1}" stages="${2}"
     local smem
     smem="$(tune_knob_smem_bytes "${kblock}" "${stages}")"
-    [[ "${smem}" -le 163840 ]]
+    [[ "${smem}" -le "${TUNE_KNOB_SMEM_MAX_BYTES}" ]]
 }
 
 tune_knob_extract_bench_rate() {

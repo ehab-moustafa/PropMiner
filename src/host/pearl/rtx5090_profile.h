@@ -19,10 +19,10 @@ struct Rtx5090Profile {
     static constexpr int kThreadsPerWarp = 32;
     static constexpr int kThreadsPerCTA = 256;  // 8 warps, matches consumer kernel
 
-    // Consumer kernel tile.  128x256x128 is chosen so that the accumulators
-    // (128*256*4B = 128 KiB) plus A/B smem tiles fit comfortably inside the
-    // 164 KiB shared-memory budget per SM while keeping the MMA dimensions
-    // aligned to Blackwell tcgen05 operand layouts.
+    // Consumer / GeForce v2 kernel tile (proof-canonical).  128x256x128 with
+    // KBLOCK=64, STAGES=2 uses ~48 KiB A/B smem — well under the GeForce sm_120
+    // per-block cap (99 KiB opt-in max).  int32 accumulators live in registers;
+    // production uses SM80 mma.sync m16n8k32 on sm_120a (not datacenter tcgen05).
     static constexpr int kTileM = 128;
     static constexpr int kTileN = 256;
     static constexpr int kTileK = 128;

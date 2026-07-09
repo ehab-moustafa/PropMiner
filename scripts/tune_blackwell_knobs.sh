@@ -66,7 +66,7 @@ for TILE in "${TILE_SHAPES[@]}"; do
     for KBLOCK in "${KBLOCKS[@]}"; do
     for STAGES in "${STAGES_LIST[@]}"; do
         if ! tune_knob_smem_ok "${KBLOCK}" "${STAGES}"; then
-            echo "[knob-tune] skip ${TILE} k${KBLOCK}-s${STAGES}: smem=$((384*KBLOCK*STAGES)) > budget"
+            echo "[knob-tune] skip ${TILE} k${KBLOCK}-s${STAGES}: smem=$((384*KBLOCK*STAGES)) > ${TUNE_KNOB_SMEM_MAX_BYTES}"
             continue
         fi
         for SWIZZLE in "${SWIZZLES[@]}"; do

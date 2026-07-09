@@ -28,4 +28,31 @@ echo "===== PropMiner host-only tests (no GPU) ====="
   -o "${OUT}" -lpthread
 
 "${OUT}"
-echo "===== OK ====="
+echo "[host] ref tests OK"
+
+# BLAKE3 / PoW CPU suites (GPU kernel math, no device)
+BLAKE3_OFF="${OUT}_blake3_offload"
+"${CXX}" -std=c++17 -O2 -I src/host/tests \
+  src/host/tests/blake3_offload_test.cpp \
+  src/host/tests/blake3_reference.c \
+  src/host/tests/ref_blake3.cpp \
+  -o "${BLAKE3_OFF}"
+"${BLAKE3_OFF}"
+echo "[host] blake3_offload_test OK"
+
+BLAKE3_FIN="${OUT}_blake3_finalize"
+"${CXX}" -std=c++17 -O2 -I src/host/tests \
+  src/host/tests/blake3_finalize_optimization_test.cpp \
+  src/host/tests/blake3_reference.c \
+  -o "${BLAKE3_FIN}"
+"${BLAKE3_FIN}"
+echo "[host] blake3_finalize_optimization_test OK"
+
+TRANSCRIPT_SAFE="${OUT}_transcript_mainloop"
+"${CXX}" -std=c++17 -O2 -I src/host/tests \
+  src/host/tests/transcript_mainloop_safety_test.cpp \
+  -o "${TRANSCRIPT_SAFE}"
+"${TRANSCRIPT_SAFE}"
+echo "[host] transcript_mainloop_safety_test OK"
+
+echo "===== OK (ref + blake3 + transcript safety) ====="

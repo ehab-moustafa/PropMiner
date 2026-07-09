@@ -72,10 +72,9 @@ for TILE in "${TILE_SHAPES[@]}"; do
 
     for KBLOCK in "${KBLOCKS[@]}"; do
     for STAGES in "${STAGES_LIST[@]}"; do
-        # Check shared memory budget (consumer path uses similar smem formula)
-        smem=$((384 * KBLOCK * STAGES))
-        if (( smem > 163840 )); then
-            echo "[consumer-knob-tune] skip ${TILE}-k${KBLOCK}-s${STAGES}: smem=${smem} > budget"
+        if ! tune_knob_smem_ok "${KBLOCK}" "${STAGES}"; then
+            smem=$((384 * KBLOCK * STAGES))
+            echo "[consumer-knob-tune] skip ${TILE}-k${KBLOCK}-s${STAGES}: smem=${smem} > ${TUNE_KNOB_SMEM_MAX_BYTES}"
             continue
         fi
 

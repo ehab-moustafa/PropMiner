@@ -9,22 +9,22 @@
 * Memory: 32 GB GDDR7, 512-bit bus.
 * PCIe: Gen 5.
 
-Existing `pearl-gemm` already builds a `blackwell` target for `sm_120a`, but the consumer lane still uses the SM80 `mma.sync m16n8k32` int8 atom. That atom runs correctly on `sm_120`, yet it does not use the 5th-gen Tensor Core ISA. The biggest potential gain is replacing it with a native Blackwell MMA atom (`tcgen05.mma`) or a CUTLASS 4 Blackwell GEMM.
+Production `blackwell` builds target `sm_120a` with **GeForce v2** as the default kernel (`PEARL_GEMM_KERNEL=geforce_v2`): warp-specialized TMA producer + SM80 `mma.sync m16n8k32` int8 IMMA consumers. Proof-canonical int8 transcript is unchanged.
+
+**GeForce Blackwell constraints (GB202):**
+* Per-block shared memory opt-in max: **99 KiB** (not 164 KiB datacenter).
+* **No TMEM / tcgen05** on consumer RTX — `tcgen05.mma` ptxas-fails on `sm_120a` (see `phase0_tcgen05_sm120_probe.cu`).
+* Do not deploy `sm_100a` cubins on RTX 5090.
 
 ## 2. Kernel instruction strategy
 
-| ISA | Atom | Status |
-|-----|------|--------|
-| SM80 `mma.sync` | `SM80_16x8x32_S32S8S8S32_TN` | Current consumer kernel; works on `sm_120`, not optimal. |
-| SM100 `tcgen05` | `tcgen05.mma` cluster fragments | Used in B200 datacenter path (`sm_100a`), not for consumer RTX. |
-| Native `sm_120` | CUTLASS Blackwell MMA / inline PTX | **Desired**; needs implementation and hardware testing. |
+| Path | Atom / load | Status |
+|------|-------------|--------|
+| **GeForce v2 (default)** | TMA + `SM80_16x8x32_S32S8S8S32_TN` (`mma.sync`) | Production on `sm_120a`; validate via `scripts/verify_geforce_transcript.sh`. |
+| Consumer fallback | `cp.async` + same SM80 int8 atom | `PEARL_GEMM_KERNEL=consumer`. |
+| B200 datacenter | `tcgen05.mma` + TMEM | `sm_100a` only — **invalid on RTX 5090**. |
 
-Because `sm_120` consumer ISA documentation is limited, the pragmatic path is:
-1. Compile for `sm_120a` with the existing SM80 atom (already done).
-2. Add a `PEARL_GEMM_RTX5090` build profile that compiles an experimental `tcgen05` kernel guarded behind runtime dispatch.
-3. Benchmark both and keep the winner.
-
-Do not attempt to use `sm_100a` binaries on an RTX 5090 — they will not run.
+Further gains are from TMA pipeline depth, occupancy knobs, and grouped GEMM — not from switching to tcgen05 or FP4 dtypes (breaks proof).
 
 ## 3. Memory & streaming architecture
 
@@ -75,20 +75,21 @@ Validate every overclock by running the built-in share-verification self-test; a
 
 Target: occupy all 170 SMs with 1-2 CTAs each.
 
-Recommended default matrix shape for RTX 5090:
-* `M = 8192`, `N = 32768`, `K = 128`
-* Consumer tile `BM=128, BN=256, BK=128`
-* Grid tiles = `(8192/128) * (32768/256) = 64 * 128 = 8192`
-* Total CTAs >> 170 * 2, ensuring persistent occupancy.
-* Batch size: 16-24 matmuls per poll.
-* Streams: 2 ping/pong streams per GPU.
+Recommended production matrix shape for RTX 5090:
+* `M = 8192`, `N = 262144` (VRAM pick via `pick_n_for_vram`), `K = 128` (local) or `K = 4096` (stratum pool)
+* Tile `BM=128, BN=256, BK=64` (CMake `KBLOCK=64`, `STAGES=2`)
+* Grid tiles = `(8192/128) * (262144/256) = 64 * 1024 = 65536` CTAs
+* Default `PROPMINER_BATCH=1`, `PROPMINER_GRAPH_BATCH=1` (stability); grouped GEMM activates at `batch >= 4`
+* Streams: ping/pong (+ optional third half-buffer) + `seed_copy_stream_`
 
-This config fits in ~12-14 GB of VRAM, leaving headroom for noise buffers and Merkle trees.
+VRAM at N=262144 is ~22–28 GiB with resident B; triple-buffer needs headroom check.
 
 ## 7. Implementation checklist
 
-- [x] Add `PEARL_GEMM_RTX5090` build profile (`sm_120` + experimental `tcgen05` kernel scaffold).
-- [x] Implement native `sm_120` Blackwell MMA kernel behind compile-time dispatch (`transcript_gemm_sm120.cu`).
+- [x] GeForce v2 kernel default for blackwell (`transcript_gemm_sm120_geforce_v2.cu`, TMA + mma.sync).
+- [x] Consumer / sm120 fallback (`transcript_gemm_sm120.cu`, `PEARL_GEMM_KERNEL=consumer`).
+- [x] Headless two-kernel path (GEMM transcript → `transcript_finalize_kernel`).
+- [x] Triple half-buffer (`PROPMINER_TRIPLE_BUFFER`, default ON when VRAM allows).
 - [x] Add pinned double-buffer B upload (`AsyncBStream`).
 - [x] Add context-reset watchdog thread (`Watchdog`).
 - [x] Add hardcoded `Rtx5090Profile` constants (170 SMs, 128x256x128 tile, M=8192,N=32768).

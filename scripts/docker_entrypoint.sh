@@ -11,6 +11,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Salad/WSL2: libcudart lives off default loader path — set before any propminer exec.
 source "${ROOT}/scripts/setup_cuda_env.sh"
 setup_cuda_runtime_env
+
+# GPU clock lock (all modes; mine mode also applies this in run_mining.sh).
+if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi -pm 1 2>/dev/null || true
+    GPU_GRAPHICS_CLOCK="${PROPMINER_GPU_GRAPHICS_CLOCK:-2107}"
+    GPU_MEMORY_CLOCK="${PROPMINER_GPU_MEMORY_CLOCK:-1312}"
+    nvidia-smi -i 0 -lgc "${GPU_GRAPHICS_CLOCK},${GPU_MEMORY_CLOCK}" 2>/dev/null || true
+    nvidia-smi -i 0 -pl "${PROPMINER_GPU_POWER_LIMIT_W:-575}" 2>/dev/null || true
+fi
 if [[ "${PROPMINER_USE_RELEASE:-0}" == "1" ]]; then
     source "${ROOT}/scripts/download_release.sh"
     ok=0
