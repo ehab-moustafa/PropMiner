@@ -73,7 +73,7 @@ static int run_self_test() {
     const bool prod_mode = prod_env && prod_env[0] == '1';
 
     MiningConfig cfg = prod_mode
-                           ? rtx5090_mining_config(0, resolve_n_cap())
+                           ? stratum_pool_mining_config(0, resolve_n_cap())
                            : MiningConfig{};
     if (!prod_mode) {
         cfg.m = 2048;
@@ -95,7 +95,7 @@ static int run_self_test() {
     GpuWorker worker(0, 0, cfg, &sink);
     worker.set_sigma(ctx);
     worker.set_target_nbits(job.target_nbits);
-    int self_test_batch = prod_mode ? 8 : 8;
+    int self_test_batch = prod_mode ? 1 : 8;
     if (const char* batch_env = std::getenv("PROPMINER_BATCH")) {
         self_test_batch = std::atoi(batch_env);
         if (self_test_batch < 1) self_test_batch = 1;
