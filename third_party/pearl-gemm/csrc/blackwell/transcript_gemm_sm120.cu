@@ -79,12 +79,11 @@ inline void launch_transcript_gemm_sm120(
     HostSignalSync* host_signal_sync,
     HostSignalHeader* host_signal_header,
     cudaStream_t stream) {
-  (void)transcript;
   // Delegate to the canonical consumer launcher (cluster attrs, TMA descriptors,
   // dynamic smem carveout).  CAPI uses consumer:: directly; this wrapper exists
   // for optional blackwell:: dispatch only.
   (void)consumer::launch_transcript_gemm_headless(
-      A, B, C, M, N, K, R, 1, pow_target, pow_key,
+      A, B, C, transcript, M, N, K, R, 1, pow_target, pow_key,
       host_signal_sync, host_signal_header, stream);
 }
 
