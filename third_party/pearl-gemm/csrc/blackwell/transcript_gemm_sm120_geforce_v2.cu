@@ -362,7 +362,11 @@ static cudaError_t ensure_v2_device_tma_pool(int dev) {
   if (g_v2_dev_tma.d_tma_b) cudaFree(g_v2_dev_tma.d_tma_b);
   if (g_v2_dev_tma.h_tma_a) cudaFreeHost(g_v2_dev_tma.h_tma_a);
   if (g_v2_dev_tma.h_tma_b) cudaFreeHost(g_v2_dev_tma.h_tma_b);
-  g_v2_dev_tma = V2DeviceTmaPool{};
+  g_v2_dev_tma.device = -1;
+  g_v2_dev_tma.d_tma_a = nullptr;
+  g_v2_dev_tma.d_tma_b = nullptr;
+  g_v2_dev_tma.h_tma_a = nullptr;
+  g_v2_dev_tma.h_tma_b = nullptr;
   g_v2_dev_tma.device = dev;
   cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&g_v2_dev_tma.d_tma_a),
                                sizeof(ConsumerTmaA));
