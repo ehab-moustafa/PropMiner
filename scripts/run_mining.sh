@@ -145,7 +145,7 @@ echo "[mine] GPU info:" | propminer_log
 export PROPMINER_STRATUM_POOL="${PROPMINER_STRATUM_POOL:-prl.kryptex.network:7048,prl-eu.kryptex.network:7048}"
 echo "[mine] mode=production stratum=${PROPMINER_STRATUM_POOL} gpus=${PROPMINER_GPUS:-all}" | propminer_log
 echo "[mine] wallet=${WALLET} worker=${WORKER:-<from-wallet-or-default>}" | propminer_log
-echo "[mine] profile: --rtx5090 aggressive prod (N=max VRAM, cluster_m=${PEARL_GEMM_CONSUMER_CLUSTER_M})" \
+echo "[mine] profile: --rtx5090 aggressive prod (N=max VRAM, cluster_m=${PEARL_GEMM_CONSUMER_CLUSTER_M:-1})" \
     | propminer_log
 echo "[mine] PROPMINER_USE_TUNE_CACHE=${PROPMINER_USE_TUNE_CACHE} (autotune.json overrides cluster/carveout)" \
     | propminer_log

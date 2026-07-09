@@ -965,9 +965,11 @@ PEARL_CAPI_EXPORT int pearl_capi_workspace_alloc(int32_t m, int32_t n,
         ? std::max(scratch_bytes_for_matmul_i32(n, k),
                    scratch_bytes_for_matmul_i32(n, r))
         : 0;
+    // Miner workspace holds one transcript batch (batch=1).  Do not pass r
+    // (noise rank, 128) — that oversizes the pool ~128× and OOMs at prod N.
     ws->transcript_bytes = with_noise_A
         ? sizeof(uint32_t) *
-          static_cast<size_t>(pearl::portable::transcript_buffer_elems(m, n, r))
+          static_cast<size_t>(pearl::portable::transcript_buffer_elems(m, n, 1))
         : 0;
 #else
     // H100 / CUTLASS path doesn't use these helpers — workspace is a no-op
