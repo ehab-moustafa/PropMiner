@@ -39,13 +39,14 @@ inline bool async_job_install_enabled() {
     return !(env && env[0] == '0');
 }
 
-// Triple half-buffer (PROPMINER_TRIPLE_BUFFER, default OFF): add a third
+// Triple half-buffer (PROPMINER_TRIPLE_BUFFER, default ON): add a third
 // compute workspace so share reconstruction on one half never blocks GEMM on
 // the other two. Requires PROPMINER_DEFER_SHARE_GPU (default ON). A VRAM
 // headroom check at GpuWorker construction auto-disables when tight.
-// PROPMINER_TRIPLE_BUFFER=1 to enable.
+// PROPMINER_TRIPLE_BUFFER=0 to disable.
 inline bool triple_buffer_enabled() {
-    return env_truthy("PROPMINER_TRIPLE_BUFFER");
+    const char* env = std::getenv("PROPMINER_TRIPLE_BUFFER");
+    return !(env && env[0] == '0');
 }
 
 // Async seed conveyor (default ON): upload the next graph sub-batch's seed on

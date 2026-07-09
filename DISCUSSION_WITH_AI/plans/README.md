@@ -23,6 +23,7 @@ Each plan follows the same structure:
 
 | # | Folder | Impact | Effort | Priority |
 |---|--------|--------|--------|----------|
+| 00 | [comprehensive-integration](./00-comprehensive-integration/PLAN.md) | **Full roadmap** 290→700–800+ TMAD/s | 14–25 weeks | **Master plan** — phased integration of all findings |
 | 01 | [geforce-kernel-v2](./01-geforce-kernel-v2/PLAN.md) | **+10–25%** (on top of v1) | 4–6 weeks | **P0/P1** — Phase 1 landed, gates pending |
 | 02 | [ptr-array-grouped-gemm](./02-ptr-array-grouped-gemm/PLAN.md) | **+10–20%** if batch≥4; **0%** at batch=1 | 4–6 weeks | P1 (needs batch strategy) |
 | 03 | [stream-split-pregemm](./03-stream-split-pregemm/PLAN.md) | **+1–5%** | 2–3 weeks | P2 |

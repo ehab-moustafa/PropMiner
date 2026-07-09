@@ -123,7 +123,7 @@ Triple-buffer is a **software + VRAM** change, not new silicon.
 1. **Do not prioritize ahead of kernel work** (GeForce warp-specialized path, tile-knob tuning) — those deliver 10–25% each.
 2. **Instrument** `wait_until_half_free` duration on production rigs for 24–48 h.
 3. **Implement triple-buffer** only if p95 stall time > 5 ms or measurable TMAD dip correlates with share events.
-4. Ship behind `PROPMINER_TRIPLE_BUFFER=1` with VRAM guard defaulting OFF when N=262144 and free VRAM < 6 GiB headroom.
+4. Ship with `PROPMINER_TRIPLE_BUFFER` ON by default. VRAM guard auto-disables when N=262144 and free VRAM < 6 GiB headroom.
 
 ---
 

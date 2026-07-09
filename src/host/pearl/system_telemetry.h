@@ -26,7 +26,9 @@ struct SystemSnapshot {
 class SystemTelemetry {
 public:
     // Sample CPU/RAM every call; GPU via nvidia-smi at most once per interval_ms.
-    SystemSnapshot sample(int gpu_index = 0, int interval_ms = 4000);
+    // Default 30s cache: GPU stats (temp, power, clocks) change slowly;
+    // 4s was overkill and caused unnecessary popen() overhead.
+    SystemSnapshot sample(int gpu_index = 0, int interval_ms = 30000);
 
 private:
     bool read_cpu_util(int& out_pct);

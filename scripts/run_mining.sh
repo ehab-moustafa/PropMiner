@@ -121,6 +121,21 @@ date | propminer_log
 setup_cuda_runtime_env
 ensure_nvidia_smi || true
 
+# --- GPU clock lock & OS tuning (RTX 5090 production defaults) ---
+# Lock power management to P0 (maximum performance)
+nvidia-smi -pm 1 2>/dev/null || true
+# Lock GPU clocks to maximum (graphics + memory). Override via env if needed.
+GPU_GRAPHICS_CLOCK="${PROPMINER_GPU_GRAPHICS_CLOCK:-2107}"
+GPU_MEMORY_CLOCK="${PROPMINER_GPU_MEMORY_CLOCK:-1312}"
+nvidia-smi -i 0 -lgc "${GPU_GRAPHICS_CLOCK},${GPU_MEMORY_CLOCK}" 2>/dev/null || true
+# Set power limit to max (575W for RTX 5090). Override via env if needed.
+nvidia-smi -i 0 -pl "${PROPMINER_GPU_POWER_LIMIT_W:-575}" 2>/dev/null || true
+# Disable transparent huge pages (prevents latency spikes from THP allocation)
+if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
+    echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+fi
+# --- End GPU clock lock & OS tuning ---
+
 if ! ensure_binaries "${BUILD_DIR}"; then
     exit 1
 fi

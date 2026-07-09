@@ -29,7 +29,7 @@ struct Rtx5090Profile {
 
     // Compile-time fallback shape (runtime may pick a larger N from VRAM).
     static constexpr int kDefaultM = 8192;
-    static constexpr int kDefaultN = 32768;
+    static constexpr int kDefaultN = 262144;
     static constexpr int kDefaultK = 128;
     static constexpr int kDefaultR = 128;
 

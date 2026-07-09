@@ -1292,7 +1292,7 @@ int WorkerOrchestrator::run() {
         if (metrics.tmad_per_sec > 0.0 || metrics.protocol_hps > 0.0) {
             const int primary_gpu =
                 indices.empty() ? 0 : indices.front();
-            SystemSnapshot sys = sys_telemetry.sample(primary_gpu, 4000);
+            SystemSnapshot sys = sys_telemetry.sample(primary_gpu);
 
             // Thermal pause (PeakMiner/BzMiner-style): pause GPU workers when hot,
             // resume when cooled — without tearing down CUDA context.

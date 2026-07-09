@@ -7,7 +7,7 @@
  *   Per nonce: LCG noise → INT8 GEMM (mma.sync) → XOR reduction → BLAKE3 → target check.
  *
  * Register optimization:
- *   - __launch_bounds__(256, 3) forces ≤64 registers/thread for 3 blocks/SM
+ *   - __launch_bounds__(256, 5) forces ≤64 registers/thread for 5 blocks/SM
  *   - BLAKE3 state uses named registers (s0..s15), NOT arrays
  *   - PTX inline assembly for rotates and 3-input XOR
  *
@@ -75,15 +75,15 @@ __device__ __forceinline__ int pack_4int8_to_int32(int8_t a, int8_t b, int8_t c,
 
 /* ── Main PERSISTENT KERNEL ──────────────────────────────────────────
  *
- * __launch_bounds__(256, 3): max 256 threads/block, min 3 blocks/SM
+ * __launch_bounds__(256, 5): max 256 threads/block, min 5 blocks/SM
  * This forces the compiler to use ≤64 registers/thread, enabling
- * 3 thread blocks per SM for maximum occupancy.
+ * 5 thread blocks per SM for higher occupancy (~83% vs 50%).
  *
  * Each block processes work items from the shared queue in a loop.
  * Kernel runs until *shutdown_flag is set by the host.
  */
 
-__global__ void __launch_bounds__(PM_BLOCK_X, 3)
+__global__ void __launch_bounds__(PM_BLOCK_X, 5)
 propminer_persistent_kernel(
     WorkQueue*      queue,
     ResultBuffer*   result_buffer,
