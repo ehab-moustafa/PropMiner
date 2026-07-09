@@ -1500,7 +1500,11 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
     (void)p->EBR; (void)p->EBR_fp16; (void)p->EARxBpEB_fp16;
     (void)p->EAR_K_major; (void)p->EBL_R_major; (void)p->EAL_fp16;
     return 0;
-#endif
+#else
+    // Non-PORTABLE fallback: noisy_gemm via PearlAPIParams.
+    // Wrapped in braces to create a local C++ scope — avoids duplicate
+    // variable declarations (ws, m, n, k, r) with the PORTABLE block above.
+    {
     auto* ws = static_cast<PearlCapiWorkspace*>(p->workspace);
     int device = ws ? ws->device_id : current_device_or(0);
     cudaDeviceProp* dprops = get_dprops_locked(device);
@@ -1619,6 +1623,7 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
       }
     }
     if (!matmul_found) return -9;
+    }  // end non-PORTABLE scope
 #endif  // PEARL_GEMM_PORTABLE
   } catch (const std::exception& e) {
     fprintf(stderr, "[pearl-gemm] exception in %s: %s\n", __func__, e.what());
