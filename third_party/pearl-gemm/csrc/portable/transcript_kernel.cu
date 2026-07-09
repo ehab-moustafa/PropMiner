@@ -140,6 +140,11 @@ __global__ void transcript_snapshot_kernel(
 //   shf.l.wrap.b32 d, x, x, n  =>  d = (x << n) | (x >> (32-n)) = rotl(x, n)
 // which is semantically identical to rightrotate32(x, n) = (x << (32-n)) | (x >> n).
 CUTLASS_DEVICE
+uint32_t add32(uint32_t x, uint32_t y) {
+  return x + y;
+}
+
+CUTLASS_DEVICE
 uint32_t ptx_rightrotate32(uint32_t x, unsigned int n) {
   uint32_t r;
   asm("shf.l.wrap.b32 %0, %1, %1, %2;" : "=r"(r) : "r"(x), "r"(n));
@@ -253,7 +258,7 @@ __global__ void transcript_finalize_kernel(
   uint128_t tmp[4];
   CUTLASS_PRAGMA_UNROLL
   for (int i = 0; i < 4; ++i) {
-    tmp[i] = transcript[tx_idx + i * 4];
+    tmp[i] = cutlass::uint128_t(uint64_t(transcript[tx_idx + i * 4]));
   }
 
   Tensor transcript_rmem = make_tensor<uint32_t>(
