@@ -457,6 +457,8 @@ void destroy_iter_graph(PearlCapiWorkspace* ws) {
 bool pearl_gemm_debug_enabled();  // defined below
 
 #if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+static bool use_geforce_v2_kernel();  // defined below
+
 static int prepare_v2_tma_before_graph_capture(const PearlCapiWorkspaceParams& p,
                                                cudaStream_t stream) {
   if (!use_geforce_v2_kernel()) return 0;
