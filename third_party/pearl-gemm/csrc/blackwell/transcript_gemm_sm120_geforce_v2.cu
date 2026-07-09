@@ -514,13 +514,17 @@ static cudaError_t launch_v2_impl(int8_t const* A, int8_t const* B,
   ConsumerTmaB const* d_tma_b = nullptr;
   if (tma_a_group == nullptr) {
     if (in_graph_capture) {
-      // Descriptors must be pre-uploaded via prepare_geforce_v2_tma_for_graph().
+      // Descriptors pre-uploaded via prepare_geforce_v2_tma_for_graph().
+      // Must pass valid __grid_constant__ bytes (not zeros) — graph freezes them.
       std::lock_guard<std::mutex> lock(g_v2_dev_tma.mu);
       d_tma_a = g_v2_dev_tma.d_tma_a;
       d_tma_b = g_v2_dev_tma.d_tma_b;
-      if (d_tma_a == nullptr || d_tma_b == nullptr) {
+      if (d_tma_a == nullptr || d_tma_b == nullptr ||
+          g_v2_dev_tma.h_tma_a == nullptr || g_v2_dev_tma.h_tma_b == nullptr) {
         return cudaErrorInvalidConfiguration;
       }
+      tma_a = *g_v2_dev_tma.h_tma_a;
+      tma_b = *g_v2_dev_tma.h_tma_b;
     } else {
       get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
       err = upload_v2_tma_to_device(A, B, (int)M, (int)N, (int)K, &d_tma_a,

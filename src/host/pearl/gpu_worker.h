@@ -154,6 +154,7 @@ private:
     // CUDA graph. Assumes ctx.install() has already populated ctx.resident().
     void bind_sigma_to_half(SigmaContext& ctx, HalfBuffers& half);
     void prepare_graph(HalfBuffers& half);
+    void capture_graphs_for_halves();
     void queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count);
 
     // Upload the seed for the next batch on the dedicated copy stream while

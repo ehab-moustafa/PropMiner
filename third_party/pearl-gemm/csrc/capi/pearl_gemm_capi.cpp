@@ -474,11 +474,9 @@ static int prepare_v2_tma_before_graph_capture(const PearlCapiWorkspaceParams& p
   }
   err = cudaStreamSynchronize(stream);
   if (err != cudaSuccess) return -65;
-  if (pearl_gemm_debug_enabled()) {
-    fprintf(stderr,
-            "[pearl-gemm] v2 TMA pre-upload OK (ApEA/BpEB M=%d N=%d K=%d)\n",
-            p.m, p.n, p.k);
-  }
+  fprintf(stderr,
+          "[pearl-gemm] v2 TMA pre-upload OK (ApEA/BpEB M=%d N=%d K=%d)\n",
+          p.m, p.n, p.k);
   return 0;
 }
 #else
@@ -543,6 +541,10 @@ static int validate_iter_graph_replay(PearlCapiWorkspace* ws,
   }
   if (pearl_gemm_debug_enabled()) {
     fprintf(stderr, "[pearl-gemm] graph validation: replay OK\n");
+  } else {
+    fprintf(stderr, "[pearl-gemm] graph validation: replay OK kernel=%s\n",
+            pearl_capi_active_kernel_name() ? pearl_capi_active_kernel_name()
+                                            : "?");
   }
   return 0;
 }
@@ -2062,6 +2064,13 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
 
   ws->graph_batch_count = count;
   {
+    int trc = prepare_v2_tma_before_graph_capture(p, stream);
+    if (trc != 0) {
+      destroy_iter_graph(ws);
+      return trc;
+    }
+  }
+  {
     int vrc = validate_iter_graph_replay(ws, stream);
     if (vrc != 0) {
       destroy_iter_graph(ws);
@@ -2287,6 +2296,14 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
   }
 
   ws->graph_batch_count = count;
+  {
+    int trc = prepare_v2_tma_before_graph_capture(p, stream);
+    if (trc != 0) {
+      destroy_iter_graph(ws);
+      ws->graph_seed_lo_dev = nullptr;
+      return trc;
+    }
+  }
   {
     int vrc = validate_iter_graph_replay(ws, stream);
     if (vrc != 0) {

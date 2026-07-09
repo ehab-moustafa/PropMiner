@@ -892,26 +892,38 @@ void GpuWorker::bind_sigma_to_half(SigmaContext& ctx, HalfBuffers& half) {
         }
     }
 
-    // Re-capture graph whenever batch size changes.  Capturing on a fresh stream
-    // state is safest.
     half.graph_ready = false;
     half.graph_batch_count = 0;
-    try {
-        prepare_graph(half);
-    } catch (const std::exception& ex) {
-        std::fprintf(stderr,
-            "[gpu] cuda graph unavailable gpu=%d: %s (using iter_batch)\n",
-            device_index_, ex.what());
-        std::fprintf(stderr,
-            "[gpu] debug: run ./scripts/debug_geforce_v2.sh or set "
-            "PEARL_GEMM_DEBUG=1 and retry sigma install\n");
+}
+
+void GpuWorker::capture_graphs_for_halves() {
+    bool gpu_poisoned = false;
+    auto try_capture = [&](HalfBuffers& half) {
         half.graph_ready = false;
         half.graph_batch_count = 0;
-        // Drain async errors from failed graph validation so iter_batch can run.
-        if (half.stream) {
-            cuStreamSynchronize(half.stream);
+        if (bench_no_graph_enabled() || gpu_poisoned) return;
+        try {
+            prepare_graph(half);
+        } catch (const std::exception& ex) {
+            std::fprintf(stderr,
+                "[gpu] cuda graph unavailable gpu=%d: %s (using iter_batch)\n",
+                device_index_, ex.what());
+            std::fprintf(stderr,
+                "[gpu] debug: run ./scripts/debug_geforce_v2.sh or set "
+                "PEARL_GEMM_DEBUG=1 and retry sigma install\n");
+            half.graph_ready = false;
+            half.graph_batch_count = 0;
+            gpu_poisoned = true;
+            if (half.stream) {
+                cuStreamSynchronize(half.stream);
+            }
+            cudaGetLastError();
         }
-        cudaGetLastError();
+    };
+    try_capture(ping_);
+    try_capture(pong_);
+    if (triple_buffer_active_) {
+        try_capture(third_);
     }
 }
 
@@ -1506,6 +1518,7 @@ void GpuWorker::run() {
             if (triple_buffer_active_) {
                 install_sigma(*current_sigma, third_);
             }
+            capture_graphs_for_halves();
             target_dirty_.store(false);
             first = true;
         } else if (async_install) {
@@ -1532,6 +1545,7 @@ void GpuWorker::run() {
                     if (triple_buffer_active_) {
                         bind_sigma_to_half(*current_sigma, third_);
                     }
+                    capture_graphs_for_halves();
                     target_dirty_.store(false);
                     first = true;
                     share_trace("async-install-swap",
