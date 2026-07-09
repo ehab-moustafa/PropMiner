@@ -454,6 +454,8 @@ void destroy_iter_graph(PearlCapiWorkspace* ws) {
   ws->graph_batch_count = 0;
 }
 
+bool pearl_gemm_debug_enabled();  // defined below
+
 // Replay captured graph once before marking ready. Surfaces async kernel errors
 // (e.g. GeForce v2 + CUDA graph illegal access) at σ-install, not first batch.
 static void print_graph_validation_diagnosis(int rc, const PearlCapiWorkspace* ws,
