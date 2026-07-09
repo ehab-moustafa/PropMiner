@@ -1500,75 +1500,7 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
     (void)p->EBR; (void)p->EBR_fp16; (void)p->EARxBpEB_fp16;
     (void)p->EAR_K_major; (void)p->EBL_R_major; (void)p->EAL_fp16;
     return 0;
-#else
-
-    // Portable/B200 fallback still uses the transcript spill + finalize path.
-    // The portable kernel writes every slot unconditionally. B200's SM100
-    // kernel combines snapshots with atomicXor, so the buffer must be zeroed.
-    const int64_t transcript_elems =
-        pearl::portable::transcript_buffer_elems(m, n, batch);
-
-    uint32_t* portable_transcript = nullptr;
-    bool portable_tr_owned = false;
-    size_t portable_tr_bytes = sizeof(uint32_t) * (size_t)transcript_elems;
-    if (ws && ws->transcript_bytes >= portable_tr_bytes &&
-        ws->transcript_ptr() != nullptr) {
-      portable_transcript = static_cast<uint32_t*>(ws->transcript_ptr());
-    } else {
-      if (cudaMallocAsync(reinterpret_cast<void**>(&portable_transcript),
-                          portable_tr_bytes, stream) != cudaSuccess) {
-        return -32;
-      }
-      portable_tr_owned = true;
-    }
-
-#ifdef PEARL_GEMM_B200
-    if (cudaMemsetAsync(portable_transcript, 0, portable_tr_bytes, stream) != cudaSuccess) {
-      if (portable_tr_owned) cudaFreeAsync(portable_transcript, stream);
-      return -33;
-    }
-    cudaError_t transcript_err = pearl::portable::launch_transcript_gemm_sm100(
-        static_cast<const int8_t*>(p->ApEA),
-        static_cast<const int8_t*>(p->BpEB),
-        portable_transcript,
-        m, n, k, r, batch, stream);
-#else
-#if defined(PEARL_GEMM_BLACKWELL)
-    cudaError_t transcript_err = pearl::consumer::launch_transcript_gemm(
-#else
-    cudaError_t transcript_err = pearl::portable::launch_transcript_gemm(
 #endif
-        static_cast<const int8_t*>(p->ApEA),
-        static_cast<const int8_t*>(p->BpEB),
-        /*C=*/nullptr, portable_transcript,
-        m, n, k, r, batch, stream);
-#endif
-    if (transcript_err != cudaSuccess) {
-      if (portable_tr_owned) cudaFreeAsync(portable_transcript, stream);
-      return transcript_launch_rc(transcript_err);
-    }
-
-    pearl::portable::launch_transcript_finalize(
-        portable_transcript, m, n, batch,
-        static_cast<const uint32_t*>(p->pow_target),
-        static_cast<const uint32_t*>(p->pow_key),
-        static_cast<HostSignalSync*>(p->host_signal_sync),
-        static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
-        m, n, k, r, stream);
-    cudaError_t portable_finalize_err = cudaGetLastError();
-    if (portable_finalize_err != cudaSuccess) {
-      if (portable_tr_owned) cudaFreeAsync(portable_transcript, stream);
-      return transcript_finalize_rc(portable_finalize_err);
-    }
-
-    if (portable_tr_owned) cudaFreeAsync(portable_transcript, stream);
-
-    // skip_c_store == true → no bf16 epilogue needed (pure-miner default).
-    (void)p->C; (void)p->A_scales; (void)p->B_scales;
-    (void)p->EBR; (void)p->EBR_fp16; (void)p->EARxBpEB_fp16;
-    (void)p->EAR_K_major; (void)p->EBL_R_major; (void)p->EAL_fp16;
-    return 0;
-#else
     auto* ws = static_cast<PearlCapiWorkspace*>(p->workspace);
     int device = ws ? ws->device_id : current_device_or(0);
     cudaDeviceProp* dprops = get_dprops_locked(device);
