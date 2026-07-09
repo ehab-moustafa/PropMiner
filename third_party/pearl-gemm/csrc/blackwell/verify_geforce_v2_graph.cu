@@ -64,7 +64,20 @@ int test_graph_replay(const char* kernel_name, LaunchFn launch, ShapeSpec shape,
 
   cudaGraph_t graph = nullptr;
   cudaGraphExec_t graph_exec = nullptr;
-  cudaError_t err = cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
+  cudaError_t err = cudaSuccess;
+  // GeForce v2: pre-upload TMA before capture (same as production graph_prepare).
+  if (launch == launch_v2) {
+    err = pearl::blackwell::prepare_geforce_v2_tma_for_graph(
+        dA, dB, shape.M, shape.N, shape.K, stream);
+    if (err != cudaSuccess) {
+      std::printf("  [%s %s] TMA pre-upload failed: %s\n", kernel_name,
+                  shape.label, cudaGetErrorString(err));
+      return 1;
+    }
+    cudaStreamSynchronize(stream);
+  }
+
+  err = cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
   if (err != cudaSuccess) {
     std::printf("  [%s %s] begin capture failed: %s\n", kernel_name, shape.label,
                 cudaGetErrorString(err));

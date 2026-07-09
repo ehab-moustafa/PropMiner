@@ -504,16 +504,31 @@ static cudaError_t launch_v2_impl(int8_t const* A, int8_t const* B,
   cudaError_t err = ensure_geforce_v2_kernel_attrs(smem_bytes);
   if (err != cudaSuccess) return err;
 
-  ConsumerTmaA tma_a;
-  ConsumerTmaB tma_b;
-  get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
+  ConsumerTmaA tma_a{};
+  ConsumerTmaB tma_b{};
+  cudaStreamCaptureStatus cap_status = cudaStreamCaptureStatusNone;
+  (void)cudaStreamIsCapturing(stream, &cap_status);
+  const bool in_graph_capture = (cap_status == cudaStreamCaptureStatusActive);
 
   ConsumerTmaA const* d_tma_a = nullptr;
   ConsumerTmaB const* d_tma_b = nullptr;
   if (tma_a_group == nullptr) {
-    err = upload_v2_tma_to_device(A, B, (int)M, (int)N, (int)K, &d_tma_a,
-                                  &d_tma_b, stream);
-    if (err != cudaSuccess) return err;
+    if (in_graph_capture) {
+      // Descriptors must be pre-uploaded via prepare_geforce_v2_tma_for_graph().
+      std::lock_guard<std::mutex> lock(g_v2_dev_tma.mu);
+      d_tma_a = g_v2_dev_tma.d_tma_a;
+      d_tma_b = g_v2_dev_tma.d_tma_b;
+      if (d_tma_a == nullptr || d_tma_b == nullptr) {
+        return cudaErrorInvalidConfiguration;
+      }
+    } else {
+      get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
+      err = upload_v2_tma_to_device(A, B, (int)M, (int)N, (int)K, &d_tma_a,
+                                      &d_tma_b, stream);
+      if (err != cudaSuccess) return err;
+    }
+  } else {
+    get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
   }
 
   transcript_gemm_sm120_geforce_v2_kernel<<<grid, block, smem_bytes, stream>>>(
@@ -588,6 +603,14 @@ cudaError_t launch_transcript_gemm_sm120_geforce_v2_headless_grouped(
 
 cudaError_t warmup_transcript_gemm_sm120_geforce_v2_attrs() {
   return ensure_geforce_v2_kernel_attrs(sizeof(SharedStorage));
+}
+
+cudaError_t prepare_geforce_v2_tma_for_graph(int8_t const* A, int8_t const* B,
+                                             int M, int N, int K,
+                                             cudaStream_t stream) {
+  ConsumerTmaA const* d_a = nullptr;
+  ConsumerTmaB const* d_b = nullptr;
+  return upload_v2_tma_to_device(A, B, M, N, K, &d_a, &d_b, stream);
 }
 
 }  // namespace blackwell

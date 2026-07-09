@@ -907,6 +907,11 @@ void GpuWorker::bind_sigma_to_half(SigmaContext& ctx, HalfBuffers& half) {
             "PEARL_GEMM_DEBUG=1 and retry sigma install\n");
         half.graph_ready = false;
         half.graph_batch_count = 0;
+        // Drain async errors from failed graph validation so iter_batch can run.
+        if (half.stream) {
+            cuStreamSynchronize(half.stream);
+        }
+        cudaGetLastError();
     }
 }
 

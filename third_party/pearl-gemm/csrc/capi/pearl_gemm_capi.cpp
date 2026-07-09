@@ -456,6 +456,36 @@ void destroy_iter_graph(PearlCapiWorkspace* ws) {
 
 bool pearl_gemm_debug_enabled();  // defined below
 
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+static int prepare_v2_tma_before_graph_capture(const PearlCapiWorkspaceParams& p,
+                                               cudaStream_t stream) {
+  if (!use_geforce_v2_kernel()) return 0;
+  cudaError_t err = ::pearl::blackwell::prepare_geforce_v2_tma_for_graph(
+      static_cast<const int8_t*>(p.ApEA),
+      static_cast<const int8_t*>(p.BpEB),
+      p.m, p.n, p.k, stream);
+  if (err != cudaSuccess) {
+    fprintf(stderr,
+            "[pearl-gemm] prepare_geforce_v2_tma_for_graph failed: %s\n",
+            cudaGetErrorString(err));
+    return -64;
+  }
+  err = cudaStreamSynchronize(stream);
+  if (err != cudaSuccess) return -65;
+  if (pearl_gemm_debug_enabled()) {
+    fprintf(stderr,
+            "[pearl-gemm] v2 TMA pre-upload OK (ApEA/BpEB M=%d N=%d K=%d)\n",
+            p.m, p.n, p.k);
+  }
+  return 0;
+}
+#else
+static int prepare_v2_tma_before_graph_capture(const PearlCapiWorkspaceParams&,
+                                               cudaStream_t) {
+  return 0;
+}
+#endif
+
 // Replay captured graph once before marking ready. Surfaces async kernel errors
 // (e.g. GeForce v2 + CUDA graph illegal access) at σ-install, not first batch.
 static void print_graph_validation_diagnosis(int rc, const PearlCapiWorkspace* ws,
@@ -479,14 +509,13 @@ static void print_graph_validation_diagnosis(int rc, const PearlCapiWorkspace* w
           "async kernel fault inside captured graph (not pool/wallet/sigma).\n");
   if (kernel && strcmp(kernel, "geforce_v2") == 0) {
     fprintf(stderr,
-            "[pearl-gemm] likely cause: GeForce v2 TMA + CUDA graph on sm_120 "
-            "(device-resident TMA descriptors required).\n");
+            "[pearl-gemm] likely cause: TMA descriptor H2D captured inside graph "
+            "or stale __grid_constant__ snapshot on sm_120.\n");
     fprintf(stderr,
             "[pearl-gemm] next steps:\n"
-            "  1) ./scripts/verify_geforce_graph.sh  (minimal repro)\n"
-            "  2) PEARL_GEMM_DEBUG=1 rebuild + retry (verbose capture path)\n"
-            "  3) PROPMINER_BENCH_NO_GRAPH=1  (workaround: v2 without graphs)\n"
-            "  4) PEARL_GEMM_KERNEL=consumer  (workaround: cp.async kernel)\n");
+            "  1) ensure build has pre-upload before capture (prepare_geforce_v2_tma)\n"
+            "  2) ./scripts/verify_geforce_graph.sh\n"
+            "  3) PEARL_GEMM_DEBUG=1 retry\n");
   } else {
     fprintf(stderr,
             "[pearl-gemm] next steps: PROPMINER_BENCH_NO_GRAPH=1 to isolate "
@@ -1903,6 +1932,14 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
     }
   }
 
+  {
+    int trc = prepare_v2_tma_before_graph_capture(p, stream);
+    if (trc != 0) {
+      destroy_iter_graph(ws);
+      return trc;
+    }
+  }
+
   bool capturing = false;
   auto abort_capture = [&]() {
     if (capturing) {
@@ -2021,6 +2058,7 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
     return -50;
   }
 
+  ws->graph_batch_count = count;
   {
     int vrc = validate_iter_graph_replay(ws, stream);
     if (vrc != 0) {
@@ -2029,7 +2067,6 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
     }
   }
 
-  ws->graph_batch_count = count;
   ws->graph_ready = true;
   return 0;
 }
@@ -2115,6 +2152,15 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
     if (wrc != 0) {
       destroy_iter_graph(ws);
       return wrc;
+    }
+  }
+
+  {
+    int trc = prepare_v2_tma_before_graph_capture(p, stream);
+    if (trc != 0) {
+      destroy_iter_graph(ws);
+      ws->graph_seed_lo_dev = nullptr;
+      return trc;
     }
   }
 
@@ -2238,6 +2284,7 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
     return -50;
   }
 
+  ws->graph_batch_count = count;
   {
     int vrc = validate_iter_graph_replay(ws, stream);
     if (vrc != 0) {
@@ -2247,7 +2294,6 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
     }
   }
 
-  ws->graph_batch_count = count;
   ws->graph_ready = true;
   return 0;
 }
