@@ -48,6 +48,19 @@ namespace {
             std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
+    // Driver-level illegal access poisons the device for every new CUDA context
+    // in the same container. Reset before exit so the supervisor restart can
+    // recover without a full instance reboot.
+    void reset_gpu_and_exit(int device_index, int code) {
+        std::fprintf(stderr,
+            "[gpu] resetting CUDA device %d before exit (rc=%d)\n",
+            device_index, code);
+        std::fflush(stderr);
+        cudaSetDevice(device_index);
+        cudaDeviceReset();
+        std::_Exit(code);
+    }
+
     // Hot-path batch wait: tight cudaEventQuery spin, then yield (no sleep).
     // Returns true when the batch completes. Returns false if `max_wait_ms` > 0
     // and the batch has not completed within that wall time — signalling a
@@ -940,7 +953,7 @@ void GpuWorker::capture_graphs_for_halves() {
             "[gpu] To mine now: set PROPMINER_BENCH_NO_GRAPH=1 and restart.\n"
             "[gpu] Diagnostic: ./scripts/verify_geforce_graph.sh\n",
             device_index_);
-        std::_Exit(96);
+        reset_gpu_and_exit(device_index_, 96);
     }
 }
 
@@ -1647,7 +1660,7 @@ void GpuWorker::run() {
                     device_index_, stall_ms,
                     aborted ? "; health-monitor abort" : "");
                 std::fflush(stderr);
-                std::_Exit(42);
+                reset_gpu_and_exit(device_index_, 42);
             }
             batch_abort_requested_.store(false);
 
@@ -1766,7 +1779,7 @@ void GpuWorker::run() {
                 device_index_, stall_ms,
                 aborted ? "; health-monitor abort" : "");
             std::fflush(stderr);
-            std::_Exit(42);
+            reset_gpu_and_exit(device_index_, 42);
         }
         batch_abort_requested_.store(false);
         const auto winners = scan_winners(*other, batch);

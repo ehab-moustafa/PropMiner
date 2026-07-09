@@ -181,6 +181,18 @@ fi
 
 # Production: keep container alive — retry on any exit (pool blips, Salad SIGTERM races).
 STALL_RESTART_DELAY="${PROPMINER_STALL_RESTART_DELAY_SEC:-3}"
+PROPMINER_STDERR_LOG="${PROPMINER_LOG_DIR}/propminer_stderr.log"
+
+gpu_reset_if_needed() {
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "[mine] attempting nvidia-smi --gpu-reset (illegal access / stall recovery)..." \
+        | propminer_log
+    nvidia-smi --gpu-reset -i 0 >/dev/null 2>&1 || true
+    sleep 2
+}
+
 while true; do
     maybe_auto_update_release
     run_mine_loop
@@ -189,8 +201,24 @@ while true; do
         echo "[mine] propminer exited cleanly (PROPMINER_ONCE=1); stopping." | propminer_log
         exit 0
     fi
+    need_gpu_reset=0
+    if [[ "${rc}" -eq 42 || "${rc}" -eq 96 ]]; then
+        need_gpu_reset=1
+    elif [[ -f "${PROPMINER_STDERR_LOG}" ]] \
+        && tail -40 "${PROPMINER_STDERR_LOG}" 2>/dev/null \
+            | grep -qiE 'illegal memory access|cuda context poisoned'; then
+        need_gpu_reset=1
+    fi
+    if [[ "${need_gpu_reset}" -eq 1 ]]; then
+        gpu_reset_if_needed
+    fi
     if [[ "${rc}" -eq 42 ]]; then
         echo "[mine] propminer wedged GPU (stall guard rc=42); fast restart in ${STALL_RESTART_DELAY}s..." | propminer_log
+        sleep "${STALL_RESTART_DELAY}"
+        continue
+    fi
+    if [[ "${rc}" -eq 96 ]]; then
+        echo "[mine] propminer graph validation poisoned GPU (rc=96); fast restart in ${STALL_RESTART_DELAY}s..." | propminer_log
         sleep "${STALL_RESTART_DELAY}"
         continue
     fi
