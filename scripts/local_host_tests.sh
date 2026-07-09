@@ -55,4 +55,11 @@ TRANSCRIPT_SAFE="${OUT}_transcript_mainloop"
 "${TRANSCRIPT_SAFE}"
 echo "[host] transcript_mainloop_safety_test OK"
 
-echo "===== OK (ref + blake3 + transcript safety) ====="
+WORKSPACE_SIZE="${OUT}_workspace_transcript"
+"${CXX}" -std=c++17 -O2 \
+  src/host/tests/workspace_transcript_size_test.cpp \
+  -o "${WORKSPACE_SIZE}"
+"${WORKSPACE_SIZE}"
+echo "[host] workspace_transcript_size_test OK"
+
+echo "===== OK (ref + blake3 + transcript safety + workspace sizing) ====="

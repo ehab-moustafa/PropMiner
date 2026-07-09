@@ -454,6 +454,66 @@ void destroy_iter_graph(PearlCapiWorkspace* ws) {
   ws->graph_batch_count = 0;
 }
 
+// Replay captured graph once before marking ready. Surfaces async kernel errors
+// (e.g. GeForce v2 + CUDA graph illegal access) at σ-install, not first batch.
+static void print_graph_validation_diagnosis(int rc, const PearlCapiWorkspace* ws,
+                                             cudaError_t cuda_err) {
+  const char* kernel = pearl_capi_active_kernel_name();
+  fprintf(stderr, "[pearl-gemm] graph validation FAILED rc=%d kernel=%s",
+          rc, kernel ? kernel : "?");
+  if (ws && ws->params_installed) {
+    const auto& p = ws->params;
+    fprintf(stderr, " shape M=%d N=%d K=%d r=%d batch=%d",
+            p.m, p.n, p.k, p.r, ws->graph_batch_count);
+    fprintf(stderr, " transcript_bytes=%zu workspace_total=%zu",
+            ws->transcript_bytes, ws->total_bytes);
+  }
+  if (cuda_err != cudaSuccess) {
+    fprintf(stderr, " cuda=%s", cudaGetErrorString(cuda_err));
+  }
+  fprintf(stderr, "\n");
+  fprintf(stderr,
+          "[pearl-gemm] diagnosis: capture succeeded but replay failed — "
+          "async kernel fault inside captured graph (not pool/wallet/sigma).\n");
+  if (kernel && strcmp(kernel, "geforce_v2") == 0) {
+    fprintf(stderr,
+            "[pearl-gemm] likely cause: GeForce v2 TMA + CUDA graph on sm_120 "
+            "(device-resident TMA descriptors required).\n");
+    fprintf(stderr,
+            "[pearl-gemm] next steps:\n"
+            "  1) ./scripts/verify_geforce_graph.sh  (minimal repro)\n"
+            "  2) PEARL_GEMM_DEBUG=1 rebuild + retry (verbose capture path)\n"
+            "  3) PROPMINER_BENCH_NO_GRAPH=1  (workaround: v2 without graphs)\n"
+            "  4) PEARL_GEMM_KERNEL=consumer  (workaround: cp.async kernel)\n");
+  } else {
+    fprintf(stderr,
+            "[pearl-gemm] next steps: PROPMINER_BENCH_NO_GRAPH=1 to isolate "
+            "graph vs kernel; run ./scripts/debug_geforce_v2.sh\n");
+  }
+}
+
+static int validate_iter_graph_replay(PearlCapiWorkspace* ws,
+                                      cudaStream_t stream) {
+  if (!ws || !ws->iter_graph_exec) return -62;
+  if (pearl_gemm_debug_enabled()) {
+    fprintf(stderr, "[pearl-gemm] graph validation: launching test replay...\n");
+  }
+  cudaError_t err = cudaGraphLaunch(ws->iter_graph_exec, stream);
+  if (err != cudaSuccess) {
+    print_graph_validation_diagnosis(-62, ws, err);
+    return -62;
+  }
+  err = cudaStreamSynchronize(stream);
+  if (err != cudaSuccess) {
+    print_graph_validation_diagnosis(-63, ws, err);
+    return -63;
+  }
+  if (pearl_gemm_debug_enabled()) {
+    fprintf(stderr, "[pearl-gemm] graph validation: replay OK\n");
+  }
+  return 0;
+}
+
 #if defined(PEARL_GEMM_GROUPED_GEMM)
 static void free_grouped_pools(PearlCapiWorkspace* ws, cudaStream_t stream) {
   if (!ws) return;
@@ -1959,6 +2019,14 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
     return -50;
   }
 
+  {
+    int vrc = validate_iter_graph_replay(ws, stream);
+    if (vrc != 0) {
+      destroy_iter_graph(ws);
+      return vrc;
+    }
+  }
+
   ws->graph_batch_count = count;
   ws->graph_ready = true;
   return 0;
@@ -2166,6 +2234,15 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
     destroy_iter_graph(ws);
     ws->graph_seed_lo_dev = nullptr;
     return -50;
+  }
+
+  {
+    int vrc = validate_iter_graph_replay(ws, stream);
+    if (vrc != 0) {
+      destroy_iter_graph(ws);
+      ws->graph_seed_lo_dev = nullptr;
+      return vrc;
+    }
   }
 
   ws->graph_batch_count = count;

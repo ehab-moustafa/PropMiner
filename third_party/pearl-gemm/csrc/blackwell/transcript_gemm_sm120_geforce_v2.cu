@@ -135,6 +135,8 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
     HostSignalSync* grouped_sync_array,
     HostSignalHeader** grouped_header_ptrs,
     ConsumerTmaA const* __restrict__ tma_a_group,
+    ConsumerTmaA const* __restrict__ d_tma_a,
+    ConsumerTmaB const* __restrict__ d_tma_b,
     __grid_constant__ ConsumerTmaA const tma_a,
     __grid_constant__ ConsumerTmaB const tma_b) {
 
@@ -151,7 +153,10 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
   const int num_m_tiles = M / kBM;
   const int num_n_tiles = N / kBN;
 
-  ConsumerTmaA tma_a_eff = tma_a;
+  // Prefer device-resident TMA descriptors (graph replay safe on sm_120).
+  // Fall back to __grid_constant__ params for legacy launchers.
+  ConsumerTmaA tma_a_eff = (d_tma_a != nullptr) ? *d_tma_a : tma_a;
+  ConsumerTmaB tma_b_eff = (d_tma_b != nullptr) ? *d_tma_b : tma_b;
   if (tma_a_group != nullptr) {
     tma_a_eff = tma_a_group[batch];
   }
@@ -184,7 +189,7 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
   // TMA copies require gmem views from the grid-constant descriptor, not raw
   // pointers (see transcript_gemm_sm100.cu and geforce v1).
   Tensor mA = tma_a_eff.get_tma_tensor(make_shape(M, K));
-  Tensor mB = tma_b.get_tma_tensor(make_shape(N, K));
+  Tensor mB = tma_b_eff.get_tma_tensor(make_shape(N, K));
   Tensor gA = local_tile(mA, Shape<Int<kBM>, Int<kBK>>{},
                          make_coord(m_tile, _));
   Tensor gB = local_tile(mB, Shape<Int<kBN>, Int<kBK>>{},
@@ -215,7 +220,7 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
 
   if (tid == kProducerLeader) {
     cute::prefetch_tma_descriptor(tma_a_eff.get_tma_descriptor());
-    cute::prefetch_tma_descriptor(tma_b.get_tma_descriptor());
+    cute::prefetch_tma_descriptor(tma_b_eff.get_tma_descriptor());
   }
 
   if (tid == kProducerLeader) {
@@ -227,8 +232,8 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
       pipeline.producer_acquire(pipe_write);
       tma_copy_k_tile<kStages, MainloopPipeline, ConsumerTmaA, ConsumerTmaB,
                       SmemLayoutA, SmemLayoutB, kBM, kBN, kBK, ElementIn>(
-          pipeline, pipe_write, tma_a_eff, tma_b, smem.smem_A, smem.smem_B, gA,
-          gB, k_iter);
+          pipeline, pipe_write, tma_a_eff, tma_b_eff, smem.smem_A, smem.smem_B,
+          gA, gB, k_iter);
       pipeline.producer_commit(pipe_write, kTmaTransactionBytes);
       ++pipe_write;
     }
@@ -336,6 +341,73 @@ struct GeforceV2TmaCache {
 
 static GeforceV2TmaCache g_v2_tma_cache;
 
+// Device-resident TMA descriptors for graph-safe replay (sm_120 GeForce).
+struct V2DeviceTmaPool {
+  std::mutex mu;
+  int device = -1;
+  ConsumerTmaA* d_tma_a = nullptr;
+  ConsumerTmaB* d_tma_b = nullptr;
+  ConsumerTmaA* h_tma_a = nullptr;  // pinned host staging
+  ConsumerTmaB* h_tma_b = nullptr;
+};
+
+static V2DeviceTmaPool g_v2_dev_tma;
+
+static cudaError_t ensure_v2_device_tma_pool(int dev) {
+  std::lock_guard<std::mutex> lock(g_v2_dev_tma.mu);
+  if (g_v2_dev_tma.device == dev && g_v2_dev_tma.d_tma_a != nullptr) {
+    return cudaSuccess;
+  }
+  if (g_v2_dev_tma.d_tma_a) cudaFree(g_v2_dev_tma.d_tma_a);
+  if (g_v2_dev_tma.d_tma_b) cudaFree(g_v2_dev_tma.d_tma_b);
+  if (g_v2_dev_tma.h_tma_a) cudaFreeHost(g_v2_dev_tma.h_tma_a);
+  if (g_v2_dev_tma.h_tma_b) cudaFreeHost(g_v2_dev_tma.h_tma_b);
+  g_v2_dev_tma = V2DeviceTmaPool{};
+  g_v2_dev_tma.device = dev;
+  cudaError_t err = cudaMalloc(reinterpret_cast<void**>(&g_v2_dev_tma.d_tma_a),
+                               sizeof(ConsumerTmaA));
+  if (err != cudaSuccess) return err;
+  err = cudaMalloc(reinterpret_cast<void**>(&g_v2_dev_tma.d_tma_b),
+                   sizeof(ConsumerTmaB));
+  if (err != cudaSuccess) return err;
+  err = cudaHostAlloc(reinterpret_cast<void**>(&g_v2_dev_tma.h_tma_a),
+                      sizeof(ConsumerTmaA), cudaHostAllocPortable);
+  if (err != cudaSuccess) return err;
+  err = cudaHostAlloc(reinterpret_cast<void**>(&g_v2_dev_tma.h_tma_b),
+                      sizeof(ConsumerTmaB), cudaHostAllocPortable);
+  return err;
+}
+
+static cudaError_t upload_v2_tma_to_device(int8_t const* A, int8_t const* B,
+                                           int Mi, int Ni, int Ki,
+                                           ConsumerTmaA const** out_d_a,
+                                           ConsumerTmaB const** out_d_b,
+                                           cudaStream_t stream) {
+  int dev = 0;
+  cudaGetDevice(&dev);
+  cudaError_t err = ensure_v2_device_tma_pool(dev);
+  if (err != cudaSuccess) return err;
+
+  ConsumerTmaA tma_a;
+  ConsumerTmaB tma_b;
+  get_v2_tma_descriptors(A, B, Mi, Ni, Ki, tma_a, tma_b);
+
+  {
+    std::lock_guard<std::mutex> lock(g_v2_dev_tma.mu);
+    *g_v2_dev_tma.h_tma_a = tma_a;
+    *g_v2_dev_tma.h_tma_b = tma_b;
+    err = cudaMemcpyAsync(g_v2_dev_tma.d_tma_a, g_v2_dev_tma.h_tma_a,
+                          sizeof(ConsumerTmaA), cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) return err;
+    err = cudaMemcpyAsync(g_v2_dev_tma.d_tma_b, g_v2_dev_tma.h_tma_b,
+                          sizeof(ConsumerTmaB), cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) return err;
+    *out_d_a = g_v2_dev_tma.d_tma_a;
+    *out_d_b = g_v2_dev_tma.d_tma_b;
+  }
+  return cudaSuccess;
+}
+
 static void build_v2_tma_descriptors(int8_t const* A, int8_t const* B, int Mi,
                                      int Ni, int Ki, ConsumerTmaA& tma_a,
                                      ConsumerTmaB& tma_b) {
@@ -425,10 +497,19 @@ static cudaError_t launch_v2_impl(int8_t const* A, int8_t const* B,
   ConsumerTmaB tma_b;
   get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
 
+  ConsumerTmaA const* d_tma_a = nullptr;
+  ConsumerTmaB const* d_tma_b = nullptr;
+  if (tma_a_group == nullptr) {
+    err = upload_v2_tma_to_device(A, B, (int)M, (int)N, (int)K, &d_tma_a,
+                                  &d_tma_b, stream);
+    if (err != cudaSuccess) return err;
+  }
+
   transcript_gemm_sm120_geforce_v2_kernel<<<grid, block, smem_bytes, stream>>>(
       A, B, C, transcript, (int)M, (int)N, (int)K, (int)R, pow_target, pow_key,
       host_signal_sync, host_signal_header_pinned, grouped_pow_key_ptrs,
-      grouped_sync_array, grouped_header_ptrs, tma_a_group, tma_a, tma_b);
+      grouped_sync_array, grouped_header_ptrs, tma_a_group, d_tma_a, d_tma_b,
+      tma_a, tma_b);
   return cudaGetLastError();
 }
 
@@ -618,6 +699,7 @@ int main() {
   const ShapeSpec shapes[] = {
       {2048, 4096, 128, 128},
       {8192, 32768, 128, 128},
+      {8192, 32768, 4096, 128},
   };
 
   for (const auto& shape : shapes) {

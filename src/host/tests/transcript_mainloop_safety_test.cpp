@@ -173,6 +173,26 @@ void test_schedule_order_sensitive() {
   check(differs, "wrong snapshot index changes transcript");
 }
 
+void test_snapshot_slot_schedule_k4096_kbk64() {
+  // Production K=4096, kBK=64, R=128 → 64 K-tiles, snapshot every 2 → 32 folds.
+  const int K_TILES = 64;
+  const int reduce_every_k = 2;
+  std::array<uint32_t, 68> hash_by_k{};
+  for (int k = 0; k <= K_TILES; ++k) {
+    hash_by_k[k] = static_cast<uint32_t>(0xA0000000u + k);
+  }
+
+  std::array<uint32_t, kTranscriptSlots> t{};
+  simulate_v2_schedule(K_TILES, reduce_every_k, hash_by_k.data(), t);
+
+  // All 16 slots participate after 32 boundary folds.
+  int nonzero = 0;
+  for (int s = 0; s < kTranscriptSlots; ++s) {
+    if (t[s] != 0) ++nonzero;
+  }
+  check(nonzero == kTranscriptSlots, "K=4096 uses all 16 transcript slots");
+}
+
 }  // namespace
 
 int main() {
@@ -181,6 +201,7 @@ int main() {
   test_rotl_xor();
   test_transcript_buffer_indexing();
   test_snapshot_slot_schedule_k128_kbk64();
+  test_snapshot_slot_schedule_k4096_kbk64();
   test_schedule_order_sensitive();
 
   if (g_failures == 0) {

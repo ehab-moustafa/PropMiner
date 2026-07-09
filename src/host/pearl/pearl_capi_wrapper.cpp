@@ -17,6 +17,15 @@ inline void pearl_check(const char* fn, int rc) {
     fprintf(stderr,
             "[pearl-capi] %s failed with rc=%d; last CUDA error: %s (%d)\n",
             fn, rc, cudaGetErrorString(last), static_cast<int>(last));
+    if (rc == -62 || rc == -63) {
+        fprintf(stderr,
+                "[pearl-capi] hint: CUDA graph validation replay failed — "
+                "mining will fall back to iter_batch if gpu_worker catches this.\n");
+    } else if (rc >= -50 && rc <= -44) {
+        fprintf(stderr,
+                "[pearl-capi] hint: graph capture failed at rc=%d — see "
+                "[pearl-gemm] lines above; try PEARL_GEMM_DEBUG=1.\n", rc);
+    }
     throw std::runtime_error(std::string(fn) + " failed (rc=" +
                              std::to_string(rc) + ")");
 }

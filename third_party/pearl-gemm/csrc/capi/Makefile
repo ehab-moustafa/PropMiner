@@ -289,6 +289,17 @@ ifeq ($(PEARL_GEMM_ARCH),blackwell)
         $(SRC)/portable/transcript_kernel.cu
       VERIFY_GEFORCE_V2_OBJS := $(patsubst $(SRC)/%, $(VERIFY_GEFORCE_V2_BUILD)/%.o, $(VERIFY_GEFORCE_V2_SRCS))
     endif
+    PEARL_SM120_GEFORCE_V2_GRAPH_VERIFY ?=
+    ifeq ($(PEARL_SM120_GEFORCE_V2_GRAPH_VERIFY),1)
+      VERIFY_GEFORCE_V2_GRAPH_BUILD := $(BUILD)/verify_geforce_v2_graph
+      VERIFY_GEFORCE_V2_GRAPH_TARGET := $(BUILD)/verify_geforce_v2_graph
+      VERIFY_GEFORCE_V2_GRAPH_SRCS := \
+        $(SRC)/blackwell/transcript_gemm_sm120_geforce_v2.cu \
+        $(SRC)/blackwell/verify_geforce_v2_graph.cu \
+        $(SRC)/consumer/transcript_gemm_kernel.cu \
+        $(SRC)/portable/transcript_kernel.cu
+      VERIFY_GEFORCE_V2_GRAPH_OBJS := $(patsubst $(SRC)/%, $(VERIFY_GEFORCE_V2_GRAPH_BUILD)/%.o, $(VERIFY_GEFORCE_V2_GRAPH_SRCS))
+    endif
   endif
   # Ptr-array grouped GEMM (ON by default for blackwell; batch>=4 runtime gate).
   PEARL_GEMM_GROUPED_GEMM ?= 1
@@ -432,8 +443,10 @@ OBJS := $(patsubst $(SRC)/%, $(BUILD)/%.o, $(SRCS))
 
 LDLIBS := -lcuda -lcudart -lstdc++ $(EXTRA_LDLIBS)
 
-.PHONY: all clean generate-static-switches verify-geforce-transcript verify-geforce-v2-transcript
-ifneq ($(VERIFY_GEFORCE_V2_TARGET),)
+.PHONY: all clean generate-static-switches verify-geforce-transcript verify-geforce-v2-transcript verify-geforce-v2-graph
+ifneq ($(VERIFY_GEFORCE_V2_GRAPH_TARGET),)
+all: $(TARGET) $(VERIFY_GEFORCE_V2_GRAPH_TARGET)
+else ifneq ($(VERIFY_GEFORCE_V2_TARGET),)
 all: $(TARGET) $(VERIFY_GEFORCE_V2_TARGET)
 else ifneq ($(VERIFY_GEFORCE_TARGET),)
 all: $(TARGET) $(VERIFY_GEFORCE_TARGET)
@@ -498,6 +511,23 @@ $(VERIFY_GEFORCE_V2_BUILD):
 	@mkdir -p $(VERIFY_GEFORCE_V2_BUILD)
 
 verify-geforce-v2-transcript: $(VERIFY_GEFORCE_V2_TARGET)
+endif
+
+ifneq ($(VERIFY_GEFORCE_V2_GRAPH_TARGET),)
+VERIFY_GEFORCE_V2_GRAPH_NVCC_FLAGS := $(NVCC_FLAGS_BASE) $(LINK_ARCH) $(INCLUDES) $(DEFINES)
+
+$(VERIFY_GEFORCE_V2_GRAPH_TARGET): $(VERIFY_GEFORCE_V2_GRAPH_OBJS) | $(BUILD) $(VERIFY_GEFORCE_V2_GRAPH_BUILD)
+	$(NVCC) $(LINK_ARCH) -o $@ $(VERIFY_GEFORCE_V2_GRAPH_OBJS) -lcuda -lcudart -lstdc++
+	@echo "==> $@"
+
+$(VERIFY_GEFORCE_V2_GRAPH_BUILD)/%.cu.o: $(SRC)/%.cu | $(VERIFY_GEFORCE_V2_GRAPH_BUILD)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(VERIFY_GEFORCE_V2_GRAPH_NVCC_FLAGS) -c $< -o $@
+
+$(VERIFY_GEFORCE_V2_GRAPH_BUILD):
+	@mkdir -p $(VERIFY_GEFORCE_V2_GRAPH_BUILD)
+
+verify-geforce-v2-graph: $(VERIFY_GEFORCE_V2_GRAPH_TARGET)
 endif
 
 clean:

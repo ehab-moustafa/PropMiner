@@ -898,7 +898,13 @@ void GpuWorker::bind_sigma_to_half(SigmaContext& ctx, HalfBuffers& half) {
     half.graph_batch_count = 0;
     try {
         prepare_graph(half);
-    } catch (const std::exception&) {
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr,
+            "[gpu] cuda graph unavailable gpu=%d: %s (using iter_batch)\n",
+            device_index_, ex.what());
+        std::fprintf(stderr,
+            "[gpu] debug: run ./scripts/debug_geforce_v2.sh or set "
+            "PEARL_GEMM_DEBUG=1 and retry sigma install\n");
         half.graph_ready = false;
         half.graph_batch_count = 0;
     }
@@ -1002,16 +1008,17 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
                         reinterpret_cast<cudaStream_t>(half.stream)));
                 }
                 if (!wait_half_stream(half)) {
-                    const long long stall_ms = stall_restart_ms();
-                    const bool aborted = batch_abort_requested_.exchange(false);
                     std::fprintf(stderr,
-                        "[gpu] STALL: graph sub-batch on gpu=%d exceeded %lld ms "
-                        "with no progress (wedged CUDA stream%s). Exiting for "
-                        "supervisor restart.\n",
-                        device_index_, stall_ms,
-                        aborted ? "; health-monitor abort" : "");
-                    std::fflush(stderr);
-                    std::_Exit(42);
+                        "[gpu] graph sub-batch failed on gpu=%d; disabling "
+                        "cuda graph and falling back to iter_batch\n",
+                        device_index_);
+                    std::fprintf(stderr,
+                        "[gpu] debug: PEARL_GEMM_DEBUG=1 ./scripts/debug_geforce_v2.sh "
+                        "(phase 4 graph harness isolates TMA+graph)\n");
+                    half.graph_ready = false;
+                    launched_graph = false;
+                    cuStreamSynchronize(half.stream);
+                    break;
                 }
                 const int next_off = off - graph_batch;
                 if (async_seed && next_off >= 0) {
@@ -1034,6 +1041,8 @@ void GpuWorker::queue_batch(HalfBuffers& half, uint64_t seed_lo_start, int count
             std::fprintf(stderr,
                 "[gpu] graph launch failed, falling back to iter_batch: %s\n",
                 ex.what());
+            std::fprintf(stderr,
+                "[gpu] debug: ./scripts/debug_geforce_v2.sh --phase 4\n");
             half.graph_ready = false;
             launched_graph = false;
             // Drain poisoned graph work before the direct iter_batch path.
