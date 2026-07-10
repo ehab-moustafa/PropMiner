@@ -137,8 +137,8 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
     HostSignalSync* grouped_sync_array,
     HostSignalHeader** grouped_header_ptrs,
     ConsumerTmaA const* __restrict__ tma_a_group,
-    ConsumerTmaA const* __restrict__ d_tma_a,
-    ConsumerTmaB const* __restrict__ d_tma_b,
+    ConsumerTmaA const* __restrict__ /*d_tma_a*/,
+    ConsumerTmaB const* __restrict__ /*d_tma_b*/,
     __grid_constant__ ConsumerTmaA const tma_a,
     __grid_constant__ ConsumerTmaB const tma_b) {
 
@@ -155,10 +155,10 @@ __global__ void transcript_gemm_sm120_geforce_v2_kernel(
   const int num_m_tiles = M / kBM;
   const int num_n_tiles = N / kBN;
 
-  // Prefer device-resident TMA descriptors (graph replay safe on sm_120).
-  // Fall back to __grid_constant__ params for legacy launchers.
-  ConsumerTmaA tma_a_eff = (d_tma_a != nullptr) ? *d_tma_a : tma_a;
-  ConsumerTmaB tma_b_eff = (d_tma_b != nullptr) ? *d_tma_b : tma_b;
+  // sm_120 GeForce requires __grid_constant__ TMA descriptors for all launches.
+  // Device-resident d_tma_* is legacy and faults when dereferenced from gmem.
+  ConsumerTmaA tma_a_eff = tma_a;
+  ConsumerTmaB tma_b_eff = tma_b;
   if (tma_a_group != nullptr) {
     tma_a_eff = tma_a_group[batch];
   }
@@ -530,10 +530,11 @@ static cudaError_t launch_v2_impl(int8_t const* A, int8_t const* B,
       d_tma_a = nullptr;
       d_tma_b = nullptr;
     } else {
+      // Direct iter_batch launch: pass descriptors as __grid_constant__ only.
+      // upload_v2_tma_to_device + gmem deref faults on sm_120 GeForce.
       get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
-      err = upload_v2_tma_to_device(A, B, (int)M, (int)N, (int)K, &d_tma_a,
-                                      &d_tma_b, stream);
-      if (err != cudaSuccess) return err;
+      d_tma_a = nullptr;
+      d_tma_b = nullptr;
     }
   } else {
     get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);

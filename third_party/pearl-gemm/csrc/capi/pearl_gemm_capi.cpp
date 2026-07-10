@@ -509,8 +509,9 @@ static void print_graph_validation_diagnosis(int rc, const PearlCapiWorkspace* w
           "async kernel fault inside captured graph (not pool/wallet/sigma).\n");
   if (kernel && strcmp(kernel, "geforce_v2") == 0) {
     fprintf(stderr,
-            "[pearl-gemm] likely cause: graph captured device-resident TMA "
-            "deref or zero __grid_constant__ snapshot on sm_120.\n");
+            "[pearl-gemm] likely cause: stale __grid_constant__ TMA snapshot "
+            "(ApEA/BpEB changed after prepare_geforce_v2_tma_for_graph) or "
+            "graph captured with device-resident d_tma_* (must be null on sm_120).\n");
     fprintf(stderr,
             "[pearl-gemm] next steps:\n"
             "  1) ensure build has pre-upload before capture (prepare_geforce_v2_tma)\n"

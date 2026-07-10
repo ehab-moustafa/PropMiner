@@ -200,7 +200,8 @@ int main() {
     std::printf(
         "PATTERN: consumer PASS, geforce_v2 FAIL → TMA + CUDA graph on sm_120.\n");
     std::printf(
-        "Fix: device-resident TMA descriptors (upload_v2_tma_to_device).\n");
+        "Fix: __grid_constant__ TMA only (prepare_geforce_v2_tma_for_graph "
+        "before capture; no upload_v2_tma_to_device on direct launch).\n");
     std::printf(
         "Workaround: PROPMINER_BENCH_NO_GRAPH=1 or PEARL_GEMM_KERNEL=consumer\n");
   } else if (consumer_fail != 0 && v2_fail != 0) {
