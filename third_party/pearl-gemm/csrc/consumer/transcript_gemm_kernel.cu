@@ -502,16 +502,34 @@ __global__ void transcript_gemm_kernel_consumer(
             transcript_local[slot], hash);
   }
 
-  // ── Write final transcript to gmem for separate finalize kernel ─────
-  // The transcript is always written here; BLAKE3 compress + target check
-  // are performed by the separate transcript_finalize_kernel, which reads
-  // this buffer and writes HostSignalHeader on a hit.
-  //
-  // Layout matches transcript_kernel.cu's transcript_snapshot_kernel:
-  //   base = ((batch * num_m_tiles + m_tile) * num_n_tiles + n_tile)
-  //          * (kThreads * kTranscriptSlots)
-  //   tx_idx = base + tid * kTranscriptSlots + slot
-  {
+  // ── Optional in-kernel finalization (ARC / akoya headless path) ───────
+  // Keep XOR transcript in registers; check target here instead of
+  // spilling to gmem + transcript_finalize_kernel. Required for CUDA graph
+  // capture on sm_120 (GeForce v2 TMA faults on graph replay).
+  if (pow_target != nullptr && pow_key != nullptr &&
+      host_signal_sync_eff != nullptr && host_signal_header_eff != nullptr) {
+    Tensor transcript_rmem = make_tensor<uint32_t>(
+        Int<kTranscriptSlots>{});
+    CUTLASS_PRAGMA_UNROLL
+    for (int s = 0; s < kTranscriptSlots; ++s) {
+      transcript_rmem(s) = transcript_local[s];
+    }
+
+    bool block_found = pearl::check_pow_target(
+        transcript_rmem, pow_target, pow_key_eff);
+    if (block_found) {
+      auto block_coord = cute::make_tuple(
+          (int32_t)m_tile, (int32_t)n_tile, (int32_t)batch);
+      auto problem_shape = cute::make_tuple(M, N, K, R);
+      pearl::write_host_signal_header<ConsumerTiledMma, HeaderTileShape_MNK>(
+          host_signal_sync_eff, host_signal_header_eff,
+          problem_shape, block_coord, tid, pow_target);
+    }
+  }
+
+  // ── Write final transcript to gmem (optional; skip when headless) ───
+  // When transcript==nullptr the separate finalize kernel is not used.
+  if (transcript != nullptr) {
     int64_t base = ((int64_t)batch * num_m_tiles + m_tile)
                    * num_n_tiles + n_tile;
     int64_t tx_off = base * (int64_t)kThreads * kTranscriptSlots
@@ -770,6 +788,7 @@ cudaError_t launch_transcript_gemm_headless(
     HostSignalSync* host_signal_sync,
     HostSignalHeader* host_signal_header_pinned,
     cudaStream_t stream) {
+  (void)transcript;  // headless: inline PoW; no gmem transcript spill
   assert(M % kBM == 0);
   assert(N % kBN == 0);
   assert(K % kBK == 0);
@@ -813,7 +832,7 @@ cudaError_t launch_transcript_gemm_headless(
     cfg.attrs = attrs;
     cfg.numAttrs = 1;
     err = cudaLaunchKernelEx(&cfg, transcript_gemm_kernel_consumer,
-                             A, B, C, transcript,
+                             A, B, C, nullptr,
                              (int)M, (int)N, (int)K, (int)R,
                              pow_target, pow_key,
                              host_signal_sync, host_signal_header_pinned,
@@ -833,7 +852,7 @@ cudaError_t launch_transcript_gemm_headless(
   }
   if (!use_cluster) {
     transcript_gemm_kernel_consumer<<<grid, block, smem_bytes, stream>>>(
-        A, B, C, transcript, (int)M, (int)N, (int)K, (int)R,
+        A, B, C, nullptr, (int)M, (int)N, (int)K, (int)R,
         pow_target, pow_key,
         host_signal_sync, host_signal_header_pinned,
         nullptr, nullptr, nullptr, nullptr

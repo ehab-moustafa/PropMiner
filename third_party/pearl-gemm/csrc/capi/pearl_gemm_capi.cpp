@@ -11,6 +11,7 @@
 
 #include <cuda_runtime.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -509,14 +510,14 @@ static void print_graph_validation_diagnosis(int rc, const PearlCapiWorkspace* w
           "async kernel fault inside captured graph (not pool/wallet/sigma).\n");
   if (kernel && strcmp(kernel, "geforce_v2") == 0) {
     fprintf(stderr,
-            "[pearl-gemm] likely cause: __grid_constant__ TMA not built per "
-            "launch during capture, device-resident d_tma_* in graph, or "
-            "finalize pow_target must be copied device→constant on stream.\n");
+            "[pearl-gemm] likely cause: GeForce v2 TMA is not graph-safe on "
+            "sm_120 at prod K; graph capture now uses consumer headless "
+            "(ARC/akoya). Direct iter still uses geforce_v2 + finalize.\n");
     fprintf(stderr,
             "[pearl-gemm] next steps:\n"
-            "  1) ./scripts/verify_geforce_graph.sh (GEMM-only graph harness)\n"
-            "  2) PEARL_GEMM_DEBUG=1 retry; check pre-capture iter smoke line\n"
-            "  3) PROPMINER_BENCH_NO_GRAPH=1 mines on v2 iter_batch (no graph)\n");
+            "  1) Confirm log line: graph capture: consumer headless\n"
+            "  2) PROPMINER_BENCH_NO_GRAPH=1 mines on v2 iter_batch (no graph)\n"
+            "  3) ./scripts/verify_geforce_graph.sh (GEMM-only harness)\n");
   } else {
     fprintf(stderr,
             "[pearl-gemm] next steps: PROPMINER_BENCH_NO_GRAPH=1 to isolate "
@@ -1525,12 +1526,45 @@ PEARL_CAPI_EXPORT int pearl_capi_noisy_gemm(const PearlCapiNoisyGemmParams* p,
       if (vrc != 0) return vrc;
     }
 #endif
-    // Production consumer mining — two-kernel sequence:
-    //   1. GEMM kernel writes transcript to gmem (no BLAKE3)
-    //   2. Finalize kernel reads transcript, runs BLAKE3 + target check,
-    //      writes HostSignalHeader on hit.
-    //
-    // If PoW pointers are null this intentionally emits nothing.
+    // Production Blackwell path.
+    cudaStreamCaptureStatus cap_status = cudaStreamCaptureStatusNone;
+    (void)cudaStreamIsCapturing(stream, &cap_status);
+    const bool in_graph_capture = (cap_status == cudaStreamCaptureStatusActive);
+
+    // CUDA graph on sm_120: ARC-miner / akoya-miner use consumer headless
+    // (cp.async, inline PoW, no separate finalize). GeForce v2 TMA faults on
+    // graph replay at prod K=4096; capture the ARC-proven path instead.
+    if (in_graph_capture) {
+      static std::atomic<int> graph_headless_logged{0};
+      if (graph_headless_logged.fetch_add(1) == 0) {
+        fprintf(stderr,
+                "[pearl-gemm] graph capture: consumer headless (ARC/akoya "
+                "pattern); direct iter uses geforce_v2 + finalize\n");
+      }
+      cudaError_t launch_err = pearl::consumer::launch_transcript_gemm_headless(
+          static_cast<const int8_t*>(p->ApEA),
+          static_cast<const int8_t*>(p->BpEB),
+          /*C=*/nullptr,
+          /*transcript=*/nullptr,
+          m, n, k, r, batch,
+          static_cast<const uint32_t*>(p->pow_target),
+          static_cast<const uint32_t*>(p->pow_key),
+          static_cast<HostSignalSync*>(p->host_signal_sync),
+          static_cast<HostSignalHeader*>(p->host_signal_header_pinned),
+          stream);
+      if (launch_err != cudaSuccess) {
+        return transcript_launch_rc(launch_err);
+      }
+      (void)p->C; (void)p->A_scales; (void)p->B_scales;
+      (void)p->EBR; (void)p->EBR_fp16; (void)p->EARxBpEB_fp16;
+      (void)p->EAR_K_major; (void)p->EBL_R_major; (void)p->EAL_fp16;
+      return 0;
+    }
+
+    // Direct iter (no graph): GeForce v2 GEMM + finalize for max throughput.
+    // Two-kernel sequence:
+    //   1. GEMM kernel writes transcript to gmem
+    //   2. Finalize kernel reads transcript, runs BLAKE3 + target check
     uint32_t* transcript = nullptr;
     bool tr_owned = false;
     size_t tr_bytes = 0;

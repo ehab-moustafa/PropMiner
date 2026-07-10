@@ -13,7 +13,8 @@ source "${ROOT}/scripts/setup_cuda_env.sh"
 setup_cuda_runtime_env
 
 # GPU clock lock (all modes; mine mode also applies this in run_mining.sh).
-if command -v nvidia-smi >/dev/null 2>&1; then
+# Skipped by default on vast.ai/cloud — set PROPMINER_SKIP_GPU_CLOCKS=0 on bare metal.
+if command -v nvidia-smi >/dev/null 2>&1 && [[ "${PROPMINER_SKIP_GPU_CLOCKS:-1}" == "0" ]]; then
     nvidia-smi -pm 1 2>/dev/null || true
     GPU_GRAPHICS_CLOCK="${PROPMINER_GPU_GRAPHICS_CLOCK:-2107}"
     GPU_MEMORY_CLOCK="${PROPMINER_GPU_MEMORY_CLOCK:-1312}"

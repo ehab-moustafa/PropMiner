@@ -323,11 +323,12 @@ __global__ void transcript_finalize_kernel(
   }
 
   // ─── MSW-first uint256 comparison: hash <= pow_target ──────────────────
-  // Use constant-memory pow_target (d_pow_target_const) for 1-cycle loads.
+  // Read pow_target from device gmem (graph-capture safe). Do not use
+  // cudaMemcpyToSymbol host APIs — pow_target is a device pointer.
   bool block_found = true;
   CUTLASS_PRAGMA_UNROLL
   for (int i = blake3::CHAINING_VALUE_SIZE_U32 - 1; i >= 0; --i) {
-    uint32_t target_i = d_pow_target_const[i];
+    uint32_t target_i = pow_target[i];
     if (rHash(i) > target_i) {
       block_found = false;
       break;
@@ -380,13 +381,6 @@ void launch_transcript_finalize(
     cudaStream_t stream) {
   assert(M % bM == 0);
   assert(N % bN == 0);
-  // pow_target lives in device memory; never pass it to synchronous
-  // cudaMemcpyToSymbol (host source) — that faults on sm_120. Always copy
-  // device→constant on the launch stream (graph-capture safe).
-  cudaError_t err = cudaMemcpyToSymbolAsync(
-      d_pow_target_const, pow_target, 8 * sizeof(uint32_t), 0,
-      cudaMemcpyDeviceToDevice, stream);
-  (void)err;
   dim3 grid((unsigned)(M / bM), (unsigned)(N / bN), (unsigned)batch);
   dim3 block((unsigned)kNumMmaThreads);
   transcript_finalize_kernel<<<grid, block, 0, stream>>>(

@@ -77,12 +77,9 @@ cudaError_t launch_transcript_gemm(
     int64_t M, int64_t N, int64_t K, int64_t R, int64_t batch,
     cudaStream_t stream);
 
-// Consumer mining fast path — now uses two-kernel sequence:
-//   1. GEMM kernel writes transcript to gmem (no BLAKE3 inline)
-//   2. launch_transcript_finalize reads transcript, runs BLAKE3 + target check,
-//      writes HostSignalHeader on hit.
-// The transcript buffer must be allocated by the caller (via
-// portable::transcript_buffer_elems).
+// Consumer mining fast path: inline BLAKE3 + target check in the GEMM
+// kernel (ARC / akoya pattern). No transcript gmem spill or finalize kernel.
+// Pass transcript=nullptr to launch_transcript_gemm_headless.
 cudaError_t launch_transcript_gemm_headless(
     int8_t  const* A,
     int8_t  const* B,
