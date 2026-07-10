@@ -65,17 +65,6 @@ int test_graph_replay(const char* kernel_name, LaunchFn launch, ShapeSpec shape,
   cudaGraph_t graph = nullptr;
   cudaGraphExec_t graph_exec = nullptr;
   cudaError_t err = cudaSuccess;
-  // GeForce v2: pre-upload TMA before capture (same as production graph_prepare).
-  if (launch == launch_v2) {
-    err = pearl::blackwell::prepare_geforce_v2_tma_for_graph(
-        dA, dB, shape.M, shape.N, shape.K, stream);
-    if (err != cudaSuccess) {
-      std::printf("  [%s %s] TMA pre-upload failed: %s\n", kernel_name,
-                  shape.label, cudaGetErrorString(err));
-      return 1;
-    }
-    cudaStreamSynchronize(stream);
-  }
 
   err = cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
   if (err != cudaSuccess) {
@@ -200,8 +189,8 @@ int main() {
     std::printf(
         "PATTERN: consumer PASS, geforce_v2 FAIL → TMA + CUDA graph on sm_120.\n");
     std::printf(
-        "Fix: __grid_constant__ TMA only (prepare_geforce_v2_tma_for_graph "
-        "before capture; no upload_v2_tma_to_device on direct launch).\n");
+        "Fix: __grid_constant__ TMA built per launch during capture "
+        "(get_v2_tma_descriptors); d_tma_* must be null on sm_120.\n");
     std::printf(
         "Workaround: PROPMINER_BENCH_NO_GRAPH=1 or PEARL_GEMM_KERNEL=consumer\n");
   } else if (consumer_fail != 0 && v2_fail != 0) {

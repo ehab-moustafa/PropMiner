@@ -218,7 +218,13 @@ while true; do
         continue
     fi
     if [[ "${rc}" -eq 96 ]]; then
-        echo "[mine] propminer graph validation poisoned GPU (rc=96); fast restart in ${STALL_RESTART_DELAY}s..." | propminer_log
+        if [[ -z "${PROPMINER_BENCH_NO_GRAPH:-}" ]] \
+            && [[ "${PROPMINER_GRAPH_FALLBACK:-1}" == "1" ]]; then
+            export PROPMINER_BENCH_NO_GRAPH=1
+            echo "[mine] graph validation poisoned GPU (rc=96); next restart uses PROPMINER_BENCH_NO_GRAPH=1 (v2 iter_batch)" | propminer_log
+        else
+            echo "[mine] propminer graph validation poisoned GPU (rc=96); fast restart in ${STALL_RESTART_DELAY}s..." | propminer_log
+        fi
         sleep "${STALL_RESTART_DELAY}"
         continue
     fi

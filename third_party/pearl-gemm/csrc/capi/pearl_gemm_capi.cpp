@@ -509,14 +509,14 @@ static void print_graph_validation_diagnosis(int rc, const PearlCapiWorkspace* w
           "async kernel fault inside captured graph (not pool/wallet/sigma).\n");
   if (kernel && strcmp(kernel, "geforce_v2") == 0) {
     fprintf(stderr,
-            "[pearl-gemm] likely cause: stale __grid_constant__ TMA snapshot "
-            "(ApEA/BpEB changed after prepare_geforce_v2_tma_for_graph) or "
-            "graph captured with device-resident d_tma_* (must be null on sm_120).\n");
+            "[pearl-gemm] likely cause: __grid_constant__ TMA not built per "
+            "launch during capture, device-resident d_tma_* in graph, or "
+            "finalize cudaMemcpyToSymbol not stream-ordered in capture.\n");
     fprintf(stderr,
             "[pearl-gemm] next steps:\n"
-            "  1) ensure build has pre-upload before capture (prepare_geforce_v2_tma)\n"
-            "  2) ./scripts/verify_geforce_graph.sh\n"
-            "  3) PEARL_GEMM_DEBUG=1 retry\n");
+            "  1) ./scripts/verify_geforce_graph.sh (GEMM-only graph harness)\n"
+            "  2) PEARL_GEMM_DEBUG=1 retry; check pre-capture iter smoke line\n"
+            "  3) PROPMINER_BENCH_NO_GRAPH=1 mines on v2 iter_batch (no graph)\n");
   } else {
     fprintf(stderr,
             "[pearl-gemm] next steps: PROPMINER_BENCH_NO_GRAPH=1 to isolate "
@@ -527,6 +527,7 @@ static void print_graph_validation_diagnosis(int rc, const PearlCapiWorkspace* w
 static int validate_iter_graph_replay(PearlCapiWorkspace* ws,
                                       cudaStream_t stream) {
   if (!ws || !ws->iter_graph_exec) return -62;
+  (void)cudaGetLastError();
   if (pearl_gemm_debug_enabled()) {
     fprintf(stderr, "[pearl-gemm] graph validation: launching test replay...\n");
   }
@@ -537,6 +538,11 @@ static int validate_iter_graph_replay(PearlCapiWorkspace* ws,
   }
   err = cudaStreamSynchronize(stream);
   if (err != cudaSuccess) {
+    cudaError_t async = cudaGetLastError();
+    fprintf(stderr,
+            "[pearl-gemm] graph validation: replay sync failed cuda=%s async=%s\n",
+            cudaGetErrorString(err),
+            async != cudaSuccess ? cudaGetErrorString(async) : "none");
     print_graph_validation_diagnosis(-63, ws, err);
     return -63;
   }
@@ -1937,14 +1943,6 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
     }
   }
 
-  {
-    int trc = prepare_v2_tma_before_graph_capture(p, stream);
-    if (trc != 0) {
-      destroy_iter_graph(ws);
-      return trc;
-    }
-  }
-
   bool capturing = false;
   auto abort_capture = [&]() {
     if (capturing) {
@@ -2065,13 +2063,6 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
 
   ws->graph_batch_count = count;
   {
-    int trc = prepare_v2_tma_before_graph_capture(p, stream);
-    if (trc != 0) {
-      destroy_iter_graph(ws);
-      return trc;
-    }
-  }
-  {
     int vrc = validate_iter_graph_replay(ws, stream);
     if (vrc != 0) {
       destroy_iter_graph(ws);
@@ -2080,6 +2071,11 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare(
   }
 
   ws->graph_ready = true;
+  fprintf(stderr,
+          "[pearl-gemm] graph validation: replay OK kernel=%s M=%d N=%d K=%d batch=%d\n",
+          pearl_capi_active_kernel_name() ? pearl_capi_active_kernel_name()
+                                          : "?",
+          p.m, p.n, p.k, count);
   return 0;
 }
 
@@ -2163,18 +2159,39 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
     int wrc = warmup_kernels_before_graph_capture();
     if (wrc != 0) {
       destroy_iter_graph(ws);
+      ws->graph_seed_lo_dev = nullptr;
       return wrc;
     }
   }
 
-  {
-    int trc = prepare_v2_tma_before_graph_capture(p, stream);
-    if (trc != 0) {
+#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
+  if (use_geforce_v2_kernel()) {
+    int src = pearl_capi_iter(
+        workspace_ptr, 0ULL, host_signal_header_pinned_batch[0], stream_void);
+    if (src != 0) {
+      fprintf(stderr,
+              "[pearl-gemm] graph_prepare_ex: pre-capture iter smoke failed rc=%d\n",
+              src);
       destroy_iter_graph(ws);
       ws->graph_seed_lo_dev = nullptr;
-      return trc;
+      return src;
     }
+    err = cudaStreamSynchronize(stream);
+    if (err != cudaSuccess) {
+      fprintf(stderr,
+              "[pearl-gemm] graph_prepare_ex: pre-capture iter sync failed: %s\n",
+              cudaGetErrorString(err));
+      destroy_iter_graph(ws);
+      ws->graph_seed_lo_dev = nullptr;
+      return -43;
+    }
+    (void)cudaGetLastError();
+    fprintf(stderr,
+            "[pearl-gemm] graph_prepare_ex: pre-capture iter smoke OK "
+            "(M=%d N=%d K=%d)\n",
+            p.m, p.n, p.k);
   }
+#endif
 
   bool capturing = false;
   auto abort_capture = [&]() {
@@ -2298,14 +2315,6 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
 
   ws->graph_batch_count = count;
   {
-    int trc = prepare_v2_tma_before_graph_capture(p, stream);
-    if (trc != 0) {
-      destroy_iter_graph(ws);
-      ws->graph_seed_lo_dev = nullptr;
-      return trc;
-    }
-  }
-  {
     int vrc = validate_iter_graph_replay(ws, stream);
     if (vrc != 0) {
       destroy_iter_graph(ws);
@@ -2315,6 +2324,11 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
   }
 
   ws->graph_ready = true;
+  fprintf(stderr,
+          "[pearl-gemm] graph validation: replay OK kernel=%s M=%d N=%d K=%d batch=%d (seed_dev launch)\n",
+          pearl_capi_active_kernel_name() ? pearl_capi_active_kernel_name()
+                                          : "?",
+          p.m, p.n, p.k, count);
   return 0;
 }
 

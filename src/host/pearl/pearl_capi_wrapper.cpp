@@ -20,7 +20,8 @@ inline void pearl_check(const char* fn, int rc) {
     if (rc == -62 || rc == -63) {
         fprintf(stderr,
                 "[pearl-capi] hint: CUDA graph validation replay failed — "
-                "mining will fall back to iter_batch if gpu_worker catches this.\n");
+                "gpu_worker disables graphs; illegal access forces process "
+                "exit (rc=96) and supervisor may set PROPMINER_BENCH_NO_GRAPH=1.\n");
     } else if (rc >= -50 && rc <= -44) {
         fprintf(stderr,
                 "[pearl-capi] hint: graph capture failed at rc=%d — see "

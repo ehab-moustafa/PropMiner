@@ -93,7 +93,12 @@ run_propminer() {
     echo "[env] propminer exited ${rc}. stderr tail:" | propminer_log
     tail -20 "${PROPMINER_LOG_DIR}/propminer_stderr.log" 2>/dev/null | propminer_log || true
 
-    # PyTorch fallback is only for CUDA driver/runtime init failures — not pool SSL, etc.
+    # PyTorch fallback is only for CUDA driver/runtime init failures — not pool SSL,
+    # graph validation replay, or illegal memory access (those need gpu-reset / no-graph).
+    if tail -50 "${PROPMINER_LOG_DIR}/propminer_stderr.log" 2>/dev/null \
+        | grep -qiE 'illegal memory access|cuda context poisoned|graph validation'; then
+        return "${rc}"
+    fi
     if ! tail -50 "${PROPMINER_LOG_DIR}/propminer_stderr.log" 2>/dev/null \
         | grep -qiE 'cuda error|no cuda devices|cuda driver|libcudart|unable to init cuda|failed to initialize'; then
         return "${rc}"

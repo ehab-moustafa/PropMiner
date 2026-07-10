@@ -382,7 +382,17 @@ void launch_transcript_finalize(
   assert(N % bN == 0);
   // Copy pow_target to constant memory so every thread fetches it from the
   // 4 KiB const cache (1-cycle latency) instead of global memory.
-  cudaMemcpyToSymbol(d_pow_target_const, pow_target, 8 * sizeof(uint32_t));
+  // Use stream-ordered async copy during CUDA graph capture so replay updates
+  // d_pow_target_const; synchronous cudaMemcpyToSymbol is not captured.
+  cudaStreamCaptureStatus cap_status = cudaStreamCaptureStatusNone;
+  (void)cudaStreamIsCapturing(stream, &cap_status);
+  if (cap_status == cudaStreamCaptureStatusActive) {
+    cudaMemcpyToSymbolAsync(d_pow_target_const, pow_target,
+                            8 * sizeof(uint32_t), 0,
+                            cudaMemcpyDeviceToDevice, stream);
+  } else {
+    cudaMemcpyToSymbol(d_pow_target_const, pow_target, 8 * sizeof(uint32_t));
+  }
   dim3 grid((unsigned)(M / bM), (unsigned)(N / bN), (unsigned)batch);
   dim3 block((unsigned)kNumMmaThreads);
   transcript_finalize_kernel<<<grid, block, 0, stream>>>(

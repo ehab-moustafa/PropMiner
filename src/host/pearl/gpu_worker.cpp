@@ -48,14 +48,15 @@ namespace {
             std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
-    // Driver-level illegal access poisons the device for every new CUDA context
-    // in the same container. Reset before exit so the supervisor restart can
-    // recover without a full instance reboot.
-    void reset_gpu_and_exit(int device_index, int code) {
+    // Best-effort device reset; supervisor (run_mining.sh) also runs nvidia-smi
+    // --gpu-reset. Always _Exit with the requested code — never fall through.
+    void force_gpu_exit(int device_index, int code) {
         std::fprintf(stderr,
-            "[gpu] resetting CUDA device %d before exit (rc=%d)\n",
+            "[gpu] fatal GPU fault on device %d; exiting rc=%d "
+            "(supervisor will gpu-reset and restart)\n",
             device_index, code);
         std::fflush(stderr);
+        std::fflush(stdout);
         cudaSetDevice(device_index);
         cudaDeviceReset();
         std::_Exit(code);
@@ -947,13 +948,24 @@ void GpuWorker::capture_graphs_for_halves() {
     }
     if (gpu_poisoned) {
         graph_validation_poisoned_ = true;
+        const cudaError_t lingering = cudaGetLastError();
+        const bool illegal =
+            (lingering == cudaErrorIllegalAddress ||
+             lingering == cudaErrorLaunchFailure);
+        if (illegal) {
+            std::fprintf(stderr,
+                "[gpu] CUDA context poisoned by graph validation replay on "
+                "gpu=%d (cuda=%s).\n"
+                "[gpu] Process exit required; supervisor will gpu-reset and "
+                "retry (auto-fallback: PROPMINER_BENCH_NO_GRAPH=1 on rc=96).\n"
+                "[gpu] Diagnostic: ./scripts/verify_geforce_graph.sh\n",
+                device_index_, cudaGetErrorString(lingering));
+            force_gpu_exit(device_index_, 96);
+        }
         std::fprintf(stderr,
-            "[gpu] CUDA context poisoned by graph validation replay on gpu=%d.\n"
-            "[gpu] iter_batch cannot run in this process after illegal access.\n"
-            "[gpu] To mine now: set PROPMINER_BENCH_NO_GRAPH=1 and restart.\n"
-            "[gpu] Diagnostic: ./scripts/verify_geforce_graph.sh\n",
+            "[gpu] cuda graph unavailable gpu=%d; continuing with iter_batch "
+            "(geforce_v2 direct path, no CUDA graph)\n",
             device_index_);
-        reset_gpu_and_exit(device_index_, 96);
     }
 }
 
@@ -1660,7 +1672,7 @@ void GpuWorker::run() {
                     device_index_, stall_ms,
                     aborted ? "; health-monitor abort" : "");
                 std::fflush(stderr);
-                reset_gpu_and_exit(device_index_, 42);
+                force_gpu_exit(device_index_, 42);
             }
             batch_abort_requested_.store(false);
 
@@ -1779,7 +1791,7 @@ void GpuWorker::run() {
                 device_index_, stall_ms,
                 aborted ? "; health-monitor abort" : "");
             std::fflush(stderr);
-            reset_gpu_and_exit(device_index_, 42);
+            force_gpu_exit(device_index_, 42);
         }
         batch_abort_requested_.store(false);
         const auto winners = scan_winners(*other, batch);

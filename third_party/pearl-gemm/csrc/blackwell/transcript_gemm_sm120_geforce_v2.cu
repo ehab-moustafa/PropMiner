@@ -506,8 +506,8 @@ static cudaError_t launch_v2_impl(int8_t const* A, int8_t const* B,
   cudaError_t err = ensure_geforce_v2_kernel_attrs(smem_bytes);
   if (err != cudaSuccess) return err;
 
-  ConsumerTmaA tma_a{};
-  ConsumerTmaB tma_b{};
+  alignas(64) ConsumerTmaA tma_a{};
+  alignas(64) ConsumerTmaB tma_b{};
   cudaStreamCaptureStatus cap_status = cudaStreamCaptureStatusNone;
   (void)cudaStreamIsCapturing(stream, &cap_status);
   const bool in_graph_capture = (cap_status == cudaStreamCaptureStatusActive);
@@ -515,27 +515,14 @@ static cudaError_t launch_v2_impl(int8_t const* A, int8_t const* B,
   ConsumerTmaA const* d_tma_a = nullptr;
   ConsumerTmaB const* d_tma_b = nullptr;
   if (tma_a_group == nullptr) {
-    if (in_graph_capture) {
-      // Graph replay on sm_120 must use __grid_constant__ TMA only. Passing
-      // device-resident descriptor pointers captures their values in the graph
-      // but replay still dereferences gmem outside the graph snapshot → illegal
-      // access. Pre-upload via prepare_geforce_v2_tma_for_graph() fills h_tma_*;
-      // copy those bytes into grid_constant params (frozen for replay).
-      std::lock_guard<std::mutex> lock(g_v2_dev_tma.mu);
-      if (g_v2_dev_tma.h_tma_a == nullptr || g_v2_dev_tma.h_tma_b == nullptr) {
-        return cudaErrorInvalidConfiguration;
-      }
-      tma_a = *g_v2_dev_tma.h_tma_a;
-      tma_b = *g_v2_dev_tma.h_tma_b;
-      d_tma_a = nullptr;
-      d_tma_b = nullptr;
-    } else {
-      // Direct iter_batch launch: pass descriptors as __grid_constant__ only.
-      // upload_v2_tma_to_device + gmem deref faults on sm_120 GeForce.
-      get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
-      d_tma_a = nullptr;
-      d_tma_b = nullptr;
-    }
+    // sm_120 GeForce: always pass TMA by value via __grid_constant__ kernel args.
+    // During graph capture each launch freezes its own descriptor snapshot from
+    // the launch-time A,B operands (same pattern as consumer/v1). Never load
+    // descriptors from device-resident d_tma_* — that faults on replay.
+    get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
+    d_tma_a = nullptr;
+    d_tma_b = nullptr;
+    (void)in_graph_capture;
   } else {
     get_v2_tma_descriptors(A, B, (int)M, (int)N, (int)K, tma_a, tma_b);
   }
