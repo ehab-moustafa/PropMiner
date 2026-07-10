@@ -511,7 +511,7 @@ static void print_graph_validation_diagnosis(int rc, const PearlCapiWorkspace* w
     fprintf(stderr,
             "[pearl-gemm] likely cause: __grid_constant__ TMA not built per "
             "launch during capture, device-resident d_tma_* in graph, or "
-            "finalize cudaMemcpyToSymbol not stream-ordered in capture.\n");
+            "finalize pow_target must be copied device→constant on stream.\n");
     fprintf(stderr,
             "[pearl-gemm] next steps:\n"
             "  1) ./scripts/verify_geforce_graph.sh (GEMM-only graph harness)\n"
@@ -2163,35 +2163,6 @@ PEARL_CAPI_EXPORT int pearl_capi_iter_batch_graph_prepare_ex(
       return wrc;
     }
   }
-
-#if defined(PEARL_GEMM_BLACKWELL) && defined(PEARL_GEMM_BLACKWELL_GEFORCE_V2)
-  if (use_geforce_v2_kernel()) {
-    int src = pearl_capi_iter(
-        workspace_ptr, 0ULL, host_signal_header_pinned_batch[0], stream_void);
-    if (src != 0) {
-      fprintf(stderr,
-              "[pearl-gemm] graph_prepare_ex: pre-capture iter smoke failed rc=%d\n",
-              src);
-      destroy_iter_graph(ws);
-      ws->graph_seed_lo_dev = nullptr;
-      return src;
-    }
-    err = cudaStreamSynchronize(stream);
-    if (err != cudaSuccess) {
-      fprintf(stderr,
-              "[pearl-gemm] graph_prepare_ex: pre-capture iter sync failed: %s\n",
-              cudaGetErrorString(err));
-      destroy_iter_graph(ws);
-      ws->graph_seed_lo_dev = nullptr;
-      return -43;
-    }
-    (void)cudaGetLastError();
-    fprintf(stderr,
-            "[pearl-gemm] graph_prepare_ex: pre-capture iter smoke OK "
-            "(M=%d N=%d K=%d)\n",
-            p.m, p.n, p.k);
-  }
-#endif
 
   bool capturing = false;
   auto abort_capture = [&]() {

@@ -918,11 +918,12 @@ void GpuWorker::bind_sigma_to_half(SigmaContext& ctx, HalfBuffers& half) {
 }
 
 void GpuWorker::capture_graphs_for_halves() {
-    bool gpu_poisoned = false;
+    bool gpu_graph_failed = false;
+    bool gpu_fatal = false;
     auto try_capture = [&](HalfBuffers& half) {
         half.graph_ready = false;
         half.graph_batch_count = 0;
-        if (bench_no_graph_enabled() || gpu_poisoned) return;
+        if (bench_no_graph_enabled() || gpu_fatal) return;
         try {
             prepare_graph(half);
         } catch (const std::exception& ex) {
@@ -934,11 +935,25 @@ void GpuWorker::capture_graphs_for_halves() {
                 "PEARL_GEMM_DEBUG=1 and retry sigma install\n");
             half.graph_ready = false;
             half.graph_batch_count = 0;
-            gpu_poisoned = true;
-            if (half.stream) {
-                cuStreamSynchronize(half.stream);
+            gpu_graph_failed = true;
+            const char* msg = ex.what();
+            if (std::strstr(msg, "rc=-43") != nullptr ||
+                std::strstr(msg, "rc=-62") != nullptr ||
+                std::strstr(msg, "rc=-63") != nullptr) {
+                gpu_fatal = true;
             }
-            cudaGetLastError();
+            if (half.stream) {
+                const CUresult sr = cuStreamSynchronize(half.stream);
+                if (sr == CUDA_ERROR_ILLEGAL_ADDRESS ||
+                    sr == CUDA_ERROR_LAUNCH_FAILED) {
+                    gpu_fatal = true;
+                }
+            }
+            const cudaError_t last = cudaGetLastError();
+            if (last == cudaErrorIllegalAddress ||
+                last == cudaErrorLaunchFailure) {
+                gpu_fatal = true;
+            }
         }
     };
     try_capture(ping_);
@@ -946,22 +961,17 @@ void GpuWorker::capture_graphs_for_halves() {
     if (triple_buffer_active_) {
         try_capture(third_);
     }
-    if (gpu_poisoned) {
+    if (gpu_fatal) {
         graph_validation_poisoned_ = true;
-        const cudaError_t lingering = cudaGetLastError();
-        const bool illegal =
-            (lingering == cudaErrorIllegalAddress ||
-             lingering == cudaErrorLaunchFailure);
-        if (illegal) {
-            std::fprintf(stderr,
-                "[gpu] CUDA context poisoned by graph validation replay on "
-                "gpu=%d (cuda=%s).\n"
-                "[gpu] Process exit required; supervisor will gpu-reset and "
-                "retry (auto-fallback: PROPMINER_BENCH_NO_GRAPH=1 on rc=96).\n"
-                "[gpu] Diagnostic: ./scripts/verify_geforce_graph.sh\n",
-                device_index_, cudaGetErrorString(lingering));
-            force_gpu_exit(device_index_, 96);
-        }
+        std::fprintf(stderr,
+            "[gpu] CUDA illegal access during graph prepare on gpu=%d.\n"
+            "[gpu] Process exit required; supervisor will gpu-reset and "
+            "retry (auto-fallback: PROPMINER_BENCH_NO_GRAPH=1 on rc=96).\n"
+            "[gpu] Diagnostic: ./scripts/verify_geforce_graph.sh\n",
+            device_index_);
+        force_gpu_exit(device_index_, 96);
+    }
+    if (gpu_graph_failed) {
         std::fprintf(stderr,
             "[gpu] cuda graph unavailable gpu=%d; continuing with iter_batch "
             "(geforce_v2 direct path, no CUDA graph)\n",
